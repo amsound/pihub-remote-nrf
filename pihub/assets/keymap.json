@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "scancode_map": {
+    "786924": "rem_power_off",
+    "786920": "rem_activity_1",
+    "786925": "rem_activity_2",
+    "786921": "rem_activity_3",
+    "786935": "rem_red",
+    "786934": "rem_green",
+    "786933": "rem_yellow",
+    "786932": "rem_blue",
+    "786943": "rem_info",
+    "786658": "rem_mute",
+    "KEY_LEFT": "rem_dir_left",
+    "KEY_RIGHT": "rem_dir_right",
+    "KEY_UP": "rem_dir_up",
+    "KEY_DOWN": "rem_dir_down",
+    "KEY_KPENTER": "rem_ok",
+    "KEY_BACK": "rem_back",
+    "KEY_EXIT": "rem_exit",
+    "KEY_COMPOSE": "rem_menu",
+    "KEY_REWIND": "rem_rewind",
+    "KEY_PLAY": "rem_play",
+    "KEY_FASTFORWARD": "rem_fast_forward",
+    "KEY_RECORD": "rem_record",
+    "KEY_PAUSE": "rem_pause",
+    "KEY_STOPCD": "rem_stop",
+    "KEY_VOLUMEUP": "rem_vol_up",
+    "KEY_VOLUMEDOWN": "rem_vol_down",
+    "KEY_CHANNELUP": "rem_ch_up",
+    "KEY_CHANNELDOWN": "rem_ch_down",
+    "KEY_PVR": "rem_dvr",
+    "KEY_PROGRAM": "rem_guide",
+    "KEY_0": "rem_0",
+    "KEY_1": "rem_1",
+    "KEY_2": "rem_2",
+    "KEY_3": "rem_3",
+    "KEY_4": "rem_4",
+    "KEY_5": "rem_5",
+    "KEY_6": "rem_6",
+    "KEY_7": "rem_7",
+    "KEY_8": "rem_8",
+    "KEY_9": "rem_9",
+    "KEY_ENTER": "rem_e",
+    "KEY_KPMINUS": "rem_hyphen"
+  },
+
+  "activities": {
+
+    "power_off": {
+      "rem_power_off":    [ { "do": "emit", "text": "power_off" } ],
+      "rem_activity_1":   [ { "do": "emit", "text": "listen" } ],
+      "rem_activity_2":   [ { "do": "emit", "text": "watch" } ],
+      "rem_activity_3":   [ { "do": "noop" } ] },
+
+    "watch": {
+      "rem_power_off":    [ { "do": "emit", "text": "power_off" } ],
+      "rem_activity_1":   [ { "do": "noop" }, { "do": "emit", "min_hold_ms": 1000, "text": "listen" } ],
+      "rem_activity_2":   [ { "do": "emit", "text": "watch" } ],
+      "rem_activity_3":   [ { "do": "noop" } ],
+
+      "rem_vol_up":       [ { "do": "emit", "text": "volume_up", "repeat": true } ],
+      "rem_vol_down":     [ { "do": "emit", "text": "volume_down", "repeat": true } ],     
+      "rem_mute":         [ { "do": "emit", "text": "mute_toggle" }],
+      
+      "rem_rewind":       [ { "do": "ble", "usage": "consumer", "code": "rewind"       } ],
+      "rem_play":         [ { "do": "ble", "usage": "consumer", "code": "play_pause"   } ],
+      "rem_pause":        [ { "do": "ble", "usage": "consumer", "code": "play_pause"   } ],
+      "rem_fast_forward": [ { "do": "ble", "usage": "consumer", "code": "fast_forward" } ],
+      "rem_stop":         [ { "do": "ble", "usage": "consumer", "code": "stop"         } ],
+      "rem_record":       [ { "do": "ble", "usage": "consumer", "code": "record"       } ],
+
+      "rem_dir_left":     [ { "do": "ble", "usage": "consumer", "code": "menu_left"    } ],
+      "rem_dir_right":    [ { "do": "ble", "usage": "consumer", "code": "menu_right"   } ],
+      "rem_dir_up":       [ { "do": "ble", "usage": "consumer", "code": "menu_up"      } ],
+      "rem_dir_down":     [ { "do": "ble", "usage": "consumer", "code": "menu_down"    } ],
+      "rem_ok":           [ { "do": "ble", "usage": "consumer", "code": "menu_pick"    } ],
+      "rem_exit":         [ { "do": "ble", "usage": "consumer", "code": "menu"         } ],
+      "rem_menu":         [ { "do": "ble", "usage": "consumer", "code": "ac_home"      } ],
+      "rem_back":         [ { "do": "ble", "usage": "consumer", "code": "ac_home"      } ],
+  
+      "rem_ch_up":        [ { "do": "ble", "usage": "keyboard", "code": "page_up"      } ],
+      "rem_ch_down":      [ { "do": "ble", "usage": "keyboard", "code": "page_down"    } ],
+      "rem_dvr":          [ { "do": "ble", "usage": "keyboard", "code": "f1"           } ],
+      "rem_guide":        [ { "do": "ble", "usage": "consumer", "code": "guide"        } ],
+      "rem_red":          [ { "do": "ble", "usage": "consumer", "code": "red"          } ],
+      "rem_green":        [ { "do": "ble", "usage": "consumer", "code": "green"        } ],
+      "rem_yellow":       [ { "do": "ble", "usage": "consumer", "code": "yellow"       } ],
+      "rem_blue":         [ { "do": "ble", "usage": "consumer", "code": "blue"         } ],
+      
+      "rem_hyphen":       [ { "do": "ble", "usage": "consumer", "code": "subtitles"    } ],
+      "rem_e":            [ { "do": "ble", "usage": "keyboard", "code": "i"            } ],
+      
+      "rem_0":            [ { "do": "ble", "usage": "keyboard", "code": "n_0" } ],
+      "rem_1":            [ { "do": "ble", "usage": "keyboard", "code": "n_1" } ],
+      "rem_2":            [ { "do": "ble", "usage": "keyboard", "code": "n_2" } ],
+      "rem_3":            [ { "do": "ble", "usage": "keyboard", "code": "n_3" } ],
+      "rem_4":            [ { "do": "ble", "usage": "keyboard", "code": "n_4" } ],
+      "rem_5":            [ { "do": "ble", "usage": "keyboard", "code": "n_5" } ],
+      "rem_6":            [ { "do": "ble", "usage": "keyboard", "code": "n_6" } ],
+      "rem_7":            [ { "do": "ble", "usage": "keyboard", "code": "n_7" } ],
+      "rem_8":            [ { "do": "ble", "usage": "keyboard", "code": "n_8" } ],
+      "rem_9":            [ { "do": "ble", "usage": "keyboard", "code": "n_9" } ]
+
+    },
+
+    "listen": {
+      "rem_power_off":    [ { "do": "emit", "text": "power_off" } ],
+      "rem_activity_1":   [ { "do": "emit", "text": "listen" } ],
+      "rem_activity_2":   [ { "do": "emit", "text": "watch" } ],
+      "rem_activity_3":   [ { "do": "noop" }],
+
+      "rem_vol_up":       [ { "do": "emit", "text": "volume_up", "repeat": true } ],
+      "rem_vol_down":     [ { "do": "emit", "text": "volume_down", "repeat": true } ],   
+      "rem_mute":         [ { "do": "emit", "text": "mute_toggle" }],
+
+      "rem_rewind":       [ { "do": "emit", "text": "media_prev" } ],
+      "rem_play":         [ { "do": "emit", "text": "media_play_pause" } ],
+      "rem_pause":        [ { "do": "emit", "text": "media_play_pause" } ],
+      "rem_fast_forward": [ { "do": "emit", "text": "media_next" } ],
+      "rem_stop":         [ { "do": "emit", "text": "media_stop" } ],
+
+      "rem_dir_left":     [ { "do": "emit", "text": "media_prev" } ],
+      "rem_dir_right":    [ { "do": "emit", "text": "media_next" } ],
+      "rem_ok":           [ { "do": "emit", "text": "media_play_pause" } ],
+
+      "rem_ch_up":        [ { "do": "noop" } ],
+      "rem_ch_down":      [ { "do": "noop" } ],
+
+      "rem_1":            [ { "do": "emit", "text": "1" } ],
+      "rem_2":            [ { "do": "emit", "text": "2" } ],
+      "rem_3":            [ { "do": "emit", "text": "3" } ],
+      "rem_4":            [ { "do": "emit", "text": "4" } ],
+      "rem_5":            [ { "do": "emit", "text": "5" } ],
+      "rem_6":            [ { "do": "emit", "text": "6" } ],
+      "rem_7":            [ { "do": "emit", "text": "7" } ],
+      "rem_8":            [ { "do": "emit", "text": "8" } ],
+      "rem_9":            [ { "do": "emit", "text": "9" } ],
+      "rem_0":            [ { "do": "emit", "text": "0" } ]
+    }
+  }
+}
