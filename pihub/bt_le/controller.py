@@ -66,6 +66,9 @@ class BTLEController:
         self._hid_client = HIDClient(hid=self)
 
         self._transport: Optional[SerialDongleTransport] = None
+        # Created in start() when an event loop is running
+        self._ready_event = None  # type: Optional[asyncio.Event]
+        self._pong_future = None  # type: Optional[asyncio.Future[None]]
         self._ble_ready = False
 
         # "all keys up" pre-roll state
@@ -105,39 +108,73 @@ class BTLEController:
         }
 
     async def start(self) -> None:
-        if self._ble_ready:
+        if self._task is not None:
             return
 
-        loop = asyncio.get_running_loop()
+        self._loop = asyncio.get_running_loop()
+        self._ready_event = asyncio.Event()
+        self._pong_future = None
 
-        def on_log(line: str) -> None:
-            # Keep dongle logs visible but not too noisy
-            logger.info("%s", line)
+        # Some boards enumerate multiple CDC ACM interfaces (e.g. one for logs, one for commands).
+        # Prefer the configured device, but if it doesn't speak our protocol, fall back to the other ACM port.
+        candidates = [self._device]
+        if self._device.endswith('ttyACM0'):
+            candidates.append(self._device[:-1] + '1')
+        elif self._device.endswith('ttyACM1'):
+            candidates.append(self._device[:-1] + '0')
 
-        def on_event(name: str, payload: dict) -> None:
-            # Called from RX thread; bounce to loop thread-safely.
-            loop.call_soon_threadsafe(self._handle_evt, name, payload)
+        last_err: Optional[BaseException] = None
+        for dev in candidates:
+            try:
+                self._transport = SerialDongleTransport(
+                    device=dev,
+                    baud=self._baud,
+                    on_event=self._handle_evt,
+                    name=self._name,
+                )
+                await self._transport.start()
 
-        self._transport = SerialDongleTransport(
-            self._serial_device,
-            self._serial_baud,
-            on_event=on_event,
-            on_log=on_log,
+                # Handshake: PING->PONG. If no response, this is probably the log-only ACM.
+                if await self._await_pong(timeout=0.8):
+                    self._device = dev
+                    break
+
+                logger.warning("Serial %s did not respond to PING; trying other ACM (if any)", dev)
+                await self._transport.stop()
+                self._transport = None
+            except BaseException as e:
+                last_err = e
+                try:
+                    if self._transport:
+                        await self._transport.stop()
+                finally:
+                    self._transport = None
+
+        if self._transport is None:
+            raise RuntimeError(f"Unable to start serial dongle transport on {candidates}: {last_err}")
+
+        # Background liveness monitor / reconnection assist (optional)
+        self._task = self._loop.create_task(self._run())
+
+        logger.info(
+            "BTLEController ready (serial=%s baud=%d, name=%s)",
+            self._device, self._baud, self._name,
         )
-        self._transport.start()
-
-        # Staggered bring-up: give dongle time to boot and start advertising before we spam it.
-        await asyncio.sleep(self._startup_delay_s)
-
-        self._ble_ready = True
-        logger.info("BTLEController ready (serial=%s baud=%d, name=%s)",
-                    self._serial_device, self._serial_baud, self._device_name)
-
-        # Optional: ping for sanity (non-fatal if unsupported)
+    async def wait_ready(self, timeout: float = 5.0) -> None:
+        """Wait until the dongle reports link readiness (or until timeout)."""
+        if self._ready_event is None:
+            return
+        if self.state.link_ready:
+            self._ready_event.set()
+            return
         try:
-            self._transport.ping()
-        except Exception:
-            pass
+            await asyncio.wait_for(self._ready_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise TimeoutError("BLE dongle not ready")
+
+    async def stop(self) -> None:
+        """Compatibility shim: app expects BTLEController.stop()."""
+        await self.shutdown()
 
     async def shutdown(self) -> None:
         self._ble_ready = False
@@ -182,6 +219,16 @@ class BTLEController:
         self._status.last_disconnect_reason = st.last_disconnect_reason
         self._status.link_ready = st.link_ready
 
+        if name == "PONG":
+            fut = self._pong_future
+            if fut is not None and not fut.done():
+                fut.set_result(None)
+            return
+
+        # Expose readiness as soon as the dongle reports link_ready (or at least connected)
+        if self._ready_event is not None and st.link_ready:
+            self._ready_event.set()
+
         if name == "CONN":
             self._last_conn_change_ts = time.monotonic()
             self._preroll_sent_for_conn = False
@@ -196,6 +243,21 @@ class BTLEController:
             logger.info("Dongle PHY: %s", payload.get("raw"))
         elif name == "PROTO":
             logger.info("Dongle protocol: %s", "BOOT" if st.proto_boot else "REPORT")
+
+    async def _await_pong(self, timeout: float = 1.0) -> bool:
+        """Send PING and wait for PONG. Returns True if the dongle responded."""
+        if self._transport is None:
+            return False
+
+        self._pong_future = self._loop.create_future()  # type: ignore[union-attr]
+        await self._transport.ping()
+        try:
+            await asyncio.wait_for(self._pong_future, timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            self._pong_future = None
 
     def _maybe_wait_for_link(self) -> bool:
         """
