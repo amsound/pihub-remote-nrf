@@ -2,7 +2,7 @@
 # PiHub – Universal Remote Bridge (Harmony Remote & Pi)
 
 PiHub turns a Raspberry Pi into a tiny, fast “universal remote” bridge.
-It listens to RF key events from a Logitech Harmony Remote (simple, no display) paired to a Logitech Unifying receiver and sends actions to:
+It listens to RF key events from a Logitech Harmony Remote (simple type, no display) paired to a Logitech Unifying receiver and sends actions to:
 
 * **Home Assistant (HA)** over WebSocket (`pihub.cmd` events)
 * **BLE HID** (Consumer + Keyboard) tested with Apple TV 4k 3rd Gen.
@@ -29,7 +29,7 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 * Raspberry Pi 3B+ (tested on **aarch64** Raspberry Pi OS Lite)
 * Logitech Unifying receiver (model U-0007 recommended!)
 * Home Assistant reachable over WebSocket (I run this locally in a Docker Container)
-* BlueZ running on the host (DBus socket exposed to the container)
+* Nordic nRF52840 Dongle (https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle)
 
 ---
 
