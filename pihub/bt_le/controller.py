@@ -62,7 +62,8 @@ class BTLEController:
         self._serial_device = serial_device
         self._serial_baud = serial_baud
 
-        self._hid_client = HIDClient(self)
+        # HIDClient expects a keyword-only `hid` argument.
+        self._hid_client = HIDClient(hid=self)
 
         self._transport: Optional[SerialDongleTransport] = None
         self._ble_ready = False
