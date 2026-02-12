@@ -88,6 +88,20 @@ class BTLEController:
     # ---- state ----
 
     @property
+    async def wait_ready(self, timeout: float = 5.0) -> bool:
+        """Wait for the dongle command channel to be ready (EVT READY 1).
+
+        Returns True if ready within timeout, else False.
+        """
+        # Fast-path if already ready.
+        if getattr(self._state, 'ready', False):
+            return True
+        try:
+            await asyncio.wait_for(self._ready_evt.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
     def state(self) -> BTLEState:
         return self._state
 
