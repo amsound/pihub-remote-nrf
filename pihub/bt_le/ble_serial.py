@@ -18,6 +18,7 @@ except Exception:  # pragma: no cover
 
 @dataclass
 class DongleState:
+    ready: bool = False
     advertising: bool = False
     connected: bool = False
     proto_boot: Optional[bool] = None
@@ -163,62 +164,107 @@ class SerialDongleTransport:
                 time.sleep(0.25)
 
     def _handle_line(self, s: str) -> None:
+        s = s.strip("\r\n")
+        if not s:
+            return
+
+        # Keep hot-path protocol chatter off the logs.
+        if s == "PONG":
+            self._emit_event("PONG")
+            return
+        if s == "PING":
+            return
+
         if s.startswith("EVT "):
             self._parse_evt(s)
             return
 
-        if s == "PONG":
-            self._emit_event("PONG", {})
-            return
-
+        # Anything else is treated as a plain firmware log line.
         self._enqueue_line(s)
         self._log(f"[dongle] {s}")
 
-    def _parse_evt(self, s: str) -> None:
-        parts = s.split()
+    def _parse_evt(self, line: str) -> None:
+        # Format:
+        #   EVT <TYPE> <PAYLOAD...>
+        parts = line.split()
         if len(parts) < 2:
             return
-        evt = parts[1]
 
-        if evt == "ADV" and len(parts) >= 3:
-            self.state.advertising = parts[2] == "1"
+        etype = parts[1]
+        payload = parts[2:]
+
+        if etype == "READY":
+            v = payload[0] if payload else "0"
+            self.state.ready = (v == "1")
+            self._emit_event("READY", {"ready": self.state.ready})
+            return
+
+        if etype == "ADV":
+            v = payload[0] if payload else "0"
+            self.state.advertising = (v == "1")
             self._emit_event("ADV", {"advertising": self.state.advertising})
             return
 
-        if evt == "CONN" and len(parts) >= 3:
-            self.state.connected = parts[2] == "1"
+        if etype == "CONN":
+            v = payload[0] if payload else "0"
+            self.state.connected = (v == "1")
             self._emit_event("CONN", {"connected": self.state.connected})
             return
 
-        if evt == "PROTO" and len(parts) >= 3:
-            if parts[2] in ("0", "1"):
-                self.state.proto_boot = parts[2] == "1"
-            self._emit_event("PROTO", {"boot": self.state.proto_boot})
+        if etype == "PROTO":
+            v = payload[0] if payload else "0"
+            self.state.proto_boot = (v == "1")
+            self._emit_event("PROTO", {"proto_boot": self.state.proto_boot})
             return
 
-        if evt == "ERR" and len(parts) >= 3:
-            self.state.error = parts[2] == "1"
+        if etype == "ERR":
+            v = payload[0] if payload else "0"
+            self.state.error = (v == "1")
             self._emit_event("ERR", {"error": self.state.error})
             return
 
-        if evt == "DISC":
-            reason = None
-            if len(parts) >= 3:
-                with contextlib.suppress(Exception):
-                    reason = int(parts[2], 0)
-            self.state.last_disconnect_reason = reason
-            self.state.connected = False
+        if etype == "DISC":
+            reason = -1
+            if payload:
+                try:
+                    reason = int(payload[0], 0)
+                except ValueError:
+                    reason = -1
+            self.state.last_disc_reason = reason
             self._emit_event("DISC", {"reason": reason})
             return
 
-        if evt == "CONN_PARAMS":
-            self.state.conn_params = {"raw": parts[2:]}
-            self._emit_event("CONN_PARAMS", {"raw": parts[2:]})
+        if etype == "CONN_PARAMS":
+            # Example:
+            #   EVT CONN_PARAMS interval_ms_x100=3000 latency=0 timeout_ms=720
+            kv: dict[str, int] = {}
+            for tok in payload:
+                if "=" not in tok:
+                    continue
+                k, v = tok.split("=", 1)
+                try:
+                    kv[k] = int(v, 0)
+                except ValueError:
+                    continue
+
+            out: dict[str, object] = dict(kv)
+            if "interval_ms_x100" in kv:
+                out["interval_ms"] = kv["interval_ms_x100"] / 100.0
+            self._emit_event("CONN_PARAMS", out)
             return
 
-        if evt == "PHY":
-            self.state.phy = {"raw": parts[2:]}
-            self._emit_event("PHY", {"raw": parts[2:]})
+        if etype == "PHY":
+            # Example:
+            #   EVT PHY tx=2M rx=2M
+            tx = None
+            rx = None
+            for tok in payload:
+                if tok.startswith("tx="):
+                    tx = tok[3:]
+                elif tok.startswith("rx="):
+                    rx = tok[3:]
+            self._emit_event("PHY", {"tx": tx, "rx": rx})
             return
 
-        self._emit_event(evt, {"raw": parts[2:]})
+        # Unknown event type: pass through.
+        self._emit_event(etype, {"raw": payload})
