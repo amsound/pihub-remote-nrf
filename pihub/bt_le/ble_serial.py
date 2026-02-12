@@ -22,6 +22,7 @@ class DongleState:
     connected: bool = False
     proto_boot: Optional[bool] = None
     error: bool = False
+    ready: bool = False
     conn_params: dict = field(default_factory=dict)
     phy: dict = field(default_factory=dict)
     last_disconnect_reason: Optional[int] = None
