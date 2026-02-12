@@ -175,7 +175,7 @@ async def main() -> None:
         started.append(("bt", bt.stop))
 
         if not await bt.wait_ready(timeout=5.0):
-            logger.warning("[app] BLE adapter not yet available; continuing without HID")
+            logger.warning("[app] nrf BLE dongle not yet available; continuing without HID")
 
         await reader.start()
         started.append(("reader", reader.stop))
