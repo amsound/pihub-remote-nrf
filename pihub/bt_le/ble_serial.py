@@ -22,16 +22,13 @@ class DongleState:
     connected: bool = False
     proto_boot: Optional[bool] = None
     error: bool = False
-    ready: bool = False
     conn_params: dict = field(default_factory=dict)
     phy: dict = field(default_factory=dict)
     last_disconnect_reason: Optional[int] = None
 
     @property
     def link_ready(self) -> bool:
-        # 'ready' means PiHub can talk to the dongle over serial.
-        # Keep it true across BLE disconnects; HID sends are still gated by `connected`.
-        return self.ready and not self.error
+        return self.connected and not self.error
 
 
 class SerialDongleTransport:
@@ -71,6 +68,16 @@ class SerialDongleTransport:
         self._stop_evt.clear()
 
         self._ser = await asyncio.to_thread(serial.Serial, self._device, self._baud, timeout=0.5)
+
+        # Zephyr CDC ACM commonly requires DTR asserted before it will deliver RX/TX.
+        # Also give the device a brief moment after open before sending the first command.
+        with contextlib.suppress(Exception):
+            self._ser.dtr = True
+            self._ser.rts = True
+        await asyncio.sleep(0.2)
+        with contextlib.suppress(Exception):
+            self._ser.reset_input_buffer()
+            self._ser.reset_output_buffer()
         self._rx_thread = threading.Thread(target=self._rx_worker, name="pihub-dongle-rx", daemon=True)
         self._rx_thread.start()
 
@@ -171,8 +178,7 @@ class SerialDongleTransport:
             return
 
         if s == "PONG":
-            self.state.ready = True
-            self._emit_event("READY", {"ready": True})
+            self._emit_event("PONG", {})
             return
 
         self._enqueue_line(s)
@@ -183,11 +189,6 @@ class SerialDongleTransport:
         if len(parts) < 2:
             return
         evt = parts[1]
-
-        if evt == "READY" and len(parts) >= 3:
-            self.state.ready = parts[2] == "1"
-            self._emit_event("READY", {"ready": self.state.ready})
-            return
 
         if evt == "ADV" and len(parts) >= 3:
             self.state.advertising = parts[2] == "1"
@@ -221,42 +222,13 @@ class SerialDongleTransport:
             return
 
         if evt == "CONN_PARAMS":
-            # Examples:
-            #   EVT CONN_PARAMS interval_ms_x100=3000 latency=0 timeout_ms=720
-            #   EVT CONN_PARAMS interval=15.00ms latency=4 timeout=1000ms
-            params: dict[str, object] = {}
-            for tok in parts[2:]:
-                if "=" in tok:
-                    k, v = tok.split("=", 1)
-                    # strip common suffixes
-                    vv = v.strip()
-                    for suf in ("ms",):
-                        if vv.endswith(suf):
-                            vv = vv[:-len(suf)]
-                    try:
-                        if "." in vv:
-                            params[k] = float(vv)
-                        else:
-                            params[k] = int(vv)
-                    except ValueError:
-                        params[k] = v
-                else:
-                    params.setdefault("raw", []).append(tok)
-            self.state.conn_params = params
-            self._emit_event("CONN_PARAMS", params)
+            self.state.conn_params = {"raw": parts[2:]}
+            self._emit_event("CONN_PARAMS", {"raw": parts[2:]})
             return
 
         if evt == "PHY":
-            # Example: EVT PHY tx=2M rx=2M
-            params: dict[str, object] = {}
-            for tok in parts[2:]:
-                if "=" in tok:
-                    k, v = tok.split("=", 1)
-                    params[k] = v
-                else:
-                    params.setdefault("raw", []).append(tok)
-            self.state.phy = params
-            self._emit_event("PHY", params)
+            self.state.phy = {"raw": parts[2:]}
+            self._emit_event("PHY", {"raw": parts[2:]})
             return
 
         self._emit_event(evt, {"raw": parts[2:]})
