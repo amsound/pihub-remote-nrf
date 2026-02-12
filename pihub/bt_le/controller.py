@@ -345,4 +345,3 @@ class BTLEController:
 
                 if attempt + 1 < self._max_retries:
                     await asyncio.sleep(self._retry_delay_s)
-        self._last_evt: dict[str, object] = {}
