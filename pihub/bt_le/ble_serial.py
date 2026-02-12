@@ -1,234 +1,324 @@
-"""Serial transport to the nRF52840 "PiHub Remote" dongle over USB CDC ACM."""
-
-from __future__ import annotations
-
 import asyncio
-import binascii
-import contextlib
-import threading
+import logging
 import time
-from dataclasses import dataclass, field
-from typing import Callable, Optional
+from dataclasses import dataclass
+from typing import Callable, Optional, Sequence, Dict, Any, List
 
-try:
-    import serial  # type: ignore
-except Exception:  # pragma: no cover
-    serial = None  # type: ignore
+import serial  # pyserial
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
 class DongleState:
+    ready: bool = False
     advertising: bool = False
     connected: bool = False
-    proto_boot: Optional[bool] = None
+    proto_boot: bool = False  # 0=report, 1=boot
     error: bool = False
-    conn_params: dict = field(default_factory=dict)
-    phy: dict = field(default_factory=dict)
-    last_disconnect_reason: Optional[int] = None
-
-    @property
-    def link_ready(self) -> bool:
-        return self.connected and not self.error
+    conn_params: Optional[Dict[str, Any]] = None
+    phy: Optional[Dict[str, Any]] = None
+    last_disc_reason: Optional[int] = None
 
 
-class SerialDongleTransport:
-    """Threaded serial reader with async-friendly write helpers."""
+class BleSerial:
+    """
+    Serial link to the nRF dongle.
+
+    - Line-oriented ASCII protocol.
+    - CMD port carries both host commands (KB/CC/PING/STATUS/UNPAIR) and dongle EVT lines.
+    """
 
     def __init__(
         self,
-        device: str,
+        ports: Sequence[str],
         baud: int = 115200,
         *,
-        on_event: Optional[Callable[[str, dict], None]] = None,
-        on_log: Optional[Callable[[str], None]] = None,
+        ping_timeout_s: float = 1.0,
+        reconnect_delay_s: float = 1.0,
+        on_event: Optional[Callable[[str, DongleState], None]] = None,
     ) -> None:
-        if serial is None:
-            raise RuntimeError("pyserial is required for SerialDongleTransport")
-
-        self._device = device
+        self._ports = list(ports)
         self._baud = baud
+        self._ping_timeout_s = ping_timeout_s
+        self._reconnect_delay_s = reconnect_delay_s
         self._on_event = on_event
-        self._on_log = on_log
+
+        self._ser: Optional[serial.Serial] = None
+        self._reader_task: Optional[asyncio.Task] = None
+        self._connect_task: Optional[asyncio.Task] = None
 
         self.state = DongleState()
 
-        self._ser = None
-        self._rx_thread: Optional[threading.Thread] = None
-        self._stop_evt = threading.Event()
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._write_lock = threading.Lock()
-        self._lines: Optional[asyncio.Queue[str]] = None
+        # tx lock so KB/CC writes don't interleave
+        self._tx_lock = asyncio.Lock()
+
+    @property
+    def is_open(self) -> bool:
+        return self._ser is not None and self._ser.is_open
 
     async def start(self) -> None:
-        if self._rx_thread is not None:
-            return
-
-        self._loop = asyncio.get_running_loop()
-        self._lines = asyncio.Queue()
-        self._stop_evt.clear()
-
-        self._ser = await asyncio.to_thread(serial.Serial, self._device, self._baud, timeout=0.5)
-
-        # Zephyr CDC ACM commonly requires DTR asserted before it will deliver RX/TX.
-        # Also give the device a brief moment after open before sending the first command.
-        with contextlib.suppress(Exception):
-            self._ser.dtr = True
-            self._ser.rts = True
-        await asyncio.sleep(0.2)
-        with contextlib.suppress(Exception):
-            self._ser.reset_input_buffer()
-            self._ser.reset_output_buffer()
-        self._rx_thread = threading.Thread(target=self._rx_worker, name="pihub-dongle-rx", daemon=True)
-        self._rx_thread.start()
-
-        with contextlib.suppress(Exception):
-            await self.write_line("STATUS")
+        if self._connect_task is None:
+            self._connect_task = asyncio.create_task(self._connect_loop(), name="ble-serial-connect")
 
     async def stop(self) -> None:
-        self._stop_evt.set()
-        if self._rx_thread:
-            await asyncio.to_thread(self._rx_thread.join, 1.0)
-        self._rx_thread = None
+        if self._connect_task is not None:
+            self._connect_task.cancel()
+            self._connect_task = None
 
-        ser, self._ser = self._ser, None
-        if ser:
-            with contextlib.suppress(Exception):
-                await asyncio.to_thread(ser.close)
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+            self._reader_task = None
 
-    async def write_line(self, line: str) -> None:
-        if not self._ser:
-            raise RuntimeError("Serial port not open")
+        self._close()
 
-        data = (line.strip() + "\n").encode("ascii", errors="ignore")
+    def _close(self) -> None:
+        try:
+            if self._ser is not None:
+                self._ser.close()
+        finally:
+            self._ser = None
 
-        def _write() -> None:
-            with self._write_lock:
-                assert self._ser is not None
-                self._ser.write(data)
+    async def _connect_loop(self) -> None:
+        # Keep trying forever; app should not crash if dongle is absent at startup.
+        while True:
+            if self.is_open:
+                await asyncio.sleep(self._reconnect_delay_s)
+                continue
 
-        await asyncio.to_thread(_write)
+            for port in list(self._ports):
+                try:
+                    if await self._try_open_and_handshake(port):
+                        log.info("BTLE serial command port ready on %s", port)
+                        self._reader_task = asyncio.create_task(self._reader_loop(), name="ble-serial-reader")
+                        break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    log.debug("serial open/handshake failed on %s: %r", port, e)
 
-    async def send_keyboard_report(self, report8: bytes) -> str:
+            await asyncio.sleep(self._reconnect_delay_s)
+
+    async def _try_open_and_handshake(self, port: str) -> bool:
+        # Open in non-blocking-ish mode; we'll read using executor.
+        ser = serial.Serial(
+            port=port,
+            baudrate=self._baud,
+            timeout=0.1,
+            write_timeout=0.5,
+            exclusive=True,
+        )
+
+        # Some CDC ACM implementations need DTR asserted.
+        try:
+            ser.setDTR(True)
+            ser.setRTS(True)
+        except Exception:
+            pass
+
+        # Flush any stale bytes.
+        try:
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+        except Exception:
+            pass
+
+        self._ser = ser
+
+        # Give firmware a moment to attach endpoints, especially after container restart.
+        await asyncio.sleep(0.25)
+
+        # Send a PING; accept either an immediate PONG or an EVT READY line.
+        await self._write_line("PING")
+
+        deadline = time.monotonic() + self._ping_timeout_s
+        while time.monotonic() < deadline:
+            line = await self._read_line()
+            if not line:
+                continue
+            if line == "PONG":
+                self.state.ready = True
+                self._emit("ready")
+                return True
+            if line.startswith("EVT "):
+                self._handle_evt_line(line)
+                if self.state.ready:
+                    return True
+
+        # Handshake failed.
+        self._close()
+        return False
+
+    async def _reader_loop(self) -> None:
+        while True:
+            try:
+                line = await self._read_line()
+                if not line:
+                    continue
+
+                if line.startswith("EVT "):
+                    self._handle_evt_line(line)
+                    continue
+
+                # Ignore other chatter on CMD port (e.g., PONG echoes, boot banners).
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("Serial reader error, will reconnect: %r", e)
+                self._close()
+                # Clear state on link loss; dongle will re-emit after reconnect.
+                self.state = DongleState()
+                self._emit("link_lost")
+                await asyncio.sleep(self._reconnect_delay_s)
+
+    def _emit(self, event: str) -> None:
+        if self._on_event is not None:
+            try:
+                self._on_event(event, self.state)
+            except Exception:
+                log.exception("on_event handler failed")
+
+    async def _read_line(self) -> str:
+        if not self.is_open:
+            return ""
+        loop = asyncio.get_running_loop()
+        raw: bytes = await loop.run_in_executor(None, self._ser.readline)  # type: ignore[arg-type]
+        if not raw:
+            return ""
+        try:
+            s = raw.decode("utf-8", errors="replace").strip()
+        except Exception:
+            return ""
+        return s
+
+    async def _write_line(self, line: str) -> None:
+        if not self.is_open:
+            return
+        loop = asyncio.get_running_loop()
+        data = (line.strip() + "\n").encode("utf-8")
+        async with self._tx_lock:
+            await loop.run_in_executor(None, self._ser.write, data)  # type: ignore[arg-type]
+            await loop.run_in_executor(None, self._ser.flush)  # type: ignore[arg-type]
+
+    # ---------- Public command helpers ----------
+
+    async def ping(self) -> bool:
+        if not self.is_open:
+            return False
+        await self._write_line("PING")
+        deadline = time.monotonic() + self._ping_timeout_s
+        while time.monotonic() < deadline:
+            line = await self._read_line()
+            if line == "PONG":
+                return True
+            if line.startswith("EVT "):
+                self._handle_evt_line(line)
+                if self.state.ready:
+                    return True
+        return False
+
+    async def send_kb(self, report8: bytes) -> None:
+        # Hot path: if not connected, drop silently.
+        if not (self.is_open and self.state.connected):
+            return
         if len(report8) != 8:
-            raise ValueError("Keyboard report must be exactly 8 bytes")
-        return await self._send_with_reply("KB " + binascii.hexlify(report8).decode("ascii"))
+            raise ValueError("keyboard report must be 8 bytes")
+        await self._write_line("KB " + report8.hex())
 
-    async def send_consumer_usage_le16(self, usage_le16: bytes) -> str:
-        if len(usage_le16) != 2:
-            raise ValueError("Consumer report must be exactly 2 bytes")
-        return await self._send_with_reply("CC " + binascii.hexlify(usage_le16).decode("ascii"))
+    async def send_cc_usage(self, usage: int) -> None:
+        if not (self.is_open and self.state.connected):
+            return
+        usage &= 0xFFFF
+        # little-endian 2 bytes -> 4 hex chars
+        le = bytes((usage & 0xFF, (usage >> 8) & 0xFF))
+        await self._write_line("CC " + le.hex())
 
-    async def ping(self) -> None:
-        await self.write_line("PING")
+    async def status(self) -> None:
+        if not self.is_open:
+            return
+        await self._write_line("STATUS")
 
     async def unpair(self) -> None:
-        await self.write_line("UNPAIR")
-
-    async def _send_with_reply(self, cmd: str, timeout: float = 0.15) -> str:
-        await self.write_line(cmd)
-        if self._lines is None:
-            return "sent"
-        try:
-            line = await asyncio.wait_for(self._lines.get(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return "sent"
-
-        upper = line.strip().upper()
-        if "BUSY" in upper:
-            return "busy"
-        if upper in {"OK", "ACK"}:
-            return "ok"
-        return "sent"
-
-    def _log(self, s: str) -> None:
-        if self._on_log:
-            self._on_log(s)
-
-    def _emit_event(self, name: str, payload: dict) -> None:
-        if self._on_event:
-            self._on_event(name, payload)
-
-    def _enqueue_line(self, s: str) -> None:
-        if self._loop is None or self._lines is None:
+        if not self.is_open:
             return
-        self._loop.call_soon_threadsafe(self._lines.put_nowait, s)
+        await self._write_line("UNPAIR")
 
-    def _rx_worker(self) -> None:
-        assert self._ser is not None
-        buf = b""
+    # ---------- EVT parsing ----------
 
-        while not self._stop_evt.is_set():
+    def _handle_evt_line(self, line: str) -> None:
+        # Examples:
+        # EVT READY 1
+        # EVT ADV 0|1
+        # EVT CONN 0|1
+        # EVT PROTO 0|1
+        # EVT CONN_PARAMS interval_ms_x100=3000 latency=0 timeout_ms=720
+        # EVT PHY tx=2M rx=2M
+        # EVT DISC reason=19
+        # EVT ERR 0|1
+        parts = line.split()
+        if len(parts) < 3:
+            return
+
+        kind = parts[1]
+        rest = parts[2:]
+
+        if kind == "READY":
+            self.state.ready = (rest[0] == "1")
+            self._emit("ready")
+            return
+
+        if kind == "ADV":
+            self.state.advertising = (rest[0] == "1")
+            self._emit("adv")
+            return
+
+        if kind == "CONN":
+            self.state.connected = (rest[0] == "1")
+            self._emit("conn")
+            return
+
+        if kind == "PROTO":
+            self.state.proto_boot = (rest[0] == "1")
+            self._emit("proto")
+            return
+
+        if kind == "ERR":
+            self.state.error = (rest[0] == "1")
+            self._emit("err")
+            return
+
+        if kind == "DISC":
+            # allow "reason=19" or "19"
+            r = rest[0]
+            if r.startswith("reason="):
+                r = r.split("=", 1)[1]
             try:
-                chunk = self._ser.read(256)
-                if not chunk:
-                    continue
-                buf += chunk
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    s = line.decode("utf-8", errors="replace").strip()
-                    if s:
-                        self._handle_line(s)
-            except Exception as exc:
-                self._log(f"[dongle] RX error: {exc!r}")
-                time.sleep(0.25)
-
-    def _handle_line(self, s: str) -> None:
-        if s.startswith("EVT "):
-            self._parse_evt(s)
+                self.state.last_disc_reason = int(r)
+            except Exception:
+                self.state.last_disc_reason = None
+            self._emit("disc")
             return
 
-        if s == "PONG":
-            self._emit_event("PONG", {})
+        if kind == "CONN_PARAMS":
+            kv = {}
+            for tok in rest:
+                if "=" in tok:
+                    k, v = tok.split("=", 1)
+                    try:
+                        kv[k] = int(v)
+                    except Exception:
+                        kv[k] = v
+            self.state.conn_params = kv
+            self._emit("conn_params")
             return
 
-        self._enqueue_line(s)
-        self._log(f"[dongle] {s}")
-
-    def _parse_evt(self, s: str) -> None:
-        parts = s.split()
-        if len(parts) < 2:
+        if kind == "PHY":
+            kv = {}
+            for tok in rest:
+                if "=" in tok:
+                    k, v = tok.split("=", 1)
+                    kv[k] = v
+            self.state.phy = kv
+            self._emit("phy")
             return
-        evt = parts[1]
-
-        if evt == "ADV" and len(parts) >= 3:
-            self.state.advertising = parts[2] == "1"
-            self._emit_event("ADV", {"advertising": self.state.advertising})
-            return
-
-        if evt == "CONN" and len(parts) >= 3:
-            self.state.connected = parts[2] == "1"
-            self._emit_event("CONN", {"connected": self.state.connected})
-            return
-
-        if evt == "PROTO" and len(parts) >= 3:
-            if parts[2] in ("0", "1"):
-                self.state.proto_boot = parts[2] == "1"
-            self._emit_event("PROTO", {"boot": self.state.proto_boot})
-            return
-
-        if evt == "ERR" and len(parts) >= 3:
-            self.state.error = parts[2] == "1"
-            self._emit_event("ERR", {"error": self.state.error})
-            return
-
-        if evt == "DISC":
-            reason = None
-            if len(parts) >= 3:
-                with contextlib.suppress(Exception):
-                    reason = int(parts[2], 0)
-            self.state.last_disconnect_reason = reason
-            self.state.connected = False
-            self._emit_event("DISC", {"reason": reason})
-            return
-
-        if evt == "CONN_PARAMS":
-            self.state.conn_params = {"raw": parts[2:]}
-            self._emit_event("CONN_PARAMS", {"raw": parts[2:]})
-            return
-
-        if evt == "PHY":
-            self.state.phy = {"raw": parts[2:]}
-            self._emit_event("PHY", {"raw": parts[2:]})
-            return
-
-        self._emit_event(evt, {"raw": parts[2:]})
