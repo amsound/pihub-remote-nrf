@@ -40,9 +40,12 @@ class BTLEController:
         baud: int = 115200,
         name: str = "PiHub Remote",
         *,
+        adapter: Optional[str] = None,
         fallback_ports: Optional[Sequence[str]] = None,
+        **_ignored: object,
     ):
         self._serial_port = serial_port
+        self._adapter = adapter  # ignored for serial transport
         self._baud = baud
         self._name = name
 
