@@ -67,6 +67,7 @@ class BTLEController:
         self._hid_client = HIDClient(hid=self)
 
         self._started = False
+        self._ready_evt = asyncio.Event()
 
         log.info("BTLEController ready (serial=%s baud=%s, name=%s)", serial_port, baud, name)
 
@@ -87,7 +88,6 @@ class BTLEController:
 
     # ---- state ----
 
-    @property
     async def wait_ready(self, timeout: float = 5.0) -> bool:
         """Wait for the dongle command channel to be ready (EVT READY 1).
 
@@ -107,6 +107,10 @@ class BTLEController:
 
     def _on_dongle_event(self, event: str, st: DongleState) -> None:
         self._state.ready = st.ready
+        if st.ready:
+            self._ready_evt.set()
+        else:
+            self._ready_evt.clear()
         self._state.advertising = st.advertising
         self._state.connected = st.connected
         self._state.proto_boot = st.proto_boot
