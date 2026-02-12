@@ -29,13 +29,6 @@ class BTLEControllerStatus:
     error: bool = False
     last_disconnect_reason: Optional[int] = None
 
-    # Negotiated link details (best-effort telemetry)
-    conn_interval_ms: Optional[float] = None
-    conn_latency: Optional[int] = None
-    conn_timeout_ms: Optional[int] = None
-    phy_tx: Optional[str] = None
-    phy_rx: Optional[str] = None
-
 
 class BTLEController:
     """PiHub-side BLE controller backed by serial CDC ACM transport."""
@@ -45,7 +38,7 @@ class BTLEController:
         adapter: str = "hci0",
         device_name: str = "PiHub Remote",
         *,
-        serial_device: str = "/dev/ttyACM0",
+        serial_device: str = "/dev/ttyACM1",
         serial_baud: int = 115200,
     ) -> None:
         self._adapter = adapter
@@ -170,7 +163,7 @@ class BTLEController:
                 self._status.adapter_present = True
                 self._status.device = dev
 
-                if await self._await_pong(timeout=0.8):
+                if await self._await_pong(timeout=1.5):
                     logger.info("BTLE serial command port ready on %s", dev)
                     return
 
@@ -194,122 +187,47 @@ class BTLEController:
         if transport is None:
             return False
 
-        self._pong_future = asyncio.get_running_loop().create_future()
-        try:
-            await transport.ping()
-            await asyncio.wait_for(self._pong_future, timeout=timeout)
-            return True
-        except asyncio.TimeoutError:
-            return False
-        finally:
-            self._pong_future = None
+        # Some hosts/USB stacks need a short settle time after open; also allow a retry.
+        for attempt in range(2):
+            self._pong_future = asyncio.get_running_loop().create_future()
+            try:
+                await transport.ping()
+                await asyncio.wait_for(self._pong_future, timeout=timeout)
+                return True
+            except asyncio.TimeoutError:
+                if attempt == 0:
+                    await asyncio.sleep(0.2)
+                    continue
+                return False
+            finally:
+                self._pong_future = None
 
-    def _handle_evt(self, etype: str, payload: dict) -> None:
-        # Mirror dongle EVT lines into status and keep logging human-friendly.
-        # Avoid spamming: only log when a value changes.
-        def log_change(key: str, value: object, msg: str) -> None:
-            if self._last_evt.get(key) == value:
-                return
-            self._last_evt[key] = value
-            self._log.info(msg)
+    def _handle_evt(self, name: str, payload: dict) -> None:
+        transport = self._transport
+        if transport is None:
+            return
 
-        if etype == "PONG":
+        st = transport.state
+        self._status.connected = st.connected
+        self._status.advertising = st.advertising
+        self._status.proto_boot = st.proto_boot
+        self._status.error = st.error
+        self._status.last_disconnect_reason = st.last_disconnect_reason
+        self._status.link_ready = st.link_ready
+
+        if name == "PONG":
             if self._pong_future and not self._pong_future.done():
                 self._pong_future.set_result(None)
             return
 
-        if etype == "READY":
-            ready = bool(payload.get("ready", False))
-            self._status.adapter_present = ready
-            log_change("READY", ready, f"[btle] dongle ready={1 if ready else 0}")
-            return
-
-        if etype == "ADV":
-            adv = bool(payload.get("advertising", False))
-            self._status.advertising = adv
-            log_change("ADV", adv, f"[btle] advertising={1 if adv else 0}")
-            return
-
-        if etype == "CONN":
-            conn = bool(payload.get("connected", False))
-            self._status.connected = conn
-            self._status.link_ready = bool(conn) and (not self._status.error)
-
-            log_change("CONN", conn, f"[btle] connected={1 if conn else 0}")
-
-            if conn:
-                try:
-                    self._all_keys_up_work.schedule(self._preroll_delay_s)
-                except Exception:
-                    pass
-
-            if self._status.link_ready:
-                self._ready_event.set()
-            else:
-                self._ready_event.clear()
-            return
-
-        if etype == "PROTO":
-            proto_boot = bool(payload.get("proto_boot", False))
-            self._status.proto_boot = proto_boot
-            log_change("PROTO", proto_boot, f"[btle] proto={'boot' if proto_boot else 'report'}")
-            return
-
-        if etype == "ERR":
-            err = bool(payload.get("error", False))
-            self._status.error = err
-            self._status.link_ready = self._status.connected and (not err)
-            log_change("ERR", err, f"[btle] error={1 if err else 0}")
-
-            if self._status.link_ready:
-                self._ready_event.set()
-            else:
-                self._ready_event.clear()
-            return
-
-        if etype == "DISC":
-            reason = payload.get("reason")
-            self._status.last_disconnect_reason = int(reason) if isinstance(reason, int) else None
-            self._status.connected = False
-            self._status.link_ready = False
-            log_change("DISC", self._status.last_disconnect_reason, f"[btle] disconnected reason={self._status.last_disconnect_reason}")
-
+        if st.link_ready:
+            self._ready_event.set()
+        elif not st.connected:
             self._ready_event.clear()
-            return
 
-        if etype == "CONN_PARAMS":
-            interval_ms = payload.get("interval_ms")
-            if interval_ms is None and "interval_ms_x100" in payload:
-                try:
-                    interval_ms = float(payload["interval_ms_x100"]) / 100.0
-                except Exception:
-                    interval_ms = None
-
-            latency = payload.get("latency")
-            timeout_ms = payload.get("timeout_ms")
-
-            self._status.conn_interval_ms = float(interval_ms) if interval_ms is not None else None
-            self._status.conn_latency = int(latency) if latency is not None else None
-            self._status.conn_timeout_ms = int(timeout_ms) if timeout_ms is not None else None
-
-            log_change(
-                "CONN_PARAMS",
-                (self._status.conn_interval_ms, self._status.conn_latency, self._status.conn_timeout_ms),
-                f"[btle] conn_params interval_ms={self._status.conn_interval_ms} latency={self._status.conn_latency} timeout_ms={self._status.conn_timeout_ms}",
-            )
-            return
-
-        if etype == "PHY":
-            tx = payload.get("tx")
-            rx = payload.get("rx")
-            self._status.phy_tx = str(tx) if tx is not None else None
-            self._status.phy_rx = str(rx) if rx is not None else None
-            log_change("PHY", (self._status.phy_tx, self._status.phy_rx), f"[btle] phy tx={self._status.phy_tx} rx={self._status.phy_rx}")
-            return
-
-        # Unknown EVT: keep it at debug to avoid noise
-        self._log.debug(f"[btle] evt {etype} {payload!r}")
-
+        if name == "CONN":
+            self._last_conn_change_ts = time.monotonic()
+            self._preroll_sent_for_conn = False
 
     def _schedule_send(self, kind: str, payload: bytes) -> None:
         loop = asyncio.get_running_loop()
