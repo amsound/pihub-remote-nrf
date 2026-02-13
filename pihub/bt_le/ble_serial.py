@@ -35,7 +35,7 @@ class BleSerial:
         ports: Sequence[str],
         baud: int = 115200,
         *,
-        ping_timeout_s: float = 1.0,
+        ping_timeout_s: float = 3.0,
         reconnect_delay_s: float = 1.0,
         on_event: Optional[Callable[[str, DongleState], None]] = None,
     ) -> None:
@@ -146,9 +146,11 @@ class BleSerial:
                 if self.state.ready:
                     return True
 
-        # Handshake failed.
-        self._close()
-        return False
+        # Some dongle firmware builds can take a little longer to emit READY/PONG
+        # after the CDC ACM port opens. Keep the link open and let the background
+        # reader observe EVT lines, rather than churning reconnects.
+        log.debug("serial open on %s, waiting for asynchronous READY/PONG", port)
+        return True
 
     async def _reader_loop(self) -> None:
         while True:

@@ -103,9 +103,9 @@ async def main() -> None:
 
     bt = BTLEController(
         adapter=cfg.ble_adapter,
-        device_name=cfg.ble_device_name,
-        serial_device=cfg.ble_serial_device,
-        serial_baud=cfg.ble_serial_baud,
+        name=cfg.ble_device_name,
+        serial_port=cfg.ble_serial_device,
+        baud=cfg.ble_serial_baud,
     )
 
     async def _on_activity(activity: str | None) -> None:
@@ -174,8 +174,11 @@ async def main() -> None:
         await bt.start()
         started.append(("bt", bt.stop))
 
-        if not await bt.wait_ready(timeout=5.0):
-            logger.warning("[app] nrf BLE dongle not yet available; continuing without HID")
+        if not await bt.wait_ready(timeout=10.0):
+            logger.warning(
+                "[app] nrf BLE dongle not ready yet (serial_open=%s); continuing without HID",
+                bt.status.get("adapter_present", False),
+            )
 
         await reader.start()
         started.append(("reader", reader.stop))
