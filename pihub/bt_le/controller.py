@@ -69,7 +69,7 @@ class BTLEController:
         self._started = False
         self._ready_evt = asyncio.Event()
 
-        log.info("BTLEController ready (serial=%s baud=%s, name=%s)", serial_port, baud, name)
+        log.info("BTLEController initialized (serial=%s baud=%s, name=%s)", serial_port, baud, name)
 
     # ---- lifecycle ----
 
