@@ -179,24 +179,51 @@ class BTLEController:
 
     # ---- Dispatcher-facing convenience methods (sync) ----
 
-    def key_down(self, key: str) -> None:
+    def key_down(self, *, usage: str, code: str) -> None:
         try:
-            self._hid_client.key_down(key)
+            self._hid_client.key_down(usage=usage, code=code)
         except Exception:
             # Never crash input loop.
-            log.debug("key_down(%s) failed", key, exc_info=True)
+            log.debug("key_down(usage=%s, code=%s) failed", usage, code, exc_info=True)
 
-    def key_up(self, key: str) -> None:
+    def key_up(self, *, usage: str, code: str) -> None:
         try:
-            self._hid_client.key_up(key)
+            self._hid_client.key_up(usage=usage, code=code)
         except Exception:
-            log.debug("key_up(%s) failed", key, exc_info=True)
+            log.debug("key_up(usage=%s, code=%s) failed", usage, code, exc_info=True)
 
-    def send_key(self, key: str) -> None:
+    async def send_key(self, *, usage: str, code: str, hold_ms: int = 40) -> None:
         try:
-            self._hid_client.send_key(key)
+            await self._hid_client.send_key(usage=usage, code=code, hold_ms=hold_ms)
         except Exception:
-            log.debug("send_key(%s) failed", key, exc_info=True)
+            log.debug(
+                "send_key(usage=%s, code=%s, hold_ms=%s) failed",
+                usage,
+                code,
+                hold_ms,
+                exc_info=True,
+            )
+
+    async def run_macro(
+        self,
+        steps: list[dict],
+        *,
+        default_hold_ms: int = 40,
+        inter_delay_ms: int = 400,
+    ) -> None:
+        try:
+            await self._hid_client.run_macro(
+                steps,
+                default_hold_ms=default_hold_ms,
+                inter_delay_ms=inter_delay_ms,
+            )
+        except Exception:
+            log.debug(
+                "run_macro(default_hold_ms=%s, inter_delay_ms=%s) failed",
+                default_hold_ms,
+                inter_delay_ms,
+                exc_info=True,
+            )
 
     def consumer_down(self, usage_id: int) -> None:
         try:
