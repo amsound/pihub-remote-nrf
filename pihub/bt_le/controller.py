@@ -36,7 +36,7 @@ class BTLEController:
 
     def __init__(
         self,
-        serial_port: str = "/dev/ttyACM0",
+        serial_port: str = "/dev/ttyACM1",
         baud: int = 115200,
         name: str = "PiHub Remote",
         *,
