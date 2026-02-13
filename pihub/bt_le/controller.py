@@ -105,6 +105,26 @@ class BTLEController:
     def state(self) -> BTLEState:
         return self._state
 
+    @property
+    def status(self) -> dict:
+        """Return a JSON-serializable BLE status snapshot.
+
+        The health endpoint relies on adapter/advertising/connected while
+        keeping additional low-cost details available for diagnostics.
+        """
+
+        return {
+            "adapter_present": self._serial.is_open,
+            "ready": self._state.ready,
+            "advertising": self._state.advertising,
+            "connected": self._state.connected,
+            "proto_boot": self._state.proto_boot,
+            "error": self._state.error,
+            "conn_params": dict(self._state.conn_params) if self._state.conn_params else None,
+            "phy": dict(self._state.phy) if self._state.phy else None,
+            "last_disc_reason": self._state.last_disc_reason,
+        }
+
     def _on_dongle_event(self, event: str, st: DongleState) -> None:
         self._state.ready = st.ready
         if st.ready:
