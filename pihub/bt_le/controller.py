@@ -3,7 +3,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-from .ble_serial import BleSerial, DongleState
+from .ble_serial import BleSerial, DongleState, discover_cmd_ports
 from .hid_client import HIDClient
 
 
@@ -49,11 +49,20 @@ class BTLEController:
         self._baud = baud
         self._name = name
 
-        ports = [serial_port]
+        ports = []
+        requested_port = (serial_port or "").strip()
+        if requested_port and requested_port.lower() != "auto":
+            ports.append(requested_port)
+        else:
+            ports.extend(discover_cmd_ports())
         if fallback_ports:
             for p in fallback_ports:
                 if p not in ports:
                     ports.append(p)
+
+        if not ports:
+            # Last-resort scan order if no devices are currently visible.
+            ports.extend(["/dev/ttyACM1", "/dev/ttyACM0"])
 
         self._state = BTLEState()
 
@@ -69,7 +78,7 @@ class BTLEController:
         self._started = False
         self._ready_evt = asyncio.Event()
 
-        log.info("BTLEController initialized (serial=%s baud=%s, name=%s)", serial_port, baud, name)
+        log.info("BTLEController initialized (ports=%s baud=%s, name=%s)", ports, baud, name)
 
     # ---- lifecycle ----
 
@@ -163,16 +172,29 @@ class BTLEController:
         elif event == "link_lost":
             log.warning("BTLE serial link lost; reconnecting")
 
+        log.debug(
+            "BTLE state transition event=%s ready=%s connected=%s advertising=%s active_port=%s",
+            event,
+            self._state.ready,
+            self._state.connected,
+            self._state.advertising,
+            self._serial.active_port,
+        )
+
+    def _link_ready(self) -> bool:
+        # Some firmware revisions surface readiness via READY before CONN settles.
+        return bool(self._serial.state.connected or self._serial.state.ready)
+
     # ---- HIDClient transport hooks ----
 
     def notify_keyboard(self, report: bytes) -> None:
         # Drop silently if link isn't up.
-        if not self._serial.state.connected:
+        if not self._link_ready():
             return
         asyncio.create_task(self._serial.send_kb(report))
 
     def notify_consumer(self, usage_id: int, pressed: bool) -> None:
-        if not self._serial.state.connected:
+        if not self._link_ready():
             return
         usage = usage_id if pressed else 0
         asyncio.create_task(self._serial.send_cc_usage(usage))

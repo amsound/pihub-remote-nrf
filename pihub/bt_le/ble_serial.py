@@ -1,5 +1,7 @@
 import asyncio
+import glob
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence, Dict, Any, List
@@ -46,6 +48,7 @@ class BleSerial:
         self._on_event = on_event
 
         self._ser: Optional[serial.Serial] = None
+        self._active_port: Optional[str] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._connect_task: Optional[asyncio.Task] = None
 
@@ -57,6 +60,10 @@ class BleSerial:
     @property
     def is_open(self) -> bool:
         return self._ser is not None and self._ser.is_open
+
+    @property
+    def active_port(self) -> Optional[str]:
+        return self._active_port
 
     async def start(self) -> None:
         if self._connect_task is None:
@@ -79,6 +86,7 @@ class BleSerial:
                 self._ser.close()
         finally:
             self._ser = None
+            self._active_port = None
 
     async def _connect_loop(self) -> None:
         # Keep trying forever; app should not crash if dongle is absent at startup.
@@ -125,6 +133,7 @@ class BleSerial:
             pass
 
         self._ser = ser
+        self._active_port = port
 
         # Give firmware a moment to attach endpoints, especially after container restart.
         await asyncio.sleep(0.25)
@@ -160,10 +169,12 @@ class BleSerial:
                     continue
 
                 if line.startswith("EVT "):
+                    log.debug("[serial-rx %s] %s", self._active_port, line)
                     self._handle_evt_line(line)
                     continue
 
-                # Ignore other chatter on CMD port (e.g., PONG echoes, boot banners).
+                # Keep non-EVT lines visible (e.g., BUSY/ERR/PONG echoes/boot banners).
+                log.info("[serial-rx %s] %s", self._active_port, line)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -194,14 +205,30 @@ class BleSerial:
             return ""
         return s
 
+    @staticmethod
+    def _sanitize_line_for_log(line: str) -> str:
+        printable = []
+        for ch in line:
+            code = ord(ch)
+            if 32 <= code <= 126:
+                printable.append(ch)
+            else:
+                printable.append(f"\\x{code:02x}")
+        return "".join(printable)
+
     async def _write_line(self, line: str) -> None:
         if not self.is_open:
             return
         loop = asyncio.get_running_loop()
-        data = (line.strip() + "\n").encode("utf-8")
+        framed = line.strip() + "\n"
+        data = framed.encode("ascii")
         async with self._tx_lock:
-            await loop.run_in_executor(None, self._ser.write, data)  # type: ignore[arg-type]
+            sanitized = self._sanitize_line_for_log(framed)
+            log.info("[serial-tx %s] %s", self._active_port, sanitized)
+            wrote = await loop.run_in_executor(None, self._ser.write, data)  # type: ignore[arg-type]
+            log.info("[serial-tx %s] write()=%s bytes", self._active_port, wrote)
             await loop.run_in_executor(None, self._ser.flush)  # type: ignore[arg-type]
+            log.info("[serial-tx %s] flush() complete", self._active_port)
 
     # ---------- Public command helpers ----------
 
@@ -222,19 +249,19 @@ class BleSerial:
 
     async def send_kb(self, report8: bytes) -> None:
         # Hot path: if not connected, drop silently.
-        if not (self.is_open and self.state.connected):
+        if not (self.is_open and (self.state.connected or self.state.ready)):
             return
         if len(report8) != 8:
             raise ValueError("keyboard report must be 8 bytes")
-        await self._write_line("KB " + report8.hex())
+        await self._write_line("KB " + report8.hex().upper())
 
     async def send_cc_usage(self, usage: int) -> None:
-        if not (self.is_open and self.state.connected):
+        if not (self.is_open and (self.state.connected or self.state.ready)):
             return
         usage &= 0xFFFF
         # little-endian 2 bytes -> 4 hex chars
         le = bytes((usage & 0xFF, (usage >> 8) & 0xFF))
-        await self._write_line("CC " + le.hex())
+        await self._write_line("CC " + le.hex().upper())
 
     async def status(self) -> None:
         if not self.is_open:
@@ -324,3 +351,24 @@ class BleSerial:
             self.state.phy = kv
             self._emit("phy")
             return
+
+
+def discover_cmd_ports() -> List[str]:
+    """Best-effort command-port discovery.
+
+    Prefer /dev/serial/by-id symlinks ending with interface suffixes known to
+    carry command traffic on the nRF52840 dongle:
+      - if02 (preferred)
+      - if00 (fallback on alternate firmware builds)
+    """
+    candidates: List[str] = []
+    for suffix in ("if02", "if00"):
+        pattern = f"/dev/serial/by-id/*{suffix}*"
+        for path in sorted(glob.glob(pattern)):
+            if os.path.exists(path) and path not in candidates:
+                candidates.append(path)
+
+    for tty in ("/dev/ttyACM1", "/dev/ttyACM0"):
+        if os.path.exists(tty) and tty not in candidates:
+            candidates.append(tty)
+    return candidates
