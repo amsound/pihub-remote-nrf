@@ -103,9 +103,9 @@ async def main() -> None:
 
     bt = BTLEController(
         adapter=cfg.ble_adapter,
-        device_name=cfg.ble_device_name,
-        serial_device=cfg.ble_serial_device,
-        serial_baud=cfg.ble_serial_baud,
+        name=cfg.ble_device_name,
+        serial_port=cfg.ble_serial_device,
+        baud=cfg.ble_serial_baud,
     )
 
     async def _on_activity(activity: str | None) -> None:
