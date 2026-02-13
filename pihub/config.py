@@ -37,7 +37,7 @@ class Config:
         ble_device_name  = os.getenv("BLE_DEVICE_NAME", "PiHub Remote")
 
         # Serial dongle (default transport)
-        ble_serial_device = os.getenv("BLE_SERIAL_DEVICE", "/dev/ttyACM0")
+        ble_serial_device = os.getenv("BLE_SERIAL_DEVICE", "/dev/ttyACM1")
         ble_serial_baud   = int(os.getenv("BLE_SERIAL_BAUD", "115200"))
 
         health_host   = os.getenv("HEALTH_HOST", "0.0.0.0")
