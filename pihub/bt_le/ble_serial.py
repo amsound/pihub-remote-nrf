@@ -51,8 +51,12 @@ class BleSerial:
         self._active_port: Optional[str] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._connect_task: Optional[asyncio.Task] = None
+        self._keepalive_task: Optional[asyncio.Task] = None
+        self._status_resync_task: Optional[asyncio.Task] = None
 
         self.state = DongleState()
+        self._pong_counter = 0
+        self._evt_counter = 0
 
         # tx lock so KB/CC writes don't interleave
         self._tx_lock = asyncio.Lock()
@@ -77,6 +81,12 @@ class BleSerial:
         if self._reader_task is not None:
             self._reader_task.cancel()
             self._reader_task = None
+        if self._keepalive_task is not None:
+            self._keepalive_task.cancel()
+            self._keepalive_task = None
+        if self._status_resync_task is not None:
+            self._status_resync_task.cancel()
+            self._status_resync_task = None
 
         self._close()
 
@@ -90,23 +100,30 @@ class BleSerial:
 
     async def _connect_loop(self) -> None:
         # Keep trying forever; app should not crash if dongle is absent at startup.
+        backoff = self._reconnect_delay_s
         while True:
             if self.is_open:
                 await asyncio.sleep(self._reconnect_delay_s)
                 continue
 
+            connected = False
             for port in list(self._ports):
                 try:
                     if await self._try_open_and_handshake(port):
                         log.info("BTLE serial command port ready on %s", port)
-                        self._reader_task = asyncio.create_task(self._reader_loop(), name="ble-serial-reader")
+                        if self._keepalive_task is None or self._keepalive_task.done():
+                            self._keepalive_task = asyncio.create_task(self._keepalive_loop(), name="ble-serial-keepalive")
+                        connected = True
+                        backoff = self._reconnect_delay_s
                         break
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
                     log.debug("serial open/handshake failed on %s: %r", port, e)
 
-            await asyncio.sleep(self._reconnect_delay_s)
+            if not connected:
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2.0, 8.0)
 
     async def _try_open_and_handshake(self, port: str) -> bool:
         # Open in non-blocking-ish mode; we'll read using executor.
@@ -118,14 +135,12 @@ class BleSerial:
             exclusive=True,
         )
 
-        # Some CDC ACM implementations need DTR asserted.
         try:
             ser.setDTR(True)
             ser.setRTS(True)
         except Exception:
             pass
 
-        # Flush any stale bytes.
         try:
             ser.reset_input_buffer()
             ser.reset_output_buffer()
@@ -134,32 +149,17 @@ class BleSerial:
 
         self._ser = ser
         self._active_port = port
+        self.state = DongleState()
 
-        # Give firmware a moment to attach endpoints, especially after container restart.
+        if self._reader_task is None or self._reader_task.done():
+            self._reader_task = asyncio.create_task(self._reader_loop(), name="ble-serial-reader")
+
         await asyncio.sleep(0.25)
-
-        # Send a PING; accept either an immediate PONG or an EVT READY line.
-        await self._write_line("PING")
-
-        deadline = time.monotonic() + self._ping_timeout_s
-        while time.monotonic() < deadline:
-            line = await self._read_line()
-            if not line:
-                continue
-            if line == "PONG":
-                self.state.ready = True
-                self._emit("ready")
-                return True
-            if line.startswith("EVT "):
-                self._handle_evt_line(line)
-                if self.state.ready:
-                    return True
-
-        # Some dongle firmware builds can take a little longer to emit READY/PONG
-        # after the CDC ACM port opens. Keep the link open and let the background
-        # reader observe EVT lines, rather than churning reconnects.
-        log.debug("serial open on %s, waiting for asynchronous READY/PONG", port)
-        return True
+        ok = await self._handshake_once(timeout_s=1.0)
+        if not ok:
+            log.debug("handshake timeout on %s; reopening", port)
+            await self._force_reconnect("handshake_timeout")
+        return ok
 
     async def _reader_loop(self) -> None:
         while True:
@@ -168,21 +168,20 @@ class BleSerial:
                 if not line:
                     continue
 
+                log.debug("[serial-rx %s] %s", self._active_port, line)
+                if line == "PONG":
+                    self._pong_counter += 1
+                    self._emit("pong")
+                    continue
                 if line.startswith("EVT "):
-                    log.debug("[serial-rx %s] %s", self._active_port, line)
+                    self._evt_counter += 1
                     self._handle_evt_line(line)
                     continue
-
-                # Keep non-EVT lines visible (e.g., BUSY/ERR/PONG echoes/boot banners).
-                log.info("[serial-rx %s] %s", self._active_port, line)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 log.warning("Serial reader error, will reconnect: %r", e)
-                self._close()
-                # Clear state on link loss; dongle will re-emit after reconnect.
-                self.state = DongleState()
-                self._emit("link_lost")
+                await self._force_reconnect("reader_error")
                 await asyncio.sleep(self._reconnect_delay_s)
 
     def _emit(self, event: str) -> None:
@@ -224,27 +223,74 @@ class BleSerial:
         data = framed.encode("ascii")
         async with self._tx_lock:
             sanitized = self._sanitize_line_for_log(framed)
-            log.info("[serial-tx %s] %s", self._active_port, sanitized)
-            wrote = await loop.run_in_executor(None, self._ser.write, data)  # type: ignore[arg-type]
-            log.info("[serial-tx %s] write()=%s bytes", self._active_port, wrote)
+            log.debug("[serial-tx %s] %s", self._active_port, sanitized)
+            await loop.run_in_executor(None, self._ser.write, data)  # type: ignore[arg-type]
             await loop.run_in_executor(None, self._ser.flush)  # type: ignore[arg-type]
-            log.info("[serial-tx %s] flush() complete", self._active_port)
+
+    async def _handshake_once(self, timeout_s: float) -> bool:
+        start_pong = self._pong_counter
+        start_evt = self._evt_counter
+        await self._write_line("PING")
+        await self._write_line("STATUS")
+
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+            got_pong = self._pong_counter > start_pong
+            got_evt = self._evt_counter > start_evt
+            if got_pong and got_evt:
+                return True
+        return False
+
+    async def _force_reconnect(self, reason: str) -> None:
+        log.warning("forcing serial reconnect (%s)", reason)
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+            self._reader_task = None
+        self._close()
+        self.state = DongleState()
+        self._emit("link_lost")
+
+    async def _schedule_status_resync(self) -> None:
+        await asyncio.sleep(0.2)
+        if self.is_open:
+            await self._write_line("STATUS")
+
+    async def _keepalive_loop(self) -> None:
+        missed = 0
+        while True:
+            try:
+                await asyncio.sleep(5.0)
+                if not self.is_open:
+                    missed = 0
+                    continue
+                before = self._pong_counter
+                await self._write_line("PING")
+                await asyncio.sleep(1.0)
+                if self._pong_counter > before:
+                    missed = 0
+                    continue
+                missed += 1
+                if missed >= 3:
+                    missed = 0
+                    await self._force_reconnect("keepalive_timeout")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.debug("keepalive loop error", exc_info=True)
 
     # ---------- Public command helpers ----------
 
     async def ping(self) -> bool:
         if not self.is_open:
             return False
+        before = self._pong_counter
         await self._write_line("PING")
         deadline = time.monotonic() + self._ping_timeout_s
         while time.monotonic() < deadline:
-            line = await self._read_line()
-            if line == "PONG":
+            await asyncio.sleep(0.05)
+            if self._pong_counter > before:
                 return True
-            if line.startswith("EVT "):
-                self._handle_evt_line(line)
-                if self.state.ready:
-                    return True
         return False
 
     async def send_kb(self, report8: bytes) -> None:
@@ -305,6 +351,9 @@ class BleSerial:
         if kind == "CONN":
             self.state.connected = (rest[0] == "1")
             self._emit("conn")
+            if not self.state.connected:
+                if self._status_resync_task is None or self._status_resync_task.done():
+                    self._status_resync_task = asyncio.create_task(self._schedule_status_resync())
             return
 
         if kind == "PROTO":
@@ -327,6 +376,8 @@ class BleSerial:
             except Exception:
                 self.state.last_disc_reason = None
             self._emit("disc")
+            if self._status_resync_task is None or self._status_resync_task.done():
+                self._status_resync_task = asyncio.create_task(self._schedule_status_resync())
             return
 
         if kind == "CONN_PARAMS":

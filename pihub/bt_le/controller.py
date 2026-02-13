@@ -169,6 +169,8 @@ class BTLEController:
         elif event == "err":
             if st.error:
                 log.warning("BTLE dongle ERR=1")
+        elif event == "pong":
+            log.debug("BTLE keepalive pong")
         elif event == "link_lost":
             log.warning("BTLE serial link lost; reconnecting")
 
