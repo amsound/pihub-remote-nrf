@@ -33,7 +33,10 @@ static int send_keyboard_report(const uint8_t report8[8]);
 
 #include <dk_buttons_and_leds.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/uart.h>
 #include <string.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 /*
  * NOTE (NCS v3.2.1 / Zephyr 4.2.x):
@@ -165,6 +168,25 @@ static uint8_t current_sec_level;
 static bool test_key_sent;
 static uint8_t test_stage; /* 0=not started, 1=pending consumer release */
 static bool hid_zero_sent;
+
+static const struct device *cmd_uart;
+static uint8_t cmd_rx_buf[96];
+static size_t cmd_rx_len;
+static bool cmd_prev_dtr;
+static bool evt_adv;
+static bool evt_conn;
+static bool evt_err;
+static uint32_t evt_interval_ms_x100;
+static uint16_t evt_latency;
+static uint32_t evt_timeout_ms;
+static bool evt_conn_params_valid;
+static char evt_phy_tx[8];
+static char evt_phy_rx[8];
+static bool evt_phy_valid;
+
+static void cmd_sendf(const char *fmt, ...);
+static void emit_state_snapshot(void);
+static void start_advertising(void);
 
 /* --- SW1 long-press bond clear (5 seconds) --- */
 /* Prefer direct GPIO for SW1: more reliable than dk_buttons on nrf52840dongle. */
@@ -323,6 +345,7 @@ static ssize_t write_protocol_mode(struct bt_conn *conn, const struct bt_gatt_at
     }
 
     protocol_mode = ((const uint8_t *)buf)[0] ? 1 : 0;
+    cmd_sendf("EVT PROTO %d", protocol_mode ? 1 : 0);
     LOG_INF("Protocol Mode set: 0x%02x (%s)", protocol_mode,
             protocol_mode ? "Report" : "Boot");
     return len;
@@ -551,6 +574,8 @@ static void adv_restart_work_handler(struct k_work *work)
         return;
     }
 
+    evt_adv = true;
+    cmd_sendf("EVT ADV 1");
     LOG_INF("Advertising started");
 }
 
@@ -832,6 +857,200 @@ static __attribute__((unused)) int send_consumer_report(const uint8_t report2[2]
 }
 
 
+
+static void cmd_sendf(const char *fmt, ...)
+{
+    if (!cmd_uart || !device_is_ready(cmd_uart)) {
+        return;
+    }
+
+    char line[160];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (n < 0) {
+        return;
+    }
+
+    size_t out_len = (size_t)n;
+    if (out_len >= sizeof(line)) {
+        out_len = sizeof(line) - 1;
+    }
+
+    for (size_t i = 0; i < out_len; i++) {
+        uart_poll_out(cmd_uart, line[i]);
+    }
+    uart_poll_out(cmd_uart, '\n');
+}
+
+static void emit_state_snapshot(void)
+{
+    cmd_sendf("EVT READY 1");
+    cmd_sendf("EVT ADV %d", evt_adv ? 1 : 0);
+    cmd_sendf("EVT CONN %d", evt_conn ? 1 : 0);
+    cmd_sendf("EVT PROTO %d", protocol_mode ? 1 : 0);
+    cmd_sendf("EVT ERR %d", evt_err ? 1 : 0);
+    if (evt_conn_params_valid) {
+        cmd_sendf("EVT CONN_PARAMS interval_ms_x100=%u latency=%u timeout_ms=%u",
+                  (unsigned)evt_interval_ms_x100,
+                  (unsigned)evt_latency,
+                  (unsigned)evt_timeout_ms);
+    }
+    if (evt_phy_valid) {
+        cmd_sendf("EVT PHY tx=%s rx=%s", evt_phy_tx, evt_phy_rx);
+    }
+}
+
+static int hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+    return -1;
+}
+
+static bool parse_hex_bytes(const char *hex, size_t expected_len, uint8_t *out)
+{
+    for (size_t i = 0; i < expected_len; i++) {
+        int hi = hex_nibble(hex[i * 2]);
+        int lo = hex_nibble(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) {
+            return false;
+        }
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return true;
+}
+
+static void cmd_do_unpair(void)
+{
+    if (current_conn) {
+        (void)bt_conn_disconnect(current_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    }
+    (void)bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+    start_advertising();
+    evt_err = false;
+    emit_state_snapshot();
+}
+
+static void handle_cmd_line(const char *line)
+{
+    if (strcmp(line, "PING") == 0) {
+        cmd_sendf("PONG");
+        return;
+    }
+
+    if (strcmp(line, "STATUS") == 0) {
+        emit_state_snapshot();
+        return;
+    }
+
+    if (strncmp(line, "KB ", 3) == 0) {
+        const char *hex = line + 3;
+        uint8_t report[8] = {0};
+        if (strlen(hex) != 16 || !parse_hex_bytes(hex, 8, report)) {
+            evt_err = true;
+            cmd_sendf("EVT ERR 1");
+            return;
+        }
+        int rc = send_keyboard_report(report);
+        if (rc) {
+            evt_err = true;
+            cmd_sendf("EVT ERR 1");
+        } else if (evt_err) {
+            evt_err = false;
+            cmd_sendf("EVT ERR 0");
+        }
+        return;
+    }
+
+    if (strncmp(line, "CC ", 3) == 0) {
+        const char *hex = line + 3;
+        uint8_t report[2] = {0};
+        if (strlen(hex) != 4 || !parse_hex_bytes(hex, 2, report)) {
+            evt_err = true;
+            cmd_sendf("EVT ERR 1");
+            return;
+        }
+        int rc = send_consumer_report(report);
+        if (rc) {
+            evt_err = true;
+            cmd_sendf("EVT ERR 1");
+        } else if (evt_err) {
+            evt_err = false;
+            cmd_sendf("EVT ERR 0");
+        }
+        return;
+    }
+
+    if (strcmp(line, "UNPAIR") == 0) {
+        cmd_do_unpair();
+        return;
+    }
+
+    evt_err = true;
+    cmd_sendf("EVT ERR 1");
+}
+
+static void cmd_reset_rx_state(void)
+{
+    cmd_rx_len = 0U;
+    uint8_t c;
+    if (!cmd_uart) {
+        return;
+    }
+    while (uart_poll_in(cmd_uart, &c) == 0) {
+    }
+}
+
+static void cmd_poll_rx(void)
+{
+    if (!cmd_uart) {
+        return;
+    }
+
+    uint8_t c;
+    while (uart_poll_in(cmd_uart, &c) == 0) {
+        if (c == '\r') {
+            continue;
+        }
+        if (c == '\n') {
+            cmd_rx_buf[cmd_rx_len] = '\0';
+            if (cmd_rx_len > 0) {
+                handle_cmd_line((const char *)cmd_rx_buf);
+            }
+            cmd_rx_len = 0U;
+            continue;
+        }
+
+        if (cmd_rx_len < (sizeof(cmd_rx_buf) - 1U)) {
+            cmd_rx_buf[cmd_rx_len++] = c;
+        } else {
+            cmd_rx_len = 0U;
+        }
+    }
+}
+
+static void cmd_poll_dtr(void)
+{
+    if (!cmd_uart) {
+        return;
+    }
+
+    uint32_t dtr = 0U;
+    if (uart_line_ctrl_get(cmd_uart, UART_LINE_CTRL_DTR, &dtr) != 0) {
+        return;
+    }
+
+    bool dtr_now = (dtr != 0U);
+    if (!cmd_prev_dtr && dtr_now) {
+        cmd_reset_rx_state();
+        emit_state_snapshot();
+    }
+    cmd_prev_dtr = dtr_now;
+}
+
 static void set_leds_adv(void)
 {
     /* Advertising: GREEN (LED1) will blink via timer, RED off */
@@ -896,6 +1115,10 @@ static void log_conn_params(struct bt_conn *conn, const char *tag)
     uint16_t latency = info.le.latency;
     uint32_t timeout_ms = (uint32_t)info.le.timeout * 10U;
 
+    evt_conn_params_valid = true;
+    evt_interval_ms_x100 = interval_ms_x100;
+    evt_latency = latency;
+    evt_timeout_ms = timeout_ms;
     LOG_INF("%s: interval=%u.%02u ms latency=%u timeout=%u ms",
             tag,
             (unsigned)(interval_ms_x100 / 100U),
@@ -925,6 +1148,10 @@ static void connected(struct bt_conn *conn, uint8_t err)
 
     k_timer_stop(&blink_timer);
     set_leds_conn();
+    evt_conn = true;
+    evt_adv = false;
+    cmd_sendf("EVT CONN 1");
+    cmd_sendf("EVT ADV 0");
     LOG_INF("Connected");
     hid_suspended = false;
     log_conn_params(conn, "Conn (initial)");
@@ -945,6 +1172,9 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     ARG_UNUSED(conn);
 
     LOG_INF("Disconnected (reason %u)", reason);
+    evt_conn = false;
+    cmd_sendf("EVT CONN 0");
+    cmd_sendf("EVT DISC reason=%u", reason);
 
     if (current_conn) {
         bt_conn_unref(current_conn);
@@ -970,6 +1200,14 @@ static void le_param_updated(struct bt_conn *conn, uint16_t interval,
     uint32_t interval_ms_x100 = (uint32_t)interval * 125U;
     uint32_t timeout_ms = (uint32_t)timeout * 10U;
 
+    evt_conn_params_valid = true;
+    evt_interval_ms_x100 = interval_ms_x100;
+    evt_latency = latency;
+    evt_timeout_ms = timeout_ms;
+    cmd_sendf("EVT CONN_PARAMS interval_ms_x100=%u latency=%u timeout_ms=%u",
+              (unsigned)evt_interval_ms_x100,
+              (unsigned)evt_latency,
+              (unsigned)evt_timeout_ms);
     LOG_INF("Conn (updated): interval=%u.%02u ms latency=%u timeout=%u ms",
             (unsigned)(interval_ms_x100 / 100U),
             (unsigned)(interval_ms_x100 % 100U),
@@ -985,6 +1223,8 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
     ARG_UNUSED(conn);
 
     if (err) {
+        evt_err = true;
+        cmd_sendf("EVT ERR 1");
         LOG_WRN("Security failed (level %u, err %d)", level, err);
         /* Don’t light RED for this; pairing can be retried from the phone. */
         return;
@@ -1054,6 +1294,14 @@ int main(void)
     k_work_init_delayable(&send_test_key_work, send_test_key_work_handler);
     k_work_init_delayable(&bond_clear_work, bond_clear_work_handler);
 
+    cmd_uart = device_get_binding("CDC_ACM_1");
+    if (cmd_uart && device_is_ready(cmd_uart)) {
+        LOG_INF("CMD UART ready");
+    } else {
+        LOG_WRN("CMD UART not ready");
+        cmd_uart = NULL;
+    }
+
     /* Buttons: SW1 long-hold clears bonds */
     err = dk_buttons_init(button_changed);
     if (err) {
@@ -1116,6 +1364,8 @@ int main(void)
 
 	bt_conn_auth_cb_register(&auth_cb);
 
+    evt_err = false;
+    cmd_sendf("EVT READY 1");
     LOG_INF("Bluetooth ready");
 
     blink_state = false;
@@ -1123,7 +1373,14 @@ int main(void)
     k_timer_start(&blink_timer, K_NO_WAIT, K_MSEC(500));
     start_advertising();
 
+    int64_t next_dtr_poll = k_uptime_get();
     for (;;) {
-        k_sleep(K_SECONDS(1));
+        cmd_poll_rx();
+        int64_t now = k_uptime_get();
+        if (now >= next_dtr_poll) {
+            cmd_poll_dtr();
+            next_dtr_poll = now + 100;
+        }
+        k_sleep(K_MSEC(10));
     }
 }
