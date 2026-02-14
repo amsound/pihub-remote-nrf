@@ -1,0 +1,46 @@
+/*
+ * nrf52840dongle.overlay
+ *
+ * Goals (NCS 3.2.1 / Zephyr 4.2.x):
+ * - USB CDC ACM console (legacy USB device stack)
+ * - Use the board's existing fixed-partitions 'storage_partition' for settings
+ *   (so BT bonds/CCCs persist)
+ *
+ * IMPORTANT:
+ * - Do NOT add a second partition with label="storage". The board already has
+ *   one, and duplicates can break settings init.
+ */
+
+&usbd {
+	status = "okay";
+
+	/* ACM0 = CMD (enumerates first, clean command channel) */
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+		status = "okay";
+	};
+
+	/* ACM1 = LOG (console output only) */
+	cdc_acm_uart1: cdc_acm_uart1 {
+		compatible = "zephyr,cdc-acm-uart";
+		status = "okay";
+	};
+};
+
+/ {
+	chosen {
+		/* Put logs/console on ACM1 so ACM0 stays clean for commands */
+		zephyr,console = &cdc_acm_uart1;
+
+		/* Keep settings persistence */
+		zephyr,settings-partition = &storage_partition;
+	};
+
+	aliases {
+		/* This becomes DT_ALIAS(pihub_cmd_uart) in C */
+		pihub-cmd-uart = &cdc_acm_uart0;
+
+		/* Optional (not required by current code), but nice for clarity */
+		pihub-log-uart = &cdc_acm_uart1;
+	};
+};
