@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -36,7 +37,7 @@ class BTLEController:
 
     def __init__(
         self,
-        serial_port: str = "/dev/ttyACM1",
+        serial_port: str = "auto",
         baud: int = 115200,
         name: str = "PiHub Remote",
         *,
@@ -50,7 +51,8 @@ class BTLEController:
         self._name = name
 
         ports = []
-        requested_port = (serial_port or "").strip()
+        env_port = os.getenv("BLE_SERIAL_DEVICE", "").strip()
+        requested_port = env_port or (serial_port or "").strip()
         if requested_port and requested_port.lower() != "auto":
             ports.append(requested_port)
         else:
@@ -129,10 +131,19 @@ class BTLEController:
             "connected": self._state.connected,
             "proto_boot": self._state.proto_boot,
             "error": self._state.error,
-            "conn_params": dict(self._state.conn_params) if self._state.conn_params else None,
+            "conn_params": self._conn_params_for_status(),
             "phy": dict(self._state.phy) if self._state.phy else None,
             "last_disc_reason": self._state.last_disc_reason,
         }
+
+    def _conn_params_for_status(self) -> Optional[dict]:
+        if not self._state.conn_params:
+            return None
+        params = dict(self._state.conn_params)
+        interval_x100 = params.get("interval_ms_x100")
+        if isinstance(interval_x100, int):
+            params["interval_ms"] = interval_x100 / 100.0
+        return params
 
     def _on_dongle_event(self, event: str, st: DongleState) -> None:
         self._state.ready = st.ready
@@ -184,8 +195,7 @@ class BTLEController:
         )
 
     def _link_ready(self) -> bool:
-        # Some firmware revisions surface readiness via READY before CONN settles.
-        return bool(self._serial.state.connected or self._serial.state.ready)
+        return bool(self._serial.serial_ready and self._serial.state.connected)
 
     # ---- HIDClient transport hooks ----
 

@@ -69,6 +69,10 @@ class BleSerial:
     def active_port(self) -> Optional[str]:
         return self._active_port
 
+    @property
+    def serial_ready(self) -> bool:
+        return bool(self.is_open and self.state.ready)
+
     async def start(self) -> None:
         if self._connect_task is None:
             self._connect_task = asyncio.create_task(self._connect_loop(), name="ble-serial-connect")
@@ -172,6 +176,7 @@ class BleSerial:
                 if line == "PONG":
                     self._pong_counter += 1
                     self._emit("pong")
+                    self._request_status_resync()
                     continue
                 if line.startswith("EVT "):
                     self._evt_counter += 1
@@ -229,16 +234,14 @@ class BleSerial:
 
     async def _handshake_once(self, timeout_s: float) -> bool:
         start_pong = self._pong_counter
-        start_evt = self._evt_counter
         await self._write_line("PING")
-        await self._write_line("STATUS")
 
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             await asyncio.sleep(0.05)
             got_pong = self._pong_counter > start_pong
-            got_evt = self._evt_counter > start_evt
-            if got_pong and got_evt:
+            if got_pong:
+                self._request_status_resync()
                 return True
         return False
 
@@ -254,14 +257,21 @@ class BleSerial:
     async def _schedule_status_resync(self) -> None:
         await asyncio.sleep(0.2)
         if self.is_open:
-            await self._write_line("STATUS")
+            try:
+                await self._write_line("STATUS")
+            except Exception:
+                log.debug("STATUS resync failed", exc_info=True)
+
+    def _request_status_resync(self) -> None:
+        if self._status_resync_task is None or self._status_resync_task.done():
+            self._status_resync_task = asyncio.create_task(self._schedule_status_resync())
 
     async def _keepalive_loop(self) -> None:
         missed = 0
         while True:
             try:
-                await asyncio.sleep(5.0)
-                if not self.is_open:
+                await asyncio.sleep(2.0)
+                if not self.serial_ready:
                     missed = 0
                     continue
                 before = self._pong_counter
@@ -294,20 +304,26 @@ class BleSerial:
         return False
 
     async def send_kb(self, report8: bytes) -> None:
-        # Hot path: if not connected, drop silently.
-        if not (self.is_open and (self.state.connected or self.state.ready)):
+        # Hot path: if not ready+connected, drop silently.
+        if not (self.serial_ready and self.state.connected):
             return
         if len(report8) != 8:
             raise ValueError("keyboard report must be 8 bytes")
-        await self._write_line("KB " + report8.hex().upper())
+        try:
+            await self._write_line("KB " + report8.hex().upper())
+        except Exception:
+            await self._force_reconnect("kb_send_error")
 
     async def send_cc_usage(self, usage: int) -> None:
-        if not (self.is_open and (self.state.connected or self.state.ready)):
+        if not (self.serial_ready and self.state.connected):
             return
         usage &= 0xFFFF
         # little-endian 2 bytes -> 4 hex chars
         le = bytes((usage & 0xFF, (usage >> 8) & 0xFF))
-        await self._write_line("CC " + le.hex().upper())
+        try:
+            await self._write_line("CC " + le.hex().upper())
+        except Exception:
+            await self._force_reconnect("cc_send_error")
 
     async def status(self) -> None:
         if not self.is_open:
@@ -341,6 +357,8 @@ class BleSerial:
         if kind == "READY":
             self.state.ready = (rest[0] == "1")
             self._emit("ready")
+            if self.state.ready:
+                self._request_status_resync()
             return
 
         if kind == "ADV":
@@ -352,8 +370,7 @@ class BleSerial:
             self.state.connected = (rest[0] == "1")
             self._emit("conn")
             if not self.state.connected:
-                if self._status_resync_task is None or self._status_resync_task.done():
-                    self._status_resync_task = asyncio.create_task(self._schedule_status_resync())
+                self._request_status_resync()
             return
 
         if kind == "PROTO":
@@ -376,8 +393,7 @@ class BleSerial:
             except Exception:
                 self.state.last_disc_reason = None
             self._emit("disc")
-            if self._status_resync_task is None or self._status_resync_task.done():
-                self._status_resync_task = asyncio.create_task(self._schedule_status_resync())
+            self._request_status_resync()
             return
 
         if kind == "CONN_PARAMS":
@@ -419,7 +435,7 @@ def discover_cmd_ports() -> List[str]:
             if os.path.exists(path) and path not in candidates:
                 candidates.append(path)
 
-    for tty in ("/dev/ttyACM1", "/dev/ttyACM0"):
+    for tty in sorted(glob.glob("/dev/ttyACM*")):
         if os.path.exists(tty) and tty not in candidates:
             candidates.append(tty)
     return candidates
