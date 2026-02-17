@@ -17,7 +17,7 @@ class DongleState:
     ready: bool = False
     advertising: bool = False
     connected: bool = False
-    proto_boot: bool = False  # 0=report, 1=boot
+    proto_boot: bool = False
     error: bool = False
 
     sec: int = 0
@@ -30,14 +30,20 @@ class DongleState:
 
 
 class BleSerial:
+    """
+    Auto-healing serial link:
+    - retries forever with jittered exponential backoff if dongle missing
+    - reconnects if USB is yanked or stream errors
+    """
+
     def __init__(
         self,
         ports: Sequence[str],
         baud: int = 115200,
         *,
         ping_timeout_s: float = 3.0,
-        reconnect_delay_s: float = 1.0,
-        status_poll_s: float = 30.0,  # 0 disables periodic STATUS polling
+        reconnect_delay_s: float = 0.5,
+        status_poll_s: float = 30.0,
         on_event: Optional[Callable[[str, DongleState], None]] = None,
     ) -> None:
         self._ports = list(ports)
@@ -57,7 +63,6 @@ class BleSerial:
 
         self.state = DongleState()
         self._pong_counter = 0
-
         self._tx_lock = asyncio.Lock()
 
     @property
@@ -70,6 +75,7 @@ class BleSerial:
 
     @property
     def serial_ready(self) -> bool:
+        # "ready" is your firmware’s LINK_READY (connected+secured+notifying)
         return bool(self.is_open and self.state.ready)
 
     async def start(self) -> None:
@@ -97,11 +103,20 @@ class BleSerial:
             self._ser = None
             self._active_port = None
 
+    @staticmethod
+    def _sleep_with_jitter(base_s: float, jitter_frac: float = 0.25) -> float:
+        # jitter in [-(base*j), +(base*j)]
+        j = base_s * jitter_frac
+        return max(0.05, base_s + random.uniform(-j, j))
+
     async def _connect_loop(self) -> None:
+        # Exponential backoff with jitter; resets on successful connect.
         backoff = self._reconnect_delay_s
+        backoff_max = 8.0
+
         while True:
             if self.is_open:
-                await asyncio.sleep(self._reconnect_delay_s)
+                await asyncio.sleep(0.25)
                 continue
 
             connected = False
@@ -119,16 +134,22 @@ class BleSerial:
                         connected = True
                         backoff = self._reconnect_delay_s
                         break
+
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    log.debug("serial open/handshake failed on %s: %r", port, e)
+                    # This is expected when dongle is missing or USB was pulled
+                    log.debug("BTLE serial open/handshake failed on %s: %r", port, e)
 
-            if not connected:
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2.0, 8.0)
+            if connected:
+                continue
+
+            # Not connected yet: jittered backoff
+            await asyncio.sleep(self._sleep_with_jitter(backoff))
+            backoff = min(backoff * 2.0, backoff_max)
 
     async def _try_open_and_handshake(self, port: str) -> bool:
+        # If dongle is missing, Serial() raises quickly; that's OK.
         ser = serial.Serial(
             port=port,
             baudrate=self._baud,
@@ -156,7 +177,7 @@ class BleSerial:
         if self._reader_task is None or self._reader_task.done():
             self._reader_task = asyncio.create_task(self._reader_loop(), name="ble-serial-reader")
 
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(0.15)
         ok = await self._handshake_once(timeout_s=1.0)
 
         if ok:
@@ -187,31 +208,27 @@ class BleSerial:
                     self._handle_evt_line(line)
                     continue
 
-                # ignore unknown lines silently
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                log.warning("Serial reader error, will reconnect: %r", e)
+                # Common on USB yank / host reset
+                log.warning("BTLE serial reader error, reconnecting: %r", e)
                 await self._force_reconnect("reader_error")
-                await asyncio.sleep(self._reconnect_delay_s)
+                await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
 
     def _emit(self, event: str) -> None:
-        # This module-level logging is what you asked for:
-        # [pihub.bt_le.ble_serial] BTLE Connected / Advertising / Ready...
+        # Human-friendly BLE logs at this module, as requested
         if event in ("ready", "adv", "conn", "disc", "link_lost"):
-            try:
-                if event == "ready":
-                    log.info("BTLE Ready=%s", 1 if self.state.ready else 0)
-                elif event == "adv":
-                    log.info("BTLE Advertising=%s", 1 if self.state.advertising else 0)
-                elif event == "conn":
-                    log.info("BTLE Connected=%s", 1 if self.state.connected else 0)
-                elif event == "disc":
-                    log.info("BTLE Disconnected reason=%s", self.state.last_disc_reason)
-                elif event == "link_lost":
-                    log.warning("BTLE Serial link lost; reconnecting")
-            except Exception:
-                pass
+            if event == "ready":
+                log.info("BTLE LinkReady=%s", 1 if self.state.ready else 0)
+            elif event == "adv":
+                log.info("BTLE Advertising=%s", 1 if self.state.advertising else 0)
+            elif event == "conn":
+                log.info("BTLE Connected=%s", 1 if self.state.connected else 0)
+            elif event == "disc":
+                log.info("BTLE Disconnected reason=%s", self.state.last_disc_reason)
+            elif event == "link_lost":
+                log.warning("BTLE Serial link lost; will retry")
 
         if self._on_event is not None:
             try:
@@ -226,10 +243,7 @@ class BleSerial:
         raw: bytes = await loop.run_in_executor(None, self._ser.readline)  # type: ignore[arg-type]
         if not raw:
             return ""
-        try:
-            return raw.decode("utf-8", errors="replace").strip()
-        except Exception:
-            return ""
+        return raw.decode("utf-8", errors="replace").strip()
 
     async def _write_line(self, line: str) -> None:
         if not self.is_open:
@@ -252,7 +266,7 @@ class BleSerial:
         return False
 
     async def _force_reconnect(self, reason: str) -> None:
-        log.warning("forcing serial reconnect (%s)", reason)
+        log.debug("forcing serial reconnect (%s)", reason)
         if self._reader_task is not None:
             self._reader_task.cancel()
             self._reader_task = None
@@ -277,7 +291,7 @@ class BleSerial:
         while True:
             try:
                 await asyncio.sleep(2.0)
-                if not self.serial_ready:
+                if not self.is_open:
                     missed = 0
                     continue
 
@@ -295,15 +309,14 @@ class BleSerial:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
+                # keepalive errors should also trigger reconnect behavior
+                await self._force_reconnect("keepalive_error")
 
     async def _status_poll_loop(self) -> None:
         while True:
             try:
                 await asyncio.sleep(self._status_poll_s + random.uniform(-0.5, 0.5))
-                if not self.is_open:
-                    continue
-                if not self.state.connected:
+                if not self.is_open or not self.state.connected:
                     continue
                 await self._write_line("STATUS")
             except asyncio.CancelledError:
@@ -311,7 +324,7 @@ class BleSerial:
             except Exception:
                 pass
 
-    # ---------- Public command helpers ----------
+    # ---------- Public commands ----------
 
     async def send_kb(self, report8: bytes) -> None:
         if not (self.serial_ready and self.state.connected):
@@ -328,14 +341,12 @@ class BleSerial:
         await self._write_line("CC " + le.hex().upper())
 
     async def status(self) -> None:
-        if not self.is_open:
-            return
-        await self._write_line("STATUS")
+        if self.is_open:
+            await self._write_line("STATUS")
 
     async def unpair(self) -> None:
-        if not self.is_open:
-            return
-        await self._write_line("UNPAIR")
+        if self.is_open:
+            await self._write_line("UNPAIR")
 
     # ---------- STATUS parsing ----------
 
@@ -436,16 +447,6 @@ class BleSerial:
             self._request_status_resync()
             return
 
-        if kind == "PROTO":
-            self.state.proto_boot = (rest[0] == "1")
-            self._emit("proto")
-            return
-
-        if kind == "ERR":
-            self.state.error = (rest[0] == "1")
-            self._emit("err")
-            return
-
         if kind == "DISC":
             r = rest[0]
             if r.startswith("reason="):
@@ -483,10 +484,7 @@ class BleSerial:
 
 
 def discover_cmd_ports() -> List[str]:
-    """
-    With the new firmware you now expose exactly ONE port.
-    Prefer ttyACM0. Fall back to any /dev/ttyACM* if present.
-    """
+    # Single-port world: prefer ttyACM0, fall back to any ttyACM*
     if os.path.exists("/dev/ttyACM0"):
         return ["/dev/ttyACM0"]
     ports = sorted(glob.glob("/dev/ttyACM*"))

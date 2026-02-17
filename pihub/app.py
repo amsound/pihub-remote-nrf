@@ -175,10 +175,21 @@ async def main() -> None:
         started.append(("bt", bt.stop))
 
         if not await bt.wait_ready(timeout=20.0):
-            logger.warning(
-                "[app] nrf BLE dongle not ready yet (serial_open=%s); will enable HID automatically when READY arrives",
-                bt.status.get("adapter_present", False),
-            )
+            st = bt.status
+            present = bool(st.get("adapter_present"))
+            port = st.get("active_port")
+            adv = bool(st.get("advertising"))
+            conn = bool(st.get("connected"))
+            ready = bool(st.get("ready"))  # link_ready semantics
+
+            if present and ready:
+                logger.info("[app] nrf dongle status: present=True port=%s ready=True", port)
+            elif present and adv and not conn:
+                logger.info("[app] nrf dongle status: present=True port=%s adv=True", port)
+            elif present and conn and not ready:
+                logger.info("[app] nrf dongle status: present=True port=%s conn=True ready=False", port)
+            else:
+                logger.info("[app] nrf dongle status: present=%s port=%s", present, port)
 
         await reader.start()
         started.append(("reader", reader.stop))
