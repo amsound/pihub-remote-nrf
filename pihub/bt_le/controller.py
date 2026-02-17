@@ -7,7 +7,6 @@ from typing import Optional, Sequence
 from .ble_serial import BleSerial, DongleState, discover_cmd_ports
 from .hid_client import HIDClient
 
-
 log = logging.getLogger(__name__)
 
 
@@ -18,6 +17,9 @@ class BTLEState:
     connected: bool = False
     proto_boot: bool = False
     error: bool = False
+    sec: int = 0
+    suspend: bool = False
+    notify: Optional[dict] = None
     conn_params: Optional[dict] = None
     phy: Optional[dict] = None
     last_disc_reason: Optional[int] = None
@@ -26,11 +28,6 @@ class BTLEState:
 class BTLEController:
     """
     Serial-backed BTLE controller.
-
-    Public API expectations (used by dispatcher/input pipeline):
-      - start/stop (async)
-      - key_down(key: str), key_up(key: str), send_key(key: str) (sync wrappers)
-      - consumer_down(usage: int), consumer_up(usage: int) (sync wrappers)
 
     NOTE: key_* methods intentionally never raise if dongle/link isn't ready.
     """
@@ -43,6 +40,7 @@ class BTLEController:
         *,
         adapter: Optional[str] = None,
         fallback_ports: Optional[Sequence[str]] = None,
+        status_poll_s: float = 30.0,  # 0 disables slow periodic STATUS polling
         **_ignored: object,
     ):
         self._serial_port = serial_port
@@ -71,6 +69,7 @@ class BTLEController:
         self._serial = BleSerial(
             ports=ports,
             baud=baud,
+            status_poll_s=status_poll_s,
             on_event=self._on_dongle_event,
         )
 
@@ -100,12 +99,8 @@ class BTLEController:
     # ---- state ----
 
     async def wait_ready(self, timeout: float = 5.0) -> bool:
-        """Wait for the dongle command channel to be ready (EVT READY 1).
-
-        Returns True if ready within timeout, else False.
-        """
-        # Fast-path if already ready.
-        if getattr(self._state, 'ready', False):
+        """Wait for the dongle command channel to be ready (EVT READY 1)."""
+        if getattr(self._state, "ready", False):
             return True
         try:
             await asyncio.wait_for(self._ready_evt.wait(), timeout=timeout)
@@ -118,18 +113,17 @@ class BTLEController:
 
     @property
     def status(self) -> dict:
-        """Return a JSON-serializable BLE status snapshot.
-
-        The health endpoint relies on adapter/advertising/connected while
-        keeping additional low-cost details available for diagnostics.
-        """
-
+        """Return a JSON-serializable BLE status snapshot."""
         return {
             "adapter_present": self._serial.is_open,
+            "active_port": self._serial.active_port,
             "ready": self._state.ready,
             "advertising": self._state.advertising,
             "connected": self._state.connected,
             "proto_boot": self._state.proto_boot,
+            "sec": self._state.sec,
+            "suspend": self._state.suspend,
+            "notify": dict(self._state.notify) if self._state.notify else None,
             "error": self._state.error,
             "conn_params": self._conn_params_for_status(),
             "phy": dict(self._state.phy) if self._state.phy else None,
@@ -145,12 +139,24 @@ class BTLEController:
             params["interval_ms"] = interval_x100 / 100.0
         return params
 
+    def _fmt_short(self) -> str:
+        cp = self._conn_params_for_status() or {}
+        interval_ms = cp.get("interval_ms")
+        latency = cp.get("latency")
+        timeout_ms = cp.get("timeout_ms")
+        phy = self._state.phy or {}
+        return (
+            f"ready={int(self._state.ready)} adv={int(self._state.advertising)} conn={int(self._state.connected)} "
+            f"sec={self._state.sec} proto_boot={int(self._state.proto_boot)} err={int(self._state.error)} "
+            f"interval_ms={interval_ms} latency={latency} timeout_ms={timeout_ms} phy={phy} disc={self._state.last_disc_reason}"
+        )
+
     def _on_dongle_event(self, event: str, st: DongleState) -> None:
+        # Update state from dongle snapshot
+        prev_ready = self._state.ready
+        prev_conn = self._state.connected
+
         self._state.ready = st.ready
-        if st.ready:
-            self._ready_evt.set()
-        else:
-            self._ready_evt.clear()
         self._state.advertising = st.advertising
         self._state.connected = st.connected
         self._state.proto_boot = st.proto_boot
@@ -158,41 +164,32 @@ class BTLEController:
         self._state.conn_params = st.conn_params
         self._state.phy = st.phy
         self._state.last_disc_reason = st.last_disc_reason
+        self._state.sec = getattr(st, "sec", 0)
+        self._state.suspend = getattr(st, "suspend", False)
+        self._state.notify = getattr(st, "notify", None)
 
-        # Friendly, low-volume logs.
-        if event == "ready":
-            log.info("BTLE dongle READY=%s", 1 if st.ready else 0)
-        elif event == "conn":
-            log.info("BTLE connected=%s", 1 if st.connected else 0)
-        elif event == "adv":
-            log.debug("BTLE advertising=%s", 1 if st.advertising else 0)
-        elif event == "conn_params":
-            if st.conn_params:
-                log.info(
-                    "BTLE conn params: %s",
-                    " ".join(f"{k}={v}" for k, v in st.conn_params.items()),
-                )
-        elif event == "phy":
-            if st.phy:
-                log.info("BTLE phy: tx=%s rx=%s", st.phy.get("tx"), st.phy.get("rx"))
+        if st.ready:
+            self._ready_evt.set()
+        else:
+            self._ready_evt.clear()
+
+        # Logging policy:
+        # - INFO: significant transitions (ready, connect, disconnect, link lost)
+        # - DEBUG: everything else, including STATUS snapshots
+        if event == "ready" and prev_ready != st.ready:
+            log.info("BTLE READY=%s (%s)", 1 if st.ready else 0, self._fmt_short())
+        elif event == "conn" and prev_conn != st.connected:
+            log.info("BTLE connected=%s (%s)", 1 if st.connected else 0, self._fmt_short())
         elif event == "disc":
-            log.info("BTLE disconnected reason=%s", st.last_disc_reason)
-        elif event == "err":
-            if st.error:
-                log.warning("BTLE dongle ERR=1")
-        elif event == "pong":
-            log.debug("BTLE keepalive pong")
+            log.info("BTLE disconnected reason=%s (%s)", st.last_disc_reason, self._fmt_short())
         elif event == "link_lost":
             log.warning("BTLE serial link lost; reconnecting")
-
-        log.debug(
-            "BTLE state transition event=%s ready=%s connected=%s advertising=%s active_port=%s",
-            event,
-            self._state.ready,
-            self._state.connected,
-            self._state.advertising,
-            self._serial.active_port,
-        )
+        elif event == "err" and st.error:
+            log.warning("BTLE dongle ERR=1 (%s)", self._fmt_short())
+        elif event == "status":
+            log.debug("BTLE STATUS (%s)", self._fmt_short())
+        else:
+            log.debug("BTLE evt=%s (%s)", event, self._fmt_short())
 
     def _link_ready(self) -> bool:
         return bool(self._serial.serial_ready and self._serial.state.connected)
@@ -217,7 +214,6 @@ class BTLEController:
         try:
             self._hid_client.key_down(usage=usage, code=code)
         except Exception:
-            # Never crash input loop.
             log.debug("key_down(usage=%s, code=%s) failed", usage, code, exc_info=True)
 
     def key_up(self, *, usage: str, code: str) -> None:
