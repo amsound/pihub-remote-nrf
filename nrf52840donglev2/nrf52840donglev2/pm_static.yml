@@ -1,0 +1,12 @@
+nrf5_mbr:
+  address: 0x00000000
+  size: 0x00001000
+
+# Your NVS/settings area (safe, below the factory bootloader)
+storage:
+  address: 0x000DC000
+  size: 0x00004000
+# Reserve the factory USB DFU bootloader region (prevents 2nd gap)
+bootloader:
+  address: 0x000E0000
+  size: 0x00020000
