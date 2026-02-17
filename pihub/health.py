@@ -34,8 +34,6 @@ class HealthServer:
         self._site: Optional[web.TCPSite] = None
 
     async def start(self) -> None:
-        """Start the HTTP listener if not already running."""
-
         if self._runner is not None:
             return
 
@@ -48,14 +46,10 @@ class HealthServer:
         await self._site.start()
 
     async def stop(self) -> None:
-        """Stop the HTTP listener and release resources."""
-
         runner, self._runner = self._runner, None
         self._site = None
-
         if runner is None:
             return
-
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await runner.cleanup()
 
@@ -65,17 +59,35 @@ class HealthServer:
         return web.json_response(snapshot, status=status)
 
     def snapshot(self) -> dict:
-        """Return a serialisable health snapshot."""
-
         ws_connected = self._ws.is_connected
         ws_state = {"connected": ws_connected, "last_activity": self._ws.last_activity}
+
         usb_state = self._reader.status
-        ble_state = self._bt.status
+
+        ble_raw = self._bt.status
+        conn_params = ble_raw.get("conn_params") or {}
+        interval_ms = conn_params.get("interval_ms")  # controller already derives this if interval_ms_x100 exists
+
+        ble_state = {
+            "serial_open": bool(ble_raw.get("adapter_present")),
+            "port": ble_raw.get("active_port"),
+            "ready": bool(ble_raw.get("ready")),
+            "advertising": bool(ble_raw.get("advertising")),
+            "connected": bool(ble_raw.get("connected")),
+            "sec": ble_raw.get("sec"),
+            "proto_boot": bool(ble_raw.get("proto_boot")),
+            "error": bool(ble_raw.get("error")),
+            "conn_params": conn_params or None,
+            "interval_ms": interval_ms,
+            "phy": ble_raw.get("phy"),
+            "last_disc_reason": ble_raw.get("last_disc_reason"),
+        }
 
         degraded_reasons = []
 
         if not ws_state["connected"]:
             degraded_reasons.append("ws.not_connected")
+
         if not usb_state["receiver_present"]:
             degraded_reasons.append("usb.receiver_not_detected")
         if not usb_state["paired_remote"]:
@@ -86,12 +98,14 @@ class HealthServer:
             degraded_reasons.append("usb.input_not_open")
         if not usb_state["grabbed"]:
             degraded_reasons.append("usb.not_grabbed")
-        if not ble_state["adapter_present"]:
+
+        if not ble_state["serial_open"]:
             degraded_reasons.append("ble.adapter_missing")
-        # BLE is considered healthy if we are either connected OR advertising (ready to connect).
-        # Advertising may intentionally stop once connected.
+
+        # Consider BLE "usable" if connected OR advertising (ready to connect).
         if not ble_state["connected"] and not ble_state["advertising"]:
             degraded_reasons.append("ble.not_advertising")
+
         if not ble_state["connected"]:
             degraded_reasons.append("ble.not_connected")
 

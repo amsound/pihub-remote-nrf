@@ -174,9 +174,9 @@ async def main() -> None:
         await bt.start()
         started.append(("bt", bt.stop))
 
-        if not await bt.wait_ready(timeout=10.0):
+        if not await bt.wait_ready(timeout=20.0):
             logger.warning(
-                "[app] nrf BLE dongle not ready yet (serial_open=%s); continuing without HID",
+                "[app] nrf BLE dongle not ready yet (serial_open=%s); will enable HID automatically when READY arrives",
                 bt.status.get("adapter_present", False),
             )
 

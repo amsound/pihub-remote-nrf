@@ -20,7 +20,6 @@ class DongleState:
     proto_boot: bool = False  # 0=report, 1=boot
     error: bool = False
 
-    # Newer STATUS fields (optional; filled from STATUS parsing when present)
     sec: int = 0
     suspend: bool = False
     notify: Optional[Dict[str, bool]] = None
@@ -31,13 +30,6 @@ class DongleState:
 
 
 class BleSerial:
-    """
-    Serial link to the nRF dongle.
-
-    - Line-oriented ASCII protocol.
-    - CMD port carries both host commands (KB/CC/PING/STATUS/UNPAIR) and dongle EVT lines.
-    """
-
     def __init__(
         self,
         ports: Sequence[str],
@@ -65,9 +57,7 @@ class BleSerial:
 
         self.state = DongleState()
         self._pong_counter = 0
-        self._evt_counter = 0
 
-        # tx lock so KB/CC writes don't interleave
         self._tx_lock = asyncio.Lock()
 
     @property
@@ -91,18 +81,11 @@ class BleSerial:
             self._connect_task.cancel()
             self._connect_task = None
 
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            self._reader_task = None
-        if self._keepalive_task is not None:
-            self._keepalive_task.cancel()
-            self._keepalive_task = None
-        if self._status_resync_task is not None:
-            self._status_resync_task.cancel()
-            self._status_resync_task = None
-        if self._status_poll_task is not None:
-            self._status_poll_task.cancel()
-            self._status_poll_task = None
+        for task_attr in ("_reader_task", "_keepalive_task", "_status_resync_task", "_status_poll_task"):
+            task = getattr(self, task_attr)
+            if task is not None:
+                task.cancel()
+                setattr(self, task_attr, None)
 
         self._close()
 
@@ -115,7 +98,6 @@ class BleSerial:
             self._active_port = None
 
     async def _connect_loop(self) -> None:
-        # Keep trying forever; app should not crash if dongle is absent at startup.
         backoff = self._reconnect_delay_s
         while True:
             if self.is_open:
@@ -129,14 +111,10 @@ class BleSerial:
                         log.info("BTLE serial command port ready on %s", port)
 
                         if self._keepalive_task is None or self._keepalive_task.done():
-                            self._keepalive_task = asyncio.create_task(
-                                self._keepalive_loop(), name="ble-serial-keepalive"
-                            )
+                            self._keepalive_task = asyncio.create_task(self._keepalive_loop(), name="ble-serial-keepalive")
 
                         if self._status_poll_s > 0 and (self._status_poll_task is None or self._status_poll_task.done()):
-                            self._status_poll_task = asyncio.create_task(
-                                self._status_poll_loop(), name="ble-serial-status-poll"
-                            )
+                            self._status_poll_task = asyncio.create_task(self._status_poll_loop(), name="ble-serial-status-poll")
 
                         connected = True
                         backoff = self._reconnect_delay_s
@@ -151,7 +129,6 @@ class BleSerial:
                 backoff = min(backoff * 2.0, 8.0)
 
     async def _try_open_and_handshake(self, port: str) -> bool:
-        # Open in non-blocking-ish mode; we'll read using executor.
         ser = serial.Serial(
             port=port,
             baudrate=self._baud,
@@ -182,12 +159,10 @@ class BleSerial:
         await asyncio.sleep(0.25)
         ok = await self._handshake_once(timeout_s=1.0)
 
-        # Always ask for STATUS after handshake so host restarts converge.
         if ok:
             self._request_status_resync()
 
         if not ok:
-            log.debug("handshake timeout on %s; reopening", port)
             await self._force_reconnect("handshake_timeout")
         return ok
 
@@ -197,8 +172,6 @@ class BleSerial:
                 line = await self._read_line()
                 if not line:
                     continue
-
-                log.debug("[serial-rx %s] %s", self._active_port, line)
 
                 if line == "PONG":
                     self._pong_counter += 1
@@ -211,10 +184,10 @@ class BleSerial:
                     continue
 
                 if line.startswith("EVT "):
-                    self._evt_counter += 1
                     self._handle_evt_line(line)
                     continue
 
+                # ignore unknown lines silently
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -223,6 +196,23 @@ class BleSerial:
                 await asyncio.sleep(self._reconnect_delay_s)
 
     def _emit(self, event: str) -> None:
+        # This module-level logging is what you asked for:
+        # [pihub.bt_le.ble_serial] BTLE Connected / Advertising / Ready...
+        if event in ("ready", "adv", "conn", "disc", "link_lost"):
+            try:
+                if event == "ready":
+                    log.info("BTLE Ready=%s", 1 if self.state.ready else 0)
+                elif event == "adv":
+                    log.info("BTLE Advertising=%s", 1 if self.state.advertising else 0)
+                elif event == "conn":
+                    log.info("BTLE Connected=%s", 1 if self.state.connected else 0)
+                elif event == "disc":
+                    log.info("BTLE Disconnected reason=%s", self.state.last_disc_reason)
+                elif event == "link_lost":
+                    log.warning("BTLE Serial link lost; reconnecting")
+            except Exception:
+                pass
+
         if self._on_event is not None:
             try:
                 self._on_event(event, self.state)
@@ -237,45 +227,27 @@ class BleSerial:
         if not raw:
             return ""
         try:
-            # Strip both \n and optional \r
-            s = raw.decode("utf-8", errors="replace").strip()
+            return raw.decode("utf-8", errors="replace").strip()
         except Exception:
             return ""
-        return s
-
-    @staticmethod
-    def _sanitize_line_for_log(line: str) -> str:
-        printable = []
-        for ch in line:
-            code = ord(ch)
-            if 32 <= code <= 126:
-                printable.append(ch)
-            else:
-                printable.append(f"\\x{code:02x}")
-        return "".join(printable)
 
     async def _write_line(self, line: str) -> None:
         if not self.is_open:
             return
         loop = asyncio.get_running_loop()
-        framed = line.strip() + "\n"  # firmware accepts LF; human terminals may look nicer with CRLF, but LF is fine here
+        framed = line.strip() + "\n"
         data = framed.encode("ascii", errors="replace")
         async with self._tx_lock:
-            sanitized = self._sanitize_line_for_log(framed)
-            log.debug("[serial-tx %s] %s", self._active_port, sanitized)
             await loop.run_in_executor(None, self._ser.write, data)  # type: ignore[arg-type]
             await loop.run_in_executor(None, self._ser.flush)  # type: ignore[arg-type]
 
     async def _handshake_once(self, timeout_s: float) -> bool:
         start_pong = self._pong_counter
         await self._write_line("PING")
-
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             await asyncio.sleep(0.05)
-            got_pong = self._pong_counter > start_pong
-            if got_pong:
-                self._request_status_resync()
+            if self._pong_counter > start_pong:
                 return True
         return False
 
@@ -294,7 +266,7 @@ class BleSerial:
             try:
                 await self._write_line("STATUS")
             except Exception:
-                log.debug("STATUS resync failed", exc_info=True)
+                pass
 
     def _request_status_resync(self) -> None:
         if self._status_resync_task is None or self._status_resync_task.done():
@@ -308,27 +280,26 @@ class BleSerial:
                 if not self.serial_ready:
                     missed = 0
                     continue
+
                 before = self._pong_counter
                 await self._write_line("PING")
                 await asyncio.sleep(1.0)
+
                 if self._pong_counter > before:
                     missed = 0
-                    continue
-                missed += 1
-                if missed >= 3:
-                    missed = 0
-                    await self._force_reconnect("keepalive_timeout")
+                else:
+                    missed += 1
+                    if missed >= 3:
+                        missed = 0
+                        await self._force_reconnect("keepalive_timeout")
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.debug("keepalive loop error", exc_info=True)
+                pass
 
     async def _status_poll_loop(self) -> None:
-        # Slow poll for state convergence if anything ever goes missing.
-        # Only runs when connected; ignores if the port isn't ready.
         while True:
             try:
-                # jitter prevents timer alignment with keepalive
                 await asyncio.sleep(self._status_poll_s + random.uniform(-0.5, 0.5))
                 if not self.is_open:
                     continue
@@ -338,43 +309,23 @@ class BleSerial:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.debug("status poll loop error", exc_info=True)
+                pass
 
     # ---------- Public command helpers ----------
 
-    async def ping(self) -> bool:
-        if not self.is_open:
-            return False
-        before = self._pong_counter
-        await self._write_line("PING")
-        deadline = time.monotonic() + self._ping_timeout_s
-        while time.monotonic() < deadline:
-            await asyncio.sleep(0.05)
-            if self._pong_counter > before:
-                return True
-        return False
-
     async def send_kb(self, report8: bytes) -> None:
-        # Hot path: if not ready+connected, drop silently.
         if not (self.serial_ready and self.state.connected):
             return
         if len(report8) != 8:
             raise ValueError("keyboard report must be 8 bytes")
-        try:
-            await self._write_line("KB " + report8.hex().upper())
-        except Exception:
-            await self._force_reconnect("kb_send_error")
+        await self._write_line("KB " + report8.hex().upper())
 
     async def send_cc_usage(self, usage: int) -> None:
         if not (self.serial_ready and self.state.connected):
             return
         usage &= 0xFFFF
-        # little-endian 2 bytes -> 4 hex chars
         le = bytes((usage & 0xFF, (usage >> 8) & 0xFF))
-        try:
-            await self._write_line("CC " + le.hex().upper())
-        except Exception:
-            await self._force_reconnect("cc_send_error")
+        await self._write_line("CC " + le.hex().upper())
 
     async def status(self) -> None:
         if not self.is_open:
@@ -401,32 +352,25 @@ class BleSerial:
 
     @staticmethod
     def _to_int(v: Optional[str], default: int = 0) -> int:
-        if v is None:
-            return default
         try:
-            return int(v, 10)
+            return int(v, 10) if v is not None else default
         except Exception:
             return default
 
     @staticmethod
     def _to_float(v: Optional[str], default: float = 0.0) -> float:
-        if v is None:
-            return default
         try:
-            return float(v)
+            return float(v) if v is not None else default
         except Exception:
             return default
 
     def _handle_status_line(self, line: str) -> None:
-        # Example:
-        # STATUS adv=1 conn=0 sec=0 ready=0 proto=1 err=0 kb_notify=0 ...
         parts = line.split()
         if len(parts) < 2 or parts[0] != "STATUS":
             return
 
         kv = self._parse_kv_tokens(parts[1:])
 
-        # Core booleans
         self.state.advertising = (kv.get("adv") == "1")
         self.state.connected = (kv.get("conn") == "1")
         self.state.ready = (kv.get("ready") == "1")
@@ -435,14 +379,12 @@ class BleSerial:
         self.state.sec = self._to_int(kv.get("sec"), 0)
         self.state.suspend = (kv.get("suspend") == "1")
 
-        # Notify flags
         notify: Dict[str, bool] = {}
         for k in ("kb_notify", "boot_notify", "cc_notify", "batt_notify"):
             if k in kv:
                 notify[k] = (kv[k] == "1")
         self.state.notify = notify if notify else None
 
-        # Connection params: accept either interval_ms (float) or interval_ms_x100 (int)
         conn_params: Dict[str, Any] = {}
         if "interval_ms_x100" in kv:
             conn_params["interval_ms_x100"] = self._to_int(kv.get("interval_ms_x100"))
@@ -453,11 +395,9 @@ class BleSerial:
             conn_params["latency"] = self._to_int(kv.get("latency"))
         if "timeout_ms" in kv:
             conn_params["timeout_ms"] = self._to_int(kv.get("timeout_ms"))
-
         if conn_params:
             self.state.conn_params = conn_params
 
-        # PHY snapshot
         phy: Dict[str, Any] = {}
         if "phy_tx" in kv:
             phy["tx"] = self._to_int(kv.get("phy_tx"))
@@ -471,15 +411,6 @@ class BleSerial:
     # ---------- EVT parsing ----------
 
     def _handle_evt_line(self, line: str) -> None:
-        # Examples:
-        # EVT READY 1
-        # EVT ADV 0|1
-        # EVT CONN 0|1
-        # EVT PROTO 0|1
-        # EVT CONN_PARAMS interval_ms_x100=3000 latency=0 timeout_ms=720
-        # EVT PHY tx=2M rx=2M
-        # EVT DISC reason=19
-        # EVT ERR 0|1
         parts = line.split()
         if len(parts) < 3:
             return
@@ -502,8 +433,7 @@ class BleSerial:
         if kind == "CONN":
             self.state.connected = (rest[0] == "1")
             self._emit("conn")
-            if not self.state.connected:
-                self._request_status_resync()
+            self._request_status_resync()
             return
 
         if kind == "PROTO":
@@ -517,7 +447,6 @@ class BleSerial:
             return
 
         if kind == "DISC":
-            # allow "reason=19" or "19"
             r = rest[0]
             if r.startswith("reason="):
                 r = r.split("=", 1)[1]
@@ -554,21 +483,11 @@ class BleSerial:
 
 
 def discover_cmd_ports() -> List[str]:
-    """Best-effort command-port discovery.
-
-    Prefer /dev/serial/by-id symlinks ending with interface suffixes known to
-    carry command traffic on the nRF52840 dongle:
-      - if02 (preferred)
-      - if00 (fallback on alternate firmware builds)
     """
-    candidates: List[str] = []
-    for suffix in ("if02", "if00"):
-        pattern = f"/dev/serial/by-id/*{suffix}*"
-        for path in sorted(glob.glob(pattern)):
-            if os.path.exists(path) and path not in candidates:
-                candidates.append(path)
-
-    for tty in sorted(glob.glob("/dev/ttyACM*")):
-        if os.path.exists(tty) and tty not in candidates:
-            candidates.append(tty)
-    return candidates
+    With the new firmware you now expose exactly ONE port.
+    Prefer ttyACM0. Fall back to any /dev/ttyACM* if present.
+    """
+    if os.path.exists("/dev/ttyACM0"):
+        return ["/dev/ttyACM0"]
+    ports = sorted(glob.glob("/dev/ttyACM*"))
+    return [p for p in ports if os.path.exists(p)]
