@@ -30,16 +30,12 @@ class BTLEController:
         self,
         serial_port: str = "auto",
         baud: int = 115200,
-        name: str = "PiHub nrf Remote",
         *,
-        adapter: Optional[str] = None,
         status_poll_s: float = 30.0,
         **_ignored: object,
     ):
         self._serial_port = serial_port
-        self._adapter = adapter
         self._baud = baud
-        self._name = name
 
         env_port = os.getenv("BLE_SERIAL_DEVICE", "").strip()
         requested = (env_port or (serial_port or "")).strip()

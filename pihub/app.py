@@ -102,8 +102,6 @@ async def main() -> None:
         raise SystemExit(1) from exc
 
     bt = BTLEController(
-        adapter=cfg.ble_adapter,
-        name=cfg.ble_device_name,
         serial_port=cfg.ble_serial_device,
         baud=cfg.ble_serial_baud,
     )

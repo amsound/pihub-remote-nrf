@@ -14,9 +14,6 @@ class Config:
     ha_activity: str
     ha_cmd_event: str
 
-    ble_adapter: str
-    ble_device_name: str
-
     # Serial dongle transport (default)
     ble_serial_device: str
     ble_serial_baud: int
@@ -33,9 +30,6 @@ class Config:
         ha_activity   = os.getenv("HA_ACTIVITY", "input_select.activity")
         ha_cmd_event  = os.getenv("HA_CMD_EVENT", "pihub.cmd")
 
-        ble_adapter      = os.getenv("BLE_ADAPTER", "hci0")
-        ble_device_name  = os.getenv("BLE_DEVICE_NAME", "PiHub Remote")
-
         # Serial dongle (default transport)
         ble_serial_device = os.getenv("BLE_SERIAL_DEVICE", "auto")
         ble_serial_baud   = int(os.getenv("BLE_SERIAL_BAUD", "115200"))
@@ -51,8 +45,6 @@ class Config:
             ha_token_file=ha_token_file,
             ha_activity=ha_activity,
             ha_cmd_event=ha_cmd_event,
-            ble_adapter=ble_adapter,
-            ble_device_name=ble_device_name,
             ble_serial_device=ble_serial_device,
             ble_serial_baud=ble_serial_baud,
             health_host=health_host,
