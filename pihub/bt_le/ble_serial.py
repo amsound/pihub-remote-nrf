@@ -125,6 +125,9 @@ class BleSerial:
                     if await self._try_open_and_handshake(port):
                         log.info("ble serial command port ready on %s", port)
 
+                        # Emit a one-shot state line shortly after the port is ready (after STATUS/EVT land).
+                        asyncio.create_task(self._log_state_once_after_open(), name="ble-serial-state-once")
+
                         if self._keepalive_task is None or self._keepalive_task.done():
                             self._keepalive_task = asyncio.create_task(self._keepalive_loop(), name="ble-serial-keepalive")
 
@@ -286,6 +289,23 @@ class BleSerial:
         if self._status_resync_task is None or self._status_resync_task.done():
             self._status_resync_task = asyncio.create_task(self._schedule_status_resync())
 
+
+    async def _log_state_once_after_open(self) -> None:
+        """Log a single compact dongle state line after the serial link comes up."""
+        # Allow the scheduled STATUS resync (0.2s) and reader loop to populate state.
+        await asyncio.sleep(0.35)
+        if not self.is_open:
+            return
+
+        if self.state.ready:
+            log.info("ble state: ready=True")
+        elif self.state.advertising and not self.state.connected:
+            log.info("ble state: adv=True")
+        elif self.state.connected and not self.state.ready:
+            log.info("ble state: conn=True ready=False")
+        else:
+            # Link is up but we haven't seen STATUS/EVT yet.
+            log.info("ble state: present=True")
     async def _keepalive_loop(self) -> None:
         missed = 0
         while True:

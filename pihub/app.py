@@ -174,20 +174,6 @@ async def main() -> None:
         await bt.start()
         started.append(("bt", bt.stop))
 
-        st = bt.status
-        adv = bool(st.get("advertising"))
-        conn = bool(st.get("connected"))
-        ready = bool(st.get("ready"))  # link_ready semantics
-
-        if ready:
-            logger.info("nrf dongle state: ready=True")
-        elif adv and not conn:
-            logger.info("nrf dongle state: adv=True")
-        elif conn and not ready:
-            logger.info("nrf dongle state: conn=True ready=False")
-        else:
-            logger.info("nrf dongle state: unknown")
-
         await reader.start()
         started.append(("reader", reader.stop))
 
