@@ -71,7 +71,7 @@ class Dispatcher:
         # Summary: count activities and scancodes
         acts = len(self._bindings)
         scan_total = len(self._scancode_map)
-        logger.info("[dispatcher] keymap loaded: %s activities, %s scancodes", acts, scan_total)
+        logger.info("keymap loaded: %s activities, %s scancodes", acts, scan_total)
 
     @property
     def scancode_map(self) -> Dict[str, str]:
@@ -92,7 +92,7 @@ class Dispatcher:
 
         if self._activity is None and not self._activity_none_logged:
             logger.info(
-                "[dispatcher] activity not set yet; ignoring input until HA activity arrives"
+                "activity not set yet; ignoring input until HA activity arrives"
             )
             self._activity_none_logged = True
 
@@ -326,30 +326,28 @@ class Dispatcher:
         return
 
     # ---- Keymap loader ----
-
-    # ---- Keymap loader ----
     def _load_keymap(self) -> dict:
         """
         Load remote key bindings.
         """
         identifier = "pihub.assets:keymap.json"
-        logger.info("[dispatcher] Loading keymap from packaged assets: %s", identifier)
+        logger.info("loading keymap from packaged assets: %s", identifier)
         try:
             resource = importlib_resources.files("pihub.assets") / "keymap.json"
             raw = resource.read_text(encoding="utf-8")
         except (FileNotFoundError, ModuleNotFoundError, OSError) as exc:
             raise FileNotFoundError(
-                f"Packaged keymap missing or unreadable: {identifier}"
+                f"packaged keymap missing or unreadable: {identifier}"
             ) from exc
 
         try:
             doc = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"Packaged keymap invalid JSON ({identifier}): {exc}") from exc
+            raise ValueError(f"packaged keymap invalid JSON ({identifier}): {exc}") from exc
 
         if not isinstance(doc, dict) or "scancode_map" not in doc or "activities" not in doc:
             raise ValueError(
-                f"Packaged keymap schema invalid ({identifier}): expected 'scancode_map' and 'activities'."
+                f"packaged keymap schema invalid ({identifier}): expected 'scancode_map' and 'activities'."
             )
 
         return doc
@@ -364,7 +362,7 @@ class Dispatcher:
         if now - self._last_cmd_fail_log < 5.0:
             return
         self._last_cmd_fail_log = now
-        logger.warning("[dispatcher] HA command send failed: %s", text)
+        logger.warning("HA command send failed: %s", text)
 
     @staticmethod
     def _validate_keymap(doc: dict) -> None:

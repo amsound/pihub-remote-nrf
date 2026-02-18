@@ -30,7 +30,7 @@ class BTLEController:
         self,
         serial_port: str = "auto",
         baud: int = 115200,
-        name: str = "PiHub Remote",
+        name: str = "PiHub nrf Remote",
         *,
         adapter: Optional[str] = None,
         status_poll_s: float = 30.0,
@@ -41,9 +41,6 @@ class BTLEController:
         self._baud = baud
         self._name = name
 
-        # Trimmed logic: with one port, we only need:
-        # - explicit config/env path, OR
-        # - auto => /dev/ttyACM0
         env_port = os.getenv("BLE_SERIAL_DEVICE", "").strip()
         requested = (env_port or (serial_port or "")).strip()
 
@@ -65,7 +62,7 @@ class BTLEController:
         self._started = False
         self._ready_evt = asyncio.Event()
 
-        log.info("BTLEController initialized (ports=%s baud=%s, name=%s)", ports, baud, name)
+        log.info("ble connection initialised (ports=%s baud=%s, name=%s)", ports, baud, name)
 
     async def start(self) -> None:
         if self._started:
@@ -137,7 +134,7 @@ class BTLEController:
             self._ready_evt.clear()
 
         # Controller keeps debug-level details; ble_serial now logs the human-friendly INFO lines.
-        log.debug("BTLE evt=%s status=%s", event, self.status)
+        log.debug("evt=%s status=%s", event, self.status)
 
     def _link_ready(self) -> bool:
         return bool(self._serial.serial_ready and self._serial.state.connected)

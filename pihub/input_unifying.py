@@ -126,7 +126,7 @@ class UnifyingReader:
             dev.grab()
             grabbed = True
         except Exception as exc:
-            logger.warning("[usb] failed to grab input device %s: %s", path, exc)
+            logger.warning("failed to grab input device %s: %s", path, exc)
         return dev, grabbed
 
     async def _run(self) -> None:
@@ -150,10 +150,10 @@ class UnifyingReader:
                 now = time.monotonic()
                 next_state = "present_no_input" if receiver_present else "absent"
                 log_msg = (
-                    "[usb] receiver present; waiting for paired device "
+                    "receiver present; waiting for paired device "
                     "(attempt %d); retry in %.2fs"
                     if receiver_present
-                    else "[usb] receiver not detected "
+                    else "receiver not detected "
                     "(attempt %d); retry in %.2fs"
                 )
                 if wait_state != next_state:
@@ -188,7 +188,7 @@ class UnifyingReader:
                 sleep_for = _jittered(backoff)
                 if open_failures == 1 or open_failures % warn_every == 0:
                     logger.warning(
-                        "[usb] open failed (attempt %d, path=%s); retry in %.2fs",
+                        "open failed (attempt %d, path=%s); retry in %.2fs",
                         open_failures,
                         path,
                         sleep_for,
@@ -204,7 +204,7 @@ class UnifyingReader:
     
             if wait_state != "ready":
                 wait_state = "ready"
-                logger.info("[usb] input device opened: %s grabbed=%s", path, str(grabbed).lower())
+                logger.info("input device opened: %s grabbed=%s", path, str(grabbed).lower())
     
             # We have an open device; reset backoff
             backoff = 1.0
@@ -243,7 +243,7 @@ class UnifyingReader:
                                 kname = ecodes.KEY[ev.code]
                             except Exception:
                                 kname = f"KEY_{ev.code}"
-                            logger.debug("[usb] unmapped key: msc=None name=%s", kname)
+                            logger.debug("unmapped button: msc=None name=%s", kname)
                         continue
             
                     val = ev.value
@@ -275,7 +275,7 @@ class UnifyingReader:
                 break
 
             except Exception as exc:
-                logger.warning("[usb] reader error: %r", exc)
+                logger.warning("reader error: %r", exc)
                 await asyncio.sleep(_jittered(1.0))
 
             finally:
@@ -309,7 +309,7 @@ class UnifyingReader:
 
     async def _emit(self, rem_key: str, edge: str) -> None:
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("[usb] %s %s", rem_key, edge)
+            logger.debug("%s %s", rem_key, edge)
         queue = self._edge_queue
         if queue is None:
             return
@@ -321,7 +321,7 @@ class UnifyingReader:
             if now - self._last_drop_log >= 10.0:
                 self._last_drop_log = now
                 logger.warning(
-                    "[usb] edge queue full; dropped=%d",
+                    "edge queue full; dropped=%d",
                     self._dropped_edges,
                 )
 
@@ -341,7 +341,7 @@ class UnifyingReader:
                     if asyncio.iscoroutine(res):
                         await res
                 except Exception as exc:
-                    logger.warning("[usb] dispatch error: %r", exc)
+                    logger.warning("dispatch error: %r", exc)
                 finally:
                     queue.task_done()
         except asyncio.CancelledError:
@@ -364,7 +364,7 @@ class UnifyingReader:
             if asyncio.iscoroutine(res):
                 await res
         except Exception as exc:
-            logger.warning("[usb] disconnect handler error: %r", exc)
+            logger.warning("disconnect handler error: %r", exc)
 
 
 def _autodetect_or_none() -> Optional[str]:

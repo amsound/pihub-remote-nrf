@@ -123,7 +123,7 @@ class BleSerial:
             for port in list(self._ports):
                 try:
                     if await self._try_open_and_handshake(port):
-                        log.info("BTLE serial command port ready on %s", port)
+                        log.info("ble serial command port ready on %s", port)
 
                         if self._keepalive_task is None or self._keepalive_task.done():
                             self._keepalive_task = asyncio.create_task(self._keepalive_loop(), name="ble-serial-keepalive")
@@ -139,7 +139,7 @@ class BleSerial:
                     raise
                 except Exception as e:
                     # This is expected when dongle is missing or USB was pulled
-                    log.debug("BTLE serial open/handshake failed on %s: %r", port, e)
+                    log.debug("ble serial open/handshake failed on %s: %r", port, e)
 
             if connected:
                 continue
@@ -212,7 +212,7 @@ class BleSerial:
                 raise
             except Exception as e:
                 # Common on USB yank / host reset
-                log.warning("BTLE serial reader error, reconnecting: %r", e)
+                log.warning("ble serial reader error, reconnecting: %r", e)
                 await self._force_reconnect("reader_error")
                 await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
 
@@ -220,15 +220,15 @@ class BleSerial:
         # Human-friendly BLE logs at this module, as requested
         if event in ("ready", "adv", "conn", "disc", "link_lost"):
             if event == "ready":
-                log.info("BTLE LinkReady=%s", 1 if self.state.ready else 0)
+                log.info("ble link ready=%s", 1 if self.state.ready else 0)
             elif event == "adv":
-                log.info("BTLE Advertising=%s", 1 if self.state.advertising else 0)
+                log.info("ble advertising=%s", 1 if self.state.advertising else 0)
             elif event == "conn":
-                log.info("BTLE Connected=%s", 1 if self.state.connected else 0)
+                log.info("ble connected=%s", 1 if self.state.connected else 0)
             elif event == "disc":
-                log.info("BTLE Disconnected reason=%s", self.state.last_disc_reason)
+                log.info("ble disconnected reason=%s", self.state.last_disc_reason)
             elif event == "link_lost":
-                log.warning("BTLE Serial link lost; will retry")
+                log.warning("ble serial link lost; will retry")
 
         if self._on_event is not None:
             try:

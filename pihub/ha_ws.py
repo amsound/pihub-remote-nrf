@@ -80,7 +80,7 @@ class HAWS:
                 raise
             except Exception as exc:
                 if not self._stopping.is_set():
-                    logger.warning("[ws] error: %r", exc)
+                    logger.warning("error: %r", exc)
                 jitter = random.uniform(1.0 - RECONNECT_JITTER, 1.0 + RECONNECT_JITTER)
                 timeout = min(60.0, delay) * jitter
                 try:
@@ -133,7 +133,7 @@ class HAWS:
             if self._stopping.is_set():
                 return
 
-            logger.info("[ws] connected")  # log *before* seed so order is consistent
+            logger.info("socket connected")  # log *before* seed so order is consistent
 
             # Subscribe to ONLY the target entity via trigger.
             await self._subscribe_trigger_entity(ws, self._activity_entity)
@@ -150,14 +150,14 @@ class HAWS:
             await self._recv_loop(ws)
 
         finally:
-            logger.info("[ws] disconnected")
+            logger.info("socket disconnected")
             await self._close_ws()
 
     async def _auth(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         try:
             msg = await asyncio.wait_for(ws.receive_json(), timeout=WS_RECV_TIMEOUT_S)
         except asyncio.TimeoutError as exc:
-            logger.warning("[ws] auth timeout waiting for handshake (timeout=%.1fs)", WS_RECV_TIMEOUT_S)
+            logger.warning("auth timeout waiting for handshake (timeout=%.1fs)", WS_RECV_TIMEOUT_S)
             raise exc
         mtype = msg.get("type")
         if mtype == "auth_ok":
@@ -168,7 +168,7 @@ class HAWS:
         try:
             msg = await asyncio.wait_for(ws.receive_json(), timeout=WS_RECV_TIMEOUT_S)
         except asyncio.TimeoutError as exc:
-            logger.warning("[ws] auth timeout waiting for auth_ok (timeout=%.1fs)", WS_RECV_TIMEOUT_S)
+            logger.warning("auth timeout waiting for auth_ok (timeout=%.1fs)", WS_RECV_TIMEOUT_S)
             raise exc
         if msg.get("type") != "auth_ok":
             raise RuntimeError(f"auth failed: {msg}")
@@ -186,7 +186,7 @@ class HAWS:
             try:
                 msg = await asyncio.wait_for(ws.receive_json(), timeout=WS_RECV_TIMEOUT_S)
             except asyncio.TimeoutError as exc:
-                logger.warning("[ws] seed timeout waiting for get_states (timeout=%.1fs)", WS_RECV_TIMEOUT_S)
+                logger.warning("seed timeout waiting for get_states (timeout=%.1fs)", WS_RECV_TIMEOUT_S)
                 raise exc
             if msg.get("type") == "result" and msg.get("id") == req_id and msg.get("success"):
                 states = msg.get("result") or []
@@ -311,7 +311,7 @@ class HAWS:
             return
 
         prior = self._last_activity
-        logger.info("[activity] %s -> %s", prior, new_state)
+        logger.info("activity changed %s -> %s", prior, new_state)
         self._last_activity = new_state
 
         res = self._on_activity(new_state)
@@ -332,7 +332,7 @@ class HAWS:
                 msg = await asyncio.wait_for(ws.receive_json(), timeout=WS_RECV_TIMEOUT_S)
             except asyncio.TimeoutError as exc:
                 logger.warning(
-                    "[ws] timeout waiting for %s result (timeout=%.1fs)",
+                    "timeout waiting for %s result (timeout=%.1fs)",
                     context,
                     WS_RECV_TIMEOUT_S,
                 )
@@ -340,7 +340,7 @@ class HAWS:
             if msg.get("type") == "result" and msg.get("id") == req_id:
                 if msg.get("success"):
                     return
-                logger.error("[ws] %s failed: %s", context, msg)
+                logger.error("%s failed: %s", context, msg)
                 raise RuntimeError(f"{context} failed: {msg}")
 
     async def _close_ws(self) -> None:
