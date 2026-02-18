@@ -98,7 +98,7 @@ async def main() -> None:
     try:
         token = cfg.load_token()
     except RuntimeError as exc:
-        logger.error("[app] Cannot start without Home Assistant token: %s", exc)
+        logger.error("cannot start without Home Assistant token: %s", exc)
         raise SystemExit(1) from exc
 
     bt = BTLEController(
@@ -142,7 +142,7 @@ async def main() -> None:
     )
 
     logger.info(
-        "[app] ws=%s event=%s activity=%s",
+        "ws connection initialised %s event=%s activity=%s",
         cfg.ha_ws_url,
         cfg.ha_cmd_event,
         cfg.ha_activity,
@@ -158,9 +158,9 @@ async def main() -> None:
         except asyncio.CancelledError:
             return
         except Exception:  # pragma: no cover - defensive logging
-            logger.exception("[app] Home Assistant task crashed")
+            logger.exception("ws task crashed")
         else:
-            logger.warning("[app] Home Assistant task exited unexpectedly")
+            logger.warning("ws task exited unexpectedly")
         stop.set()
 
     ws_task = asyncio.create_task(ws.start(), name="ha_ws")
@@ -174,22 +174,19 @@ async def main() -> None:
         await bt.start()
         started.append(("bt", bt.stop))
 
-        if not await bt.wait_ready(timeout=20.0):
-            st = bt.status
-            present = bool(st.get("adapter_present"))
-            port = st.get("active_port")
-            adv = bool(st.get("advertising"))
-            conn = bool(st.get("connected"))
-            ready = bool(st.get("ready"))  # link_ready semantics
+        st = bt.status
+        adv = bool(st.get("advertising"))
+        conn = bool(st.get("connected"))
+        ready = bool(st.get("ready"))  # link_ready semantics
 
-            if present and ready:
-                logger.info("[app] nrf dongle status: present=True port=%s ready=True", port)
-            elif present and adv and not conn:
-                logger.info("[app] nrf dongle status: present=True port=%s adv=True", port)
-            elif present and conn and not ready:
-                logger.info("[app] nrf dongle status: present=True port=%s conn=True ready=False", port)
-            else:
-                logger.info("[app] nrf dongle status: present=%s port=%s", present, port)
+        if ready:
+            logger.info("nrf dongle state: ready=True")
+        elif adv and not conn:
+            logger.info("nrf dongle state: adv=True")
+        elif conn and not ready:
+            logger.info("nrf dongle state: conn=True ready=False")
+        else:
+            logger.info("nrf dongle state: unknown")
 
         await reader.start()
         started.append(("reader", reader.stop))
