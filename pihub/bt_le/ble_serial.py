@@ -125,7 +125,7 @@ class BleSerial:
             for port in list(self._ports):
                 try:
                     if await self._try_open_and_handshake(port):
-                        logger.info("serial command port ready on %s", port)
+                        logger.info("port ready on %s", port)
 
                         # Emit a one-shot state line shortly after the port is ready (after STATUS/EVT land).
                         asyncio.create_task(self._log_state_once_after_open(), name="ble-serial-state-once")
@@ -144,7 +144,7 @@ class BleSerial:
                     raise
                 except Exception as exc:
                     # This is expected when dongle is missing or USB was pulled
-                    logger.debug("serial open/handshake failed on %s: %r", port, exc)
+                    logger.debug("open/handshake failed on %s: %r", port, exc)
 
             if connected:
                 continue
@@ -217,7 +217,7 @@ class BleSerial:
                 raise
             except Exception as exc:
                 # Common on USB yank / host reset
-                logger.warning("serial reader error, reconnecting: %r", exc)
+                logger.warning("reader error, reconnecting: %r", exc)
                 await self._force_reconnect("reader_error")
                 await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
 
@@ -233,7 +233,7 @@ class BleSerial:
             elif event == "disc":
                 logger.info("disconnected reason=%s", self.state.last_disc_reason)
             elif event == "link_lost":
-                logger.warning("serial link lost; will retry")
+                logger.warning("link lost; will retry")
 
         if self._on_event is not None:
             try:

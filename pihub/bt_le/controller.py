@@ -60,7 +60,7 @@ class BTLEController:
         self._started = False
         self._ready_evt = asyncio.Event()
 
-        logger.info("initialised port=%s baud=%s", ports, baud)
+        logger.info("initialised port=%s baud=%s", ports[0] if ports else None, baud)
 
     async def start(self) -> None:
         if self._started:
