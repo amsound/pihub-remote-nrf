@@ -40,21 +40,18 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 ```yaml
 services:
   pihub:
-    image: a1exm/pihub:latest
+    image: a1exm/pihub-nrf:latest
     network_mode: host
     restart: unless-stopped
     cpu_shares: 2048
     device_cgroup_rules:
-      - 'c 13:* r'
+      - 'c 13:* rmw'
     environment:
       HA_TOKEN: "###############"                        # This ENV takes precedence
-      # HA_TOKEN_FILE: "/run/secrets/ha"                 # optional fallback
-      # HA_WS_URL: "ws://127.0.0.1:8123/api/websocket"   # defaults to local
       # DEBUG: 1                                         # optional for debug chatter
     volumes:
       - /dev/input:/dev/input:ro
       - /dev/input/by-id:/dev/input/by-id:ro
-      - /run/dbus:/run/dbus
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
 
@@ -91,10 +88,10 @@ then push image to docker hub:
 
 ```
 VER=x.x.x
-docker tag pihub:latest a1exm/pihub:$VER
-docker tag pihub:latest a1exm/pihub:latest
-docker push a1exm/pihub:$VER
-docker push a1exm/pihub:latest
+docker tag pihub:latest a1exm/pihub-nrf:$VER
+docker tag pihub:latest a1exm/pihub-nrf:latest
+docker push a1exm/pihub-nrf:$VER
+docker push a1exm/pihub-nrf:latest
 ```
 
 ---
