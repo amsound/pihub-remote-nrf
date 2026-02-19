@@ -1,4 +1,5 @@
 """Translate symbolic key names into HID payloads."""
+
 from __future__ import annotations
 
 import asyncio
