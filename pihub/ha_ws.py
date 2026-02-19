@@ -51,7 +51,7 @@ class HAWS:
         self._msg_id = 1
         self._last_activity: Optional[str] = None
 
-        log.info(
+        logger.info(
             "initialised url=%s event=%s activity=%s",
             self._url,
             self._event_name,
