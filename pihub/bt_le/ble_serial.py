@@ -1,3 +1,5 @@
+"""Resilient BLE command-channel serial transport for the PiHub dongle."""
+
 import asyncio
 import glob
 import logging
@@ -9,7 +11,7 @@ from typing import Callable, Optional, Sequence, Dict, Any, List
 
 import serial  # pyserial
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -123,7 +125,7 @@ class BleSerial:
             for port in list(self._ports):
                 try:
                     if await self._try_open_and_handshake(port):
-                        log.info("ble serial command port ready on %s", port)
+                        logger.info("ble serial command port ready on %s", port)
 
                         # Emit a one-shot state line shortly after the port is ready (after STATUS/EVT land).
                         asyncio.create_task(self._log_state_once_after_open(), name="ble-serial-state-once")
@@ -140,9 +142,9 @@ class BleSerial:
 
                 except asyncio.CancelledError:
                     raise
-                except Exception as e:
+                except Exception as exc:
                     # This is expected when dongle is missing or USB was pulled
-                    log.debug("ble serial open/handshake failed on %s: %r", port, e)
+                    logger.debug("ble serial open/handshake failed on %s: %r", port, exc)
 
             if connected:
                 continue
@@ -213,9 +215,9 @@ class BleSerial:
 
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
+            except Exception as exc:
                 # Common on USB yank / host reset
-                log.warning("ble serial reader error, reconnecting: %r", e)
+                logger.warning("ble serial reader error, reconnecting: %r", exc)
                 await self._force_reconnect("reader_error")
                 await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
 
@@ -223,21 +225,21 @@ class BleSerial:
         # Human-friendly BLE logs at this module, as requested
         if event in ("ready", "adv", "conn", "disc", "link_lost"):
             if event == "ready":
-                log.info("ble link ready=%s", 1 if self.state.ready else 0)
+                logger.info("ble link ready=%s", 1 if self.state.ready else 0)
             elif event == "adv":
-                log.info("ble advertising=%s", 1 if self.state.advertising else 0)
+                logger.info("ble advertising=%s", 1 if self.state.advertising else 0)
             elif event == "conn":
-                log.info("ble connected=%s", 1 if self.state.connected else 0)
+                logger.info("ble connected=%s", 1 if self.state.connected else 0)
             elif event == "disc":
-                log.info("ble disconnected reason=%s", self.state.last_disc_reason)
+                logger.info("ble disconnected reason=%s", self.state.last_disc_reason)
             elif event == "link_lost":
-                log.warning("ble serial link lost; will retry")
+                logger.warning("ble serial link lost; will retry")
 
         if self._on_event is not None:
             try:
                 self._on_event(event, self.state)
             except Exception:
-                log.exception("on_event handler failed")
+                logger.exception("on_event handler failed")
 
     async def _read_line(self) -> str:
         if not self.is_open:
@@ -269,7 +271,7 @@ class BleSerial:
         return False
 
     async def _force_reconnect(self, reason: str) -> None:
-        log.debug("forcing serial reconnect (%s)", reason)
+        logger.debug("forcing serial reconnect (%s)", reason)
         if self._reader_task is not None:
             self._reader_task.cancel()
             self._reader_task = None
@@ -298,14 +300,15 @@ class BleSerial:
             return
 
         if self.state.ready:
-            log.info("ble state: ready=True")
+            logger.info("ble state: ready=True")
         elif self.state.advertising and not self.state.connected:
-            log.info("ble state: adv=True")
+            logger.info("ble state: adv=True")
         elif self.state.connected and not self.state.ready:
-            log.info("ble state: conn=True ready=False")
+            logger.info("ble state: conn=True ready=False")
         else:
             # Link is up but we haven't seen STATUS/EVT yet.
-            log.info("ble state: present=True")
+            logger.info("ble state: present=True")
+
     async def _keepalive_loop(self) -> None:
         missed = 0
         while True:

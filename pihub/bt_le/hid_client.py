@@ -25,12 +25,12 @@ class HIDClient:
             if down is None:
                 return
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug('[bt] keyboard "%s" down', code)
+                logger.debug('keyboard %s down', code)
             self._hid.notify_keyboard(down)
         elif usage == "consumer":
             usage_id = self._encode_consumer_usage(code)
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug('[bt] consumer "%s" down (0x%04X)', code, usage_id)
+                logger.debug('consumer %s down (0x%04X)', code, usage_id)
             if usage_id:
                 self._hid.notify_consumer(usage_id, True)
 
@@ -38,15 +38,15 @@ class HIDClient:
         """Send a logical key-up edge."""
         if usage == "keyboard":
             if code not in self._kb:
-                logger.warning('[bt] unknown keyboard code "%s" up; ignoring', code)
+                logger.warning('unknown keyboard code %s up; ignoring', code)
                 return
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug('[bt] keyboard "%s" up', code)
+                logger.debug('keyboard %s up', code)
             self._hid.notify_keyboard(b"\x00\x00\x00\x00\x00\x00\x00\x00")
         elif usage == "consumer":
             usage_id = self._encode_consumer_usage(code)
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug('[bt] consumer "%s" up (0x%04X)', code, usage_id)
+                logger.debug('consumer %s up (0x%04X)', code, usage_id)
             if usage_id:
                 self._hid.notify_consumer(usage_id, False)
 
@@ -103,7 +103,7 @@ class HIDClient:
     def _encode_keyboard_down(self, code: str) -> Optional[bytes]:
         hid = self._kb.get(code)
         if hid is None:
-            logger.warning('[bt] unknown keyboard code "%s" down; ignoring', code)
+            logger.warning('unknown keyboard code %s down; ignoring', code)
             return None
         # Boot Keyboard 8-byte: mods(1), reserved(1), key1..key6
         return bytes([0x00, 0x00, hid, 0x00, 0x00, 0x00, 0x00, 0x00])
