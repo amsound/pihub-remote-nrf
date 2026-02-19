@@ -139,13 +139,6 @@ async def main() -> None:
         reader=reader,
     )
 
-    logger.info(
-        "ws connection initialised %s event=%s activity=%s",
-        cfg.ha_ws_url,
-        cfg.ha_cmd_event,
-        cfg.ha_activity,
-    )
-
     stop = asyncio.Event()
 
     def _monitor_ws(task: asyncio.Task) -> None:

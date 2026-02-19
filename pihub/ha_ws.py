@@ -51,6 +51,13 @@ class HAWS:
         self._msg_id = 1
         self._last_activity: Optional[str] = None
 
+        log.info(
+            "initialised url=%s event=%s activity=%s",
+            self._url,
+            self._event_name,
+            self._activity_entity,
+        )
+
     @property
     def is_connected(self) -> bool:
         """Return True when the websocket is currently open."""
