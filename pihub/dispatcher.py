@@ -51,10 +51,10 @@ class Dispatcher:
             self._bindings: Dict[str, Dict[str, List[Dict[str, Any]]]] = dict(km["activities"])
             if not isinstance(self._scancode_map, dict) or not isinstance(self._bindings, dict):
                 raise TypeError
-        except Exception as e:
+        except Exception as exc:
             raise ValueError(
                 "keymap.json schema invalid: expected 'scancode_map' (dict) and 'activities' (dict)."
-            ) from e
+            ) from exc
 
         self._activity: Optional[str] = None
         self._activity_none_logged = False

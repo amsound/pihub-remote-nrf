@@ -1,3 +1,5 @@
+"""BLE controller orchestrating serial transport and HID key delivery."""
+
 import asyncio
 import logging
 import os
@@ -7,7 +9,7 @@ from typing import Optional
 from .ble_serial import BleSerial, DongleState, discover_cmd_ports
 from .hid_client import HIDClient
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,7 +60,7 @@ class BTLEController:
         self._started = False
         self._ready_evt = asyncio.Event()
 
-        log.info("ble connection initialised port=%s baud=%s", ports, baud)
+        logger.info("ble connection initialised port=%s baud=%s", ports, baud)
 
     async def start(self) -> None:
         if self._started:
@@ -130,7 +132,7 @@ class BTLEController:
             self._ready_evt.clear()
 
         # Controller keeps debug-level details; ble_serial now logs the human-friendly INFO lines.
-        log.debug("evt=%s status=%s", event, self.status)
+        logger.debug("evt=%s status=%s", event, self.status)
 
     def _link_ready(self) -> bool:
         return bool(self._serial.serial_ready and self._serial.state.connected)

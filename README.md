@@ -112,7 +112,7 @@ docker push a1exm/pihub:latest
 
 Keymap is bundled with the application and loaded from packaged assets in production; it is not configurable at runtime.
 
-**Fail-fast:** the app exits on startup if it can’t obtain an HA token from env or file, logging `"[app] Cannot start without Home Assistant token: ..."` to point operators at the missing credential.
+**Fail-fast:** the app exits on startup if it can’t obtain an HA token from env or file, logging `"cannot start without Home Assistant token: ..."` from the `pihub.app` logger to point operators at the missing credential.
 
 ---
 

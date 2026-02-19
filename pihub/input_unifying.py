@@ -260,8 +260,8 @@ class UnifyingReader:
                         pressed.discard(key_id)
                         await _emit(logical, "up")
             
-            except (OSError, IOError) as e:
-                err = getattr(e, "errno", None)
+            except (OSError, IOError) as exc:
+                err = getattr(exc, "errno", None)
                 if err in (19, 5):  # ENODEV/EIO
                     disconnect_seen = True
                     await self._notify_disconnect()

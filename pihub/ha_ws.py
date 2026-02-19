@@ -87,7 +87,7 @@ class HAWS:
                 raise
             except Exception as exc:
                 if not self._stopping.is_set():
-                    logger.warning("error: %r", exc)
+                    logger.warning("ha websocket lifecycle error (will reconnect): %r", exc)
                 jitter = random.uniform(1.0 - RECONNECT_JITTER, 1.0 + RECONNECT_JITTER)
                 timeout = min(60.0, delay) * jitter
                 try:
@@ -274,7 +274,7 @@ class HAWS:
                         if edata.get("dest") == "pi":
                             t = edata.get("text", "?")
                             if t == "macro":
-                                logger.debug("[cmd] macro %s", edata.get("name", "?"))
+                                logger.debug("cmd macro %s", edata.get("name", "?"))
                             elif t == "ble_key":
                                 hold_ms = parse_ms_whitelist(
                                     edata.get("hold_ms"),
@@ -284,13 +284,13 @@ class HAWS:
                                 )
                                 edata["hold_ms"] = hold_ms
                                 logger.debug(
-                                    "[cmd] ble_key %s/%s hold=%sms",
+                                    "cmd ble_key %s/%s hold=%sms",
                                     edata.get("usage", "?"),
                                     edata.get("code", "?"),
                                     hold_ms,
                                 )
                             else:
-                                logger.debug("[cmd] %s", t)
+                                logger.debug("cmd %s", t)
                             res = self._on_cmd(edata)
                             if asyncio.iscoroutine(res):
                                 await res
