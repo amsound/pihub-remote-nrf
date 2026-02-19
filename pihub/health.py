@@ -66,7 +66,6 @@ class HealthServer:
 
         ble_raw = self._bt.status
         conn_params = ble_raw.get("conn_params") or {}
-        interval_ms = conn_params.get("interval_ms")  # controller already derives this if interval_ms_x100 exists
 
         ble_state = {
             "serial_open": bool(ble_raw.get("adapter_present")),
@@ -78,7 +77,6 @@ class HealthServer:
             "proto_boot": bool(ble_raw.get("proto_boot")),
             "error": bool(ble_raw.get("error")),
             "conn_params": conn_params or None,
-            "interval_ms": interval_ms,
             "phy": ble_raw.get("phy"),
             "last_disc_reason": ble_raw.get("last_disc_reason"),
         }
