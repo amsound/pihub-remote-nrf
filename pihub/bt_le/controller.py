@@ -62,6 +62,65 @@ class BTLEController:
 
         logger.info("initialised port=%s baud=%s", ports[0] if ports else None, baud)
 
+    # Dispatcher-facing
+
+    def key_down(self, *, usage: str, code: str) -> None:
+        try:
+            self._hid_client.key_down(usage=usage, code=code)
+        except Exception:
+            log.debug("key_down(usage=%s, code=%s) failed", usage, code, exc_info=True)
+
+    def key_up(self, *, usage: str, code: str) -> None:
+        try:
+            self._hid_client.key_up(usage=usage, code=code)
+        except Exception:
+            log.debug("key_up(usage=%s, code=%s) failed", usage, code, exc_info=True)
+
+    async def send_key(self, *, usage: str, code: str, hold_ms: int = 40) -> None:
+        try:
+            await self._hid_client.send_key(usage=usage, code=code, hold_ms=hold_ms)
+        except Exception:
+            log.debug(
+                "send_key(usage=%s, code=%s, hold_ms=%s) failed",
+                usage,
+                code,
+                hold_ms,
+                exc_info=True,
+            )
+
+    async def run_macro(
+        self,
+        steps: list[dict],
+        *,
+        default_hold_ms: int = 40,
+        inter_delay_ms: int = 400,
+    ) -> None:
+        try:
+            await self._hid_client.run_macro(
+                steps,
+                default_hold_ms=default_hold_ms,
+                inter_delay_ms=inter_delay_ms,
+            )
+        except Exception:
+            log.debug(
+                "run_macro(default_hold_ms=%s, inter_delay_ms=%s) failed",
+                default_hold_ms,
+                inter_delay_ms,
+                exc_info=True,
+            )
+
+    def consumer_down(self, usage_id: int) -> None:
+        try:
+            self._hid_client.consumer_down(usage_id)
+        except Exception:
+            log.debug("consumer_down(%s) failed", usage_id, exc_info=True)
+
+    def consumer_up(self, usage_id: int) -> None:
+        try:
+            self._hid_client.consumer_up(usage_id)
+        except Exception:
+            log.debug("consumer_up(%s) failed", usage_id, exc_info=True)
+
     async def start(self) -> None:
         if self._started:
             return
@@ -161,11 +220,3 @@ class BTLEController:
             return
         usage = usage_id if pressed else 0
         asyncio.create_task(self._serial.send_cc_usage(usage))
-
-    # Dispatcher-facing
-
-    async def send_key(self, *, usage: str, code: str, hold_ms: int = 40) -> None:
-        await self._hid_client.send_key(usage=usage, code=code, hold_ms=hold_ms)
-
-    async def run_macro(self, steps: list[dict], *, default_hold_ms: int = 40, inter_delay_ms: int = 400) -> None:
-        await self._hid_client.run_macro(steps, default_hold_ms=default_hold_ms, inter_delay_ms=inter_delay_ms)
