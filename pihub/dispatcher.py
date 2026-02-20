@@ -8,6 +8,7 @@ import logging
 import time
 from contextlib import suppress
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from pihub.bt_le.compiled_frames import CompiledBleFrames
 
 try:
     from importlib import resources as importlib_resources
@@ -68,10 +69,52 @@ class Dispatcher:
         # Delayed hold triggers: (rem_key, action_index) -> task
         self._hold_tasks: Dict[Tuple[str, int], asyncio.Task] = {}
 
+        # Precompiled BLE frames: (usage, code) -> CompiledBleFrames
+        self._ble_frames: Dict[Tuple[str, str], CompiledBleFrames] = {}
+        self._compile_ble_frames_once()
+
         # Summary: count activities and scancodes
         acts = len(self._bindings)
         scan_total = len(self._scancode_map)
         logger.info("keymap loaded: %s activities, %s scancodes", acts, scan_total)
+
+        def _compile_ble_frames_once(self) -> None:
+            """
+            Precompile all BLE actions found in keymap.json into binary frames.
+            Runs once at startup (as requested).
+            """
+            compiled: Dict[Tuple[str, str], CompiledBleFrames] = {}
+
+            for _activity, mapping in (self._bindings or {}).items():
+                if not isinstance(mapping, dict):
+                    continue
+                for _rem_key, actions in mapping.items():
+                    if not isinstance(actions, list):
+                        continue
+                    for a in actions:
+                        if not isinstance(a, dict) or a.get("do") != "ble":
+                            continue
+
+                        usage = a.get("usage")
+                        code = a.get("code")
+                        if not (isinstance(usage, str) and isinstance(code, str)):
+                            continue
+
+                        k = (usage, code)
+                        if k in compiled:
+                            continue
+
+                        try:
+                            frames = self._bt.compile_ble_frames(usage=usage, code=code)
+                        except Exception:
+                            logger.debug("BLE compile failed for %s/%s", usage, code, exc_info=True)
+                            continue
+
+                        if frames is not None:
+                            compiled[k] = frames
+
+            self._ble_frames = compiled
+            logger.info("compiled %d BLE actions into binary frames", len(self._ble_frames))
 
     @property
     def scancode_map(self) -> Dict[str, str]:
@@ -259,6 +302,16 @@ class Dispatcher:
         if not (isinstance(usage, str) and isinstance(code, str)):
             return
 
+        frames = self._ble_frames.get((usage, code))
+
+        if frames is not None:
+            if edge == "down":
+                self._bt.compiled_key_down(frames)
+            elif edge == "up":
+                self._bt.compiled_key_up(frames)
+            return
+
+        # Fallback (should be rare once compiled)
         if edge == "down":
             self._bt.key_down(usage=usage, code=code)
         elif edge == "up":

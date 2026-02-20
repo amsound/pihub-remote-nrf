@@ -449,6 +449,15 @@ class BleSerial:
         if self.is_open:
             await self._write_line("UNPAIR")
 
+    async def send_bin_frame(self, payload: bytes) -> None:
+        """
+        Send a fully-framed binary payload to the dongle.
+        payload already includes opcode + report bytes.
+        """
+        if not (self.serial_ready and self.state.connected):
+            return
+        await self._write_bin(payload)
+
     # ---------- STATUS parsing ----------
 
     @staticmethod

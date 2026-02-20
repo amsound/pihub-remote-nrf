@@ -8,6 +8,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
+from .compiled_frames import CompiledBleFrames
+
 Usage = Literal["keyboard", "consumer"]
 
 logger = logging.getLogger(__name__)
@@ -111,3 +113,33 @@ class HIDClient:
 
     def _encode_consumer_usage(self, code: str) -> int:
         return int(self._cc.get(code) or 0)
+
+    def compile_ble_frames(self, *, usage: Usage, code: str) -> CompiledBleFrames | None:
+        """
+        Compile a (usage, code) pair into prebuilt binary frames for the dongle.
+
+        Protocol (PiHub -> dongle):
+          - keyboard: 0x01 + 8-byte report
+          - consumer: 0x02 + 2-byte little-endian usage_id
+        """
+        if usage == "keyboard":
+            down8 = self._encode_keyboard_down(code)
+            if down8 is None:
+                return None
+            # Match key_up behavior: ignore unknown codes
+            if code not in self._kb:
+                logger.warning("unknown keyboard code %s; cannot compile", code)
+                return None
+            up8 = b"\x00\x00\x00\x00\x00\x00\x00\x00"
+            return CompiledBleFrames(down=b"\x01" + down8, up=b"\x01" + up8)
+
+        if usage == "consumer":
+            usage_id = self._encode_consumer_usage(code)
+            if not usage_id:
+                return None
+            usage_id &= 0xFFFF
+            down2 = bytes((usage_id & 0xFF, (usage_id >> 8) & 0xFF))
+            up2 = b"\x00\x00"
+            return CompiledBleFrames(down=b"\x02" + down2, up=b"\x02" + up2)
+
+        return None

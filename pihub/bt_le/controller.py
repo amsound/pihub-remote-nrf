@@ -8,6 +8,7 @@ from typing import Optional
 
 from .ble_serial import BleSerial, DongleState, discover_cmd_ports
 from .hid_client import HIDClient
+from .compiled_frames import CompiledBleFrames
 
 logger = logging.getLogger(__name__)
 
@@ -68,19 +69,19 @@ class BTLEController:
         try:
             self._hid_client.key_down(usage=usage, code=code)
         except Exception:
-            log.debug("key_down(usage=%s, code=%s) failed", usage, code, exc_info=True)
+            logger.debug("key_down(usage=%s, code=%s) failed", usage, code, exc_info=True)
 
     def key_up(self, *, usage: str, code: str) -> None:
         try:
             self._hid_client.key_up(usage=usage, code=code)
         except Exception:
-            log.debug("key_up(usage=%s, code=%s) failed", usage, code, exc_info=True)
+            logger.debug("key_up(usage=%s, code=%s) failed", usage, code, exc_info=True)
 
     async def send_key(self, *, usage: str, code: str, hold_ms: int = 40) -> None:
         try:
             await self._hid_client.send_key(usage=usage, code=code, hold_ms=hold_ms)
         except Exception:
-            log.debug(
+            logger.debug(
                 "send_key(usage=%s, code=%s, hold_ms=%s) failed",
                 usage,
                 code,
@@ -102,7 +103,7 @@ class BTLEController:
                 inter_delay_ms=inter_delay_ms,
             )
         except Exception:
-            log.debug(
+            logger.debug(
                 "run_macro(default_hold_ms=%s, inter_delay_ms=%s) failed",
                 default_hold_ms,
                 inter_delay_ms,
@@ -113,13 +114,23 @@ class BTLEController:
         try:
             self._hid_client.consumer_down(usage_id)
         except Exception:
-            log.debug("consumer_down(%s) failed", usage_id, exc_info=True)
+            logger.debug("consumer_down(%s) failed", usage_id, exc_info=True)
 
     def consumer_up(self, usage_id: int) -> None:
         try:
             self._hid_client.consumer_up(usage_id)
         except Exception:
-            log.debug("consumer_up(%s) failed", usage_id, exc_info=True)
+            logger.debug("consumer_up(%s) failed", usage_id, exc_info=True)
+
+    def compile_ble_frames(self, *, usage: str, code: str) -> CompiledBleFrames | None:
+        # usage is a str in dispatcher; HIDClient expects Usage but it’s compatible.
+        return self._hid_client.compile_ble_frames(usage=usage, code=code)
+
+    def compiled_key_down(self, frames: CompiledBleFrames) -> None:
+        asyncio.create_task(self._serial.send_bin_frame(frames.down))
+
+    def compiled_key_up(self, frames: CompiledBleFrames) -> None:
+        asyncio.create_task(self._serial.send_bin_frame(frames.up))
 
     async def start(self) -> None:
         if self._started:
