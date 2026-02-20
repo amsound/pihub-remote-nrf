@@ -133,6 +133,10 @@ class BTLEController:
         self._started = False
         await self._serial.stop()
 
+    async def unpair(self) -> None:
+        # keep it human-readable on the wire
+        await self._serial.unpair()
+
     async def wait_ready(self, timeout: float = 5.0) -> bool:
         if self._state.ready:
             return True

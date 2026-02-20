@@ -47,14 +47,22 @@ def _make_on_cmd(bt: BTLEController):
 
           1) Single BLE key (tap):
              {
+               "dest": "pi",
                "text": "ble_key",
                "usage": "keyboard" | "consumer",
                "code": "<symbolic_code>",
                "hold_ms": 40               # optional, default 40ms (whitelist)
              }
 
-          2) Macro by name (timed sequence, local to Pi):
+          2) BLE Unpair command:
              {
+               "dest": "pi",
+               "text": "unpair",
+             }
+
+          3) Macro by name (timed sequence, local to Pi):
+             {
+               "dest": "pi",
                "text": "macro",
                "name": "<macro_name>",     # must exist in MACROS
                "tap_ms": 40,               # optional per-key hold, default 40ms (whitelist)
@@ -70,6 +78,10 @@ def _make_on_cmd(bt: BTLEController):
             if isinstance(usage, str) and isinstance(code, str) and hold_ms is not None:
                 # single-shot via HIDClient (macros use run_macro below)
                 await bt.send_key(usage=usage, code=code, hold_ms=hold_ms)
+            return
+        
+        if text == "unpair":
+            await bt.unpair()
             return
 
         if text == "macro":
