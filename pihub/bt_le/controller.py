@@ -108,9 +108,21 @@ class BTLEController:
         if not self._state.conn_params:
             return None
         params = dict(self._state.conn_params)
-        interval_x100 = params.get("interval_ms_x100")
-        if isinstance(interval_x100, int):
-            params["interval_ms"] = interval_x100 / 100.0
+        # Normalize interval_ms and hide the internal x100 form from health/status.
+        interval_ms = params.get("interval_ms")
+        if interval_ms is not None:
+            # EVT CONN_PARAMS provides interval_ms as a string like "15.00"
+            try:
+                params["interval_ms"] = float(interval_ms)
+            except Exception:
+                pass
+        else:
+            interval_x100 = params.get("interval_ms_x100")
+            if isinstance(interval_x100, int):
+                params["interval_ms"] = interval_x100 / 100.0
+
+        # Don't leak the internal representation
+        params.pop("interval_ms_x100", None)
         return params
 
     def _on_dongle_event(self, event: str, st: DongleState) -> None:
