@@ -65,6 +65,7 @@ class BleSerial:
 
         self.state = DongleState()
         self._pong_counter = 0
+        self._tx_lock = asyncio.Lock()
         
         # TX is serialized through a single writer task to avoid per-send executor overhead.
         self._tx_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=512)
