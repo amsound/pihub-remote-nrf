@@ -513,6 +513,64 @@ static bool hex_to_bytes(const char *hex, uint8_t *out, size_t out_len)
 
 static void cmd_handle_line(char *line);
 
+/* --- BIN hot-path opcodes (PiHub -> dongle) ---
+ * 0x01: keyboard report payload (8 bytes)
+ * 0x02: consumer report payload (2 bytes, little-endian usage)
+ *
+ * Everything else remains ASCII newline-delimited (PING/STATUS/UNPAIR).
+ */
+#define PIHUB_BIN_KB 0x01
+#define PIHUB_BIN_CC 0x02
+
+static bool cmd_uart_read_exact(uint8_t *dst, size_t n, int sleep_ms)
+{
+    /* Non-blocking UART backend: poll until we get n bytes. */
+    for (size_t i = 0; i < n; i++) {
+        while (uart_poll_in(cmd_uart, &dst[i]) != 0) {
+            k_msleep(sleep_ms);
+        }
+    }
+    return true;
+}
+
+static void cmd_handle_bin_kb(void)
+{
+    uint8_t report8[8];
+    (void)cmd_uart_read_exact(report8, sizeof(report8), 1);
+
+    int rc = send_keyboard_report(report8);
+    if (rc == 0) {
+        cmd_uart_send_line("OK");
+    } else if (rc == -EBUSY || rc == -EAGAIN || rc == -ENOMEM) {
+        char b[32];
+        snprintk(b, sizeof(b), "BUSY %d", rc);
+        cmd_uart_send_line(b);
+    } else {
+        char b[32];
+        snprintk(b, sizeof(b), "ERR %d", rc);
+        cmd_uart_send_line(b);
+    }
+}
+
+static void cmd_handle_bin_cc(void)
+{
+    uint8_t report2[2];
+    (void)cmd_uart_read_exact(report2, sizeof(report2), 1);
+
+    int rc = send_consumer_report(report2);
+    if (rc == 0) {
+        cmd_uart_send_line("OK");
+    } else if (rc == -EBUSY || rc == -EAGAIN || rc == -ENOMEM) {
+        char b[32];
+        snprintk(b, sizeof(b), "BUSY %d", rc);
+        cmd_uart_send_line(b);
+    } else {
+        char b[32];
+        snprintk(b, sizeof(b), "ERR %d", rc);
+        cmd_uart_send_line(b);
+    }
+}
+
 /* Command RX thread */
 #define CMD_RX_STACK 1536
 #define CMD_RX_PRIO  5
@@ -527,8 +585,7 @@ static void cmd_rx_thread_fn(void *a, void *b, void *c)
         return;
     }
 
-    /* Wait for host to open the port (DTR). */
-        /* Wait for host to open the port (DTR). We do NOT talk until DTR=1, so macOS won't
+    /* Wait for host to open the port (DTR). We do NOT talk until DTR=1, so macOS won't
      * create "ghost" ttys that appear dead. PiHub should open the port which asserts DTR.
      */
     uint32_t dtr = 0;
@@ -547,32 +604,46 @@ static void cmd_rx_thread_fn(void *a, void *b, void *c)
     cmd_uart_send_line("EVT USB 1");
     cmd_uart_send_line("EVT BOOT pihub-hid");
 
+    /* ASCII fallback buffer (for PING/STATUS/UNPAIR and any debug commands). */
     char line[96];
     size_t n = 0;
 
     while (1) {
         uint8_t ch;
         int rc = uart_poll_in(cmd_uart, &ch);
-        if (rc == 0) {
-            if (ch == '\r') {
-                continue;
+        if (rc != 0) {
+            k_msleep(2);
+            continue;
+        }
+
+        /* BIN hot-path: a single byte opcode + fixed payload. */
+        if (ch == PIHUB_BIN_KB) {
+            cmd_handle_bin_kb();
+            continue;
+        }
+        if (ch == PIHUB_BIN_CC) {
+            cmd_handle_bin_cc();
+            continue;
+        }
+
+        /* ASCII path (newline-delimited). */
+        if (ch == '\r') {
+            continue;
+        }
+        if (ch == '\n') {
+            line[n] = '\0';
+            if (n > 0) {
+                cmd_handle_line(line);
             }
-            if (ch == '\n') {
-                line[n] = '\0';
-                if (n > 0) {
-                    cmd_handle_line(line);
-                }
-                n = 0;
-                continue;
-            }
-            if (n < (sizeof(line) - 1)) {
-                line[n++] = (char)ch;
-            } else {
-                /* Overflow: drop line. */
-                n = 0;
-            }
+            n = 0;
+            continue;
+        }
+
+        if (n < (sizeof(line) - 1)) {
+            line[n++] = (char)ch;
         } else {
-            k_msleep(5);
+            /* Overflow: drop line. */
+            n = 0;
         }
     }
 }

@@ -65,7 +65,10 @@ class BleSerial:
 
         self.state = DongleState()
         self._pong_counter = 0
-        self._tx_lock = asyncio.Lock()
+        
+        # TX is serialized through a single writer task to avoid per-send executor overhead.
+        self._tx_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=512)
+        self._writer_task: Optional[asyncio.Task] = None
 
     @property
     def is_open(self) -> bool:
@@ -89,7 +92,7 @@ class BleSerial:
             self._connect_task.cancel()
             self._connect_task = None
 
-        for task_attr in ("_reader_task", "_keepalive_task", "_status_resync_task", "_status_poll_task"):
+        for task_attr in ("_reader_task", "_writer_task", "_keepalive_task", "_status_resync_task", "_status_poll_task"):
             task = getattr(self, task_attr)
             if task is not None:
                 task.cancel()
@@ -182,6 +185,9 @@ class BleSerial:
         if self._reader_task is None or self._reader_task.done():
             self._reader_task = asyncio.create_task(self._reader_loop(), name="ble-serial-reader")
 
+        if self._writer_task is None or self._writer_task.done():
+            self._writer_task = asyncio.create_task(self._writer_loop(), name="ble-serial-writer")
+
         await asyncio.sleep(0.15)
         ok = await self._handshake_once(timeout_s=1.0)
 
@@ -249,6 +255,74 @@ class BleSerial:
         if not raw:
             return ""
         return raw.decode("utf-8", errors="replace").strip()
+    
+    async def _writer_loop(self) -> None:
+        while True:
+            try:
+                data = await self._tx_q.get()
+                if not self.is_open:
+                    continue
+                loop = asyncio.get_running_loop()
+
+                # One executor hop for the entire write.
+                await loop.run_in_executor(None, self._ser.write, data)  # type: ignore[arg-type]
+
+                # Intentionally no flush-per-message.
+                # CDC ACM + OS buffering is fine; flushing each packet adds latency/jitter.
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("writer error, reconnecting: %r", exc)
+                await self._force_reconnect("writer_error")
+                await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
+
+    async def _enqueue_tx(self, data: bytes) -> None:
+        # Keep the hot path hot: if queue is full, drop oldest rather than blocking.
+        if self._tx_q.full():
+            try:
+                _ = self._tx_q.get_nowait()
+            except Exception:
+                pass
+        await self._tx_q.put(data)
+
+    async def _write_line(self, line: str) -> None:
+        if not self.is_open:
+            return
+        framed = (line.strip() + "\n").encode("ascii", errors="replace")
+        await self._enqueue_tx(framed)
+
+    async def _write_bin(self, payload: bytes) -> None:
+        """
+        Write raw binary bytes to the dongle (hot path).
+        Used for keypress frames only.
+        """
+        if not self.is_open:
+            return
+        loop = asyncio.get_running_loop()
+        async with self._tx_lock:
+            await loop.run_in_executor(None, self._ser.write, payload)  # type: ignore[arg-type]
+            await loop.run_in_executor(None, self._ser.flush)  # type: ignore[arg-type]
+
+    async def _write_bin(self, payload: bytes) -> None:
+        if not self.is_open:
+            return
+        await self._enqueue_tx(payload)
+
+    async def send_kb_bin(self, report8: bytes) -> None:
+        # Only send once the dongle reports READY (your existing gating).
+        if not (self.serial_ready and self.state.connected):
+            return
+        if len(report8) != 8:
+            raise ValueError("keyboard report must be 8 bytes")
+        await self._write_bin(b"\x01" + report8)
+
+    async def send_cc_bin(self, report2: bytes) -> None:
+        if not (self.serial_ready and self.state.connected):
+            return
+        if len(report2) != 2:
+            raise ValueError("consumer report must be 2 bytes")
+        await self._write_bin(b"\x02" + report2)
 
     async def _write_line(self, line: str) -> None:
         if not self.is_open:
@@ -354,14 +428,17 @@ class BleSerial:
             return
         if len(report8) != 8:
             raise ValueError("keyboard report must be 8 bytes")
-        await self._write_line("KB " + report8.hex().upper())
+        # Binary hot-path frame: 0x01 + 8 bytes
+        await self._write_bin(b"\x01" + report8)
 
     async def send_cc_usage(self, usage: int) -> None:
         if not (self.serial_ready and self.state.connected):
             return
         usage &= 0xFFFF
+        # 2-byte little-endian payload (same shape you already used, just not hex encoded)
         le = bytes((usage & 0xFF, (usage >> 8) & 0xFF))
-        await self._write_line("CC " + le.hex().upper())
+        # Binary hot-path frame: 0x02 + 2 bytes
+        await self._write_bin(b"\x02" + le)
 
     async def status(self) -> None:
         if self.is_open:
