@@ -78,48 +78,48 @@ class Dispatcher:
         scan_total = len(self._scancode_map)
         logger.info("keymap loaded: %s activities, %s scancodes", acts, scan_total)
 
-        def _compile_ble_frames_once(self) -> None:
-            """
-            Precompile all BLE actions found in keymap.json into binary frames.
-            Runs once at startup (as requested).
-            """
-            compiled: Dict[Tuple[str, str], CompiledBleFrames] = {}
-
-            for _activity, mapping in (self._bindings or {}).items():
-                if not isinstance(mapping, dict):
-                    continue
-                for _rem_key, actions in mapping.items():
-                    if not isinstance(actions, list):
-                        continue
-                    for a in actions:
-                        if not isinstance(a, dict) or a.get("do") != "ble":
-                            continue
-
-                        usage = a.get("usage")
-                        code = a.get("code")
-                        if not (isinstance(usage, str) and isinstance(code, str)):
-                            continue
-
-                        k = (usage, code)
-                        if k in compiled:
-                            continue
-
-                        try:
-                            frames = self._bt.compile_ble_frames(usage=usage, code=code)
-                        except Exception:
-                            logger.debug("BLE compile failed for %s/%s", usage, code, exc_info=True)
-                            continue
-
-                        if frames is not None:
-                            compiled[k] = frames
-
-            self._ble_frames = compiled
-            logger.info("compiled %d BLE actions into binary frames", len(self._ble_frames))
-
     @property
     def scancode_map(self) -> Dict[str, str]:
         """Public accessor for the logical rem_* scancode map."""
         return self._scancode_map
+    
+    def _compile_ble_frames_once(self) -> None:
+        """
+        Precompile all BLE actions found in keymap.json into binary frames.
+        Runs once at startup (as requested).
+        """
+        compiled: Dict[Tuple[str, str], CompiledBleFrames] = {}
+
+        for _activity, mapping in (self._bindings or {}).items():
+            if not isinstance(mapping, dict):
+                continue
+            for _rem_key, actions in mapping.items():
+                if not isinstance(actions, list):
+                    continue
+                for a in actions:
+                    if not isinstance(a, dict) or a.get("do") != "ble":
+                        continue
+
+                    usage = a.get("usage")
+                    code = a.get("code")
+                    if not (isinstance(usage, str) and isinstance(code, str)):
+                        continue
+
+                    k = (usage, code)
+                    if k in compiled:
+                        continue
+
+                    try:
+                        frames = self._bt.compile_ble_frames(usage=usage, code=code)
+                    except Exception:
+                        logger.debug("BLE compile failed for %s/%s", usage, code, exc_info=True)
+                        continue
+
+                    if frames is not None:
+                        compiled[k] = frames
+
+        self._ble_frames = compiled
+        logger.info("compiled %d BLE actions into binary frames", len(self._ble_frames))
 
     # Activity comes from HA (ha_ws)
     async def on_activity(self, text: Optional[str]) -> None:
@@ -128,6 +128,7 @@ class Dispatcher:
         self._activity = text
         if (prior is None) != (text is None):
             self._activity_none_logged = False
+    
     # USB edges come from UnifyingReader
     async def on_usb_edge(self, rem_key: str, edge: str) -> None:
         """Handle a key edge originating from the USB receiver."""
@@ -265,6 +266,7 @@ class Dispatcher:
         for t in tasks:
             with suppress(asyncio.CancelledError):
                 await t
+    
     # ---- Action executor ----
     async def _do_action(
         self,
