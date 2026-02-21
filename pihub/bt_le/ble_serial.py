@@ -277,14 +277,36 @@ class BleSerial:
                 await self._force_reconnect("writer_error")
                 await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
 
-    async def _enqueue_tx(self, data: bytes) -> None:
-        # Keep the hot path hot: if queue is full, drop oldest rather than blocking.
+    def enqueue_bin_frame(self, payload: bytes) -> None:
+        """
+        HOT PATH: enqueue a fully-framed binary payload (already includes opcode).
+        Safe to call from sync code running on the event loop thread.
+        """
+        if not self.is_open:
+            return
+
+        # If queue is full, drop oldest rather than blocking the hot path.
         if self._tx_q.full():
             try:
                 _ = self._tx_q.get_nowait()
             except Exception:
                 pass
-        await self._tx_q.put(data)
+
+        try:
+            self._tx_q.put_nowait(payload)
+        except Exception:
+            # If the loop is shutting down, ignore.
+            pass
+
+    def enqueue_line(self, line: str) -> None:
+        """
+        Enqueue an ASCII command line (human readable on the wire).
+        """
+        framed = (line.strip() + "\n").encode("ascii", errors="replace")
+        self.enqueue_bin_frame(framed)
+
+    async def _enqueue_tx(self, data: bytes) -> None:
+        self.enqueue_bin_frame(data)
 
     async def _write_line(self, line: str) -> None:
         if not self.is_open:
