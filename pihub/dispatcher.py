@@ -57,8 +57,10 @@ class Dispatcher:
                 "keymap.json schema invalid: expected 'scancode_map' (dict) and 'activities' (dict)."
             ) from exc
 
+        self._precompile_emit_actions()
         self._activity: Optional[str] = None
         self._activity_none_logged = False
+        self._active_bindings: Dict[str, List[Dict[str, Any]]] = {}
 
         # Active repeat tasks keyed by rem_* (per-key)
         self._repeat_tasks: Dict[str, asyncio.Task] = {}
@@ -121,11 +123,57 @@ class Dispatcher:
         self._ble_frames = compiled
         logger.info("compiled %d BLE actions into binary frames", len(self._ble_frames))
 
+    def _precompile_emit_actions(self) -> None:
+        """
+        Precompute emit action fields once at startup so the hot path doesn't:
+        - rebuild extras dict
+        - re-parse min_hold_ms
+        - re-derive want_repeat/when
+        """
+        for _activity, mapping in (self._bindings or {}).items():
+            if not isinstance(mapping, dict):
+                continue
+            for _rem_key, actions in mapping.items():
+                if not isinstance(actions, list):
+                    continue
+                for a in actions:
+                    if not isinstance(a, dict) or a.get("do") != "emit":
+                        continue
+
+                    # Precompute once. Store under private keys to avoid changing keymap schema.
+                    a["_when"] = a.get("when", "down")
+                    a["_want_repeat"] = bool(a.get("repeat"))
+
+                    a["_min_hold_ms"] = (
+                        parse_ms(
+                            a.get("min_hold_ms"),
+                            default=0,
+                            min=0,
+                            max=5000,
+                            allow_none=False,
+                            context="keymap.min_hold_ms",
+                        )
+                        or 0
+                    )
+
+                    a["_extras"] = {
+                        k: v
+                        for k, v in a.items()
+                        if k not in {"do", "when", "text", "repeat", "min_hold_ms", "_when", "_want_repeat", "_min_hold_ms", "_extras"}
+                    }
+
     # Activity comes from HA (ha_ws)
     async def on_activity(self, text: Optional[str]) -> None:
         """Record the current activity reported by Home Assistant."""
         prior = self._activity
         self._activity = text
+
+        # Cache the mapping for the current activity so per-edge dispatch is a single dict lookup.
+        if text is None:
+            self._active_bindings = {}
+        else:
+            self._active_bindings = self._bindings.get(text, {}) or {}
+
         if (prior is None) != (text is None):
             self._activity_none_logged = False
     
@@ -143,7 +191,7 @@ class Dispatcher:
         if not await self._update_press_state(rem_key, edge, loop):
             return
 
-        actions = (self._bindings.get(self._activity, {}) or {}).get(rem_key, [])
+        actions = self._active_bindings.get(rem_key, [])
         # enumerate actions so we can key per-action hold tasks
         for idx, a in enumerate(actions):
             await self._do_action(a, edge, rem_key=rem_key, action_index=idx)
@@ -332,19 +380,30 @@ class Dispatcher:
         if not isinstance(text, str):
             return
 
-        extras = {k: v for k, v in a.items() if k not in {"do", "when", "text", "repeat", "min_hold_ms"}}
-        want_repeat = bool(a.get("repeat"))
-        min_hold_ms = parse_ms(
-            a.get("min_hold_ms"),
-            default=0,
-            min=0,
-            max=5000,
-            allow_none=False,
-            context="keymap.min_hold_ms",
-        ) or 0
+        extras = a.get("_extras")
+        if not isinstance(extras, dict):
+            # Fallback if action wasn't precompiled for any reason
+            extras = {k: v for k, v in a.items() if k not in {"do", "when", "text", "repeat", "min_hold_ms"}}
+
+        want_repeat = a.get("_want_repeat")
+        if not isinstance(want_repeat, bool):
+            want_repeat = bool(a.get("repeat"))
+
+        min_hold_ms = a.get("_min_hold_ms")
+        if not isinstance(min_hold_ms, int):
+            min_hold_ms = parse_ms(
+                a.get("min_hold_ms"),
+                default=0,
+                min=0,
+                max=5000,
+                allow_none=False,
+                context="keymap.min_hold_ms",
+            ) or 0
 
         loop = asyncio.get_running_loop()
-        when = a.get("when", "down")
+        when = a.get("_when")
+        if not isinstance(when, str):
+            when = a.get("when", "down")
 
         # when == "up": fire on release; if min_hold_ms > 0, enforce press duration
         if when == "up" and edge == "up":
