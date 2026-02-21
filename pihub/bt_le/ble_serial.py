@@ -65,7 +65,6 @@ class BleSerial:
 
         self.state = DongleState()
         self._pong_counter = 0
-        self._tx_lock = asyncio.Lock()
         
         # TX is serialized through a single writer task to avoid per-send executor overhead.
         self._tx_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=512)
@@ -294,18 +293,6 @@ class BleSerial:
         await self._enqueue_tx(framed)
 
     async def _write_bin(self, payload: bytes) -> None:
-        """
-        Write raw binary bytes to the dongle (hot path).
-        Used for keypress frames only.
-        """
-        if not self.is_open:
-            return
-        loop = asyncio.get_running_loop()
-        async with self._tx_lock:
-            await loop.run_in_executor(None, self._ser.write, payload)  # type: ignore[arg-type]
-            await loop.run_in_executor(None, self._ser.flush)  # type: ignore[arg-type]
-
-    async def _write_bin(self, payload: bytes) -> None:
         if not self.is_open:
             return
         await self._enqueue_tx(payload)
@@ -324,16 +311,6 @@ class BleSerial:
         if len(report2) != 2:
             raise ValueError("consumer report must be 2 bytes")
         await self._write_bin(b"\x02" + report2)
-
-    async def _write_line(self, line: str) -> None:
-        if not self.is_open:
-            return
-        loop = asyncio.get_running_loop()
-        framed = line.strip() + "\n"
-        data = framed.encode("ascii", errors="replace")
-        async with self._tx_lock:
-            await loop.run_in_executor(None, self._ser.write, data)  # type: ignore[arg-type]
-            await loop.run_in_executor(None, self._ser.flush)  # type: ignore[arg-type]
 
     async def _handshake_once(self, timeout_s: float) -> bool:
         start_pong = self._pong_counter

@@ -127,10 +127,10 @@ class BTLEController:
         return self._hid_client.compile_ble_frames(usage=usage, code=code)
 
     def compiled_key_down(self, frames: CompiledBleFrames) -> None:
-        asyncio.create_task(self._serial.send_bin_frame(frames.down))
+        self._serial.enqueue_bin_frame(frames.down)
 
     def compiled_key_up(self, frames: CompiledBleFrames) -> None:
-        asyncio.create_task(self._serial.send_bin_frame(frames.up))
+        self._serial.enqueue_bin_frame(frames.up)
 
     async def start(self) -> None:
         if self._started:
@@ -228,10 +228,13 @@ class BTLEController:
     def notify_keyboard(self, report: bytes) -> None:
         if not self._link_ready():
             return
-        asyncio.create_task(self._serial.send_kb(report))
+        if len(report) != 8:
+            return
+        self._serial.enqueue_bin_frame(b"\x01" + report)
 
     def notify_consumer(self, usage_id: int, pressed: bool) -> None:
         if not self._link_ready():
             return
-        usage = usage_id if pressed else 0
-        asyncio.create_task(self._serial.send_cc_usage(usage))
+        usage = (usage_id & 0xFFFF) if pressed else 0
+        le = bytes((usage & 0xFF, (usage >> 8) & 0xFF))
+        self._serial.enqueue_bin_frame(b"\x02" + le)
