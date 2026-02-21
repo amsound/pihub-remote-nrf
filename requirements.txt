@@ -3,4 +3,4 @@ evdev==1.9.2
 PyYAML==6.0.2
 uvloop==0.21.0
 aiohttp>=3.9,<4
-pyserial>=3.5,<4
+hid>=1.0.6
