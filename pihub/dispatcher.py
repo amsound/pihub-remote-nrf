@@ -72,7 +72,9 @@ class Dispatcher:
         self._hold_tasks: Dict[Tuple[str, int], asyncio.Task] = {}
 
         # Precompiled BLE frames: (usage, code) -> CompiledBleFrames
-        self._ble_frames: Dict[Tuple[str, str], CompiledBleFrames] = {}
+        # Precompiled BLE frames per activity (hot path)
+        self._ble_frames_by_activity: Dict[str, CompiledBleFrames] = {}
+        self._active_ble_frames: Optional[CompiledBleFrames] = None
         self._compile_ble_frames_once()
 
         # Summary: count activities and scancodes
@@ -87,41 +89,32 @@ class Dispatcher:
     
     def _compile_ble_frames_once(self) -> None:
         """
-        Precompile all BLE actions found in keymap.json into binary frames.
-        Runs once at startup (as requested).
-        """
-        compiled: Dict[Tuple[str, str], CompiledBleFrames] = {}
+        Precompile BLE actions into binary frames.
 
-        for _activity, mapping in (self._bindings or {}).items():
+        New style: compile once per activity using the dongle link's encoder
+        (which loads pihub.assets/hid_keymap.json) and store the resulting
+        CompiledBleFrames keyed by activity.
+
+        This keeps the hot path to:
+        dict lookup (active frames) + enqueue bytes
+        """
+        compiled: Dict[str, CompiledBleFrames] = {}
+        total = 0
+
+        for activity, mapping in (self._bindings or {}).items():
             if not isinstance(mapping, dict):
                 continue
-            for _rem_key, actions in mapping.items():
-                if not isinstance(actions, list):
-                    continue
-                for a in actions:
-                    if not isinstance(a, dict) or a.get("do") != "ble":
-                        continue
+            try:
+                frames = self._bt.compile_ble_frames(mapping)
+            except Exception:
+                logger.debug("BLE compile failed for activity=%s", activity, exc_info=True)
+                continue
+            compiled[activity] = frames
+            total += (len(frames.kb_down) + len(frames.cc_down))
 
-                    usage = a.get("usage")
-                    code = a.get("code")
-                    if not (isinstance(usage, str) and isinstance(code, str)):
-                        continue
+        self._ble_frames_by_activity = compiled
+        logger.info("compiled %d BLE actions into binary frames", total)
 
-                    k = (usage, code)
-                    if k in compiled:
-                        continue
-
-                    try:
-                        frames = self._bt.compile_ble_frames(usage=usage, code=code)
-                    except Exception:
-                        logger.debug("BLE compile failed for %s/%s", usage, code, exc_info=True)
-                        continue
-
-                    if frames is not None:
-                        compiled[k] = frames
-
-        self._ble_frames = compiled
-        logger.info("compiled %d BLE actions into binary frames", len(self._ble_frames))
 
     def _precompile_emit_actions(self) -> None:
         """
@@ -173,6 +166,10 @@ class Dispatcher:
             self._active_bindings = {}
         else:
             self._active_bindings = self._bindings.get(text, {}) or {}
+
+
+        # Cache compiled BLE frames for this activity (or None).
+        self._active_ble_frames = None if text is None else self._ble_frames_by_activity.get(text)
 
         if (prior is None) != (text is None):
             self._activity_none_logged = False
@@ -352,20 +349,20 @@ class Dispatcher:
         if not (isinstance(usage, str) and isinstance(code, str)):
             return
 
-        frames = self._ble_frames.get((usage, code))
-
+        frames = self._active_ble_frames
         if frames is not None:
             if edge == "down":
-                self._bt.compiled_key_down(frames)
+                self._bt.compiled_key_down(frames, usage=usage, code=code)
             elif edge == "up":
-                self._bt.compiled_key_up(frames)
+                self._bt.compiled_key_up(frames, usage=usage, code=code)
             return
 
-        # Fallback (should be rare once compiled)
+        # Fallback: encode on-demand (should be rare once compiled)
         if edge == "down":
             self._bt.key_down(usage=usage, code=code)
         elif edge == "up":
             self._bt.key_up(usage=usage, code=code)
+
 
     async def _handle_emit_action(
         self,
