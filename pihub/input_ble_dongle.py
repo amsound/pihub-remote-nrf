@@ -472,7 +472,8 @@ class BleDongleLink:
 
                 # HID writes usually expect: [report_id_byte] + data.
                 # For report-id-less devices, report_id=0 is used.
-                out = bytes([0x00]) + payload
+                # Firmware uses HID_REPORT_ID(0x01)
+                out = bytes([0x01]) + payload
 
                 # Pad or truncate to the configured report size+1 (report_id included).
                 target = 1 + self._out_report_bytes
@@ -513,6 +514,10 @@ class BleDongleLink:
                     chunk = bytes(data)
                 else:
                     chunk = bytes(data)
+
+                # Drop HID report-id byte if present (we use report id 0x01).
+                if chunk and chunk[0] in (0x00, 0x01):
+                    chunk = chunk[1:]
 
                 self._ingest_rx_bytes(chunk)
 
