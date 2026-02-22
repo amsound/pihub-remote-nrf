@@ -539,6 +539,11 @@ class BleDongleLink:
     def _enqueue_nowait(self, payload: bytes) -> None:
         if not self._link_ready():
             return
+        # If the host hasn't enabled notifications for this report, sending may be ignored.
+        if payload and payload[0] == 0x02 and self.state.notify is not None:
+            if int(self.state.notify.get('cc', 0) or 0) == 0:
+                logger.debug('consumer notify disabled on host (cc_notify=0); Apple TV often only enables keyboard. consumer frame may be ignored')
+
         if (self._tx_trace or logger.isEnabledFor(logging.DEBUG)) and payload:
             if payload[0] == 0x01 and len(payload) == 9:
                 logger.debug('tx kb: %s', payload.hex())
