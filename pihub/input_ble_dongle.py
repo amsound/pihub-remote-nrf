@@ -383,6 +383,7 @@ class BleDongleLink:
     async def unpair(self) -> None:
         if self.is_open:
             await self._write_line("UNPAIR")
+            asyncio.create_task(self._delayed_status_resync(0.25), name="ble-dongle-unpair-status")
 
     # ---------- internals: connect / io ----------
 
@@ -495,6 +496,27 @@ class BleDongleLink:
 
     def _request_status_resync(self) -> None:
         asyncio.create_task(self.status_cmd(), name="ble-dongle-status")
+
+def _maybe_log_state(self, *, src: str) -> None:
+    """Log state changes at INFO to match the old ble_serial.py behavior."""
+    # snapshot
+    adv = self.state.advertising
+    conn = self.state.connected
+    ready = self.state.ready
+
+    prev = getattr(self, "_last_logged_state", None)
+    cur = (adv, conn, ready, self.state.sec, bool(self.state.error))
+    if prev == cur:
+        return
+    self._last_logged_state = cur
+    logger.info("state: adv=%d conn=%d ready=%d sec=%s err=%d (%s)",
+                1 if adv else 0,
+                1 if conn else 0,
+                1 if ready else 0,
+                self.state.sec,
+                1 if self.state.error else 0,
+                src)
+
 
     async def _log_state_once_after_open(self) -> None:
         await asyncio.sleep(0.25)
@@ -648,6 +670,14 @@ class BleDongleLink:
         self.state.sec = self._to_int(kv.get("sec"), 0)
         self.state.suspend = (kv.get("suspend") == "1")
 
+        # Keep ready event in sync
+        if self.state.ready:
+            self._ready_evt.set()
+        else:
+            self._ready_evt.clear()
+
+        self._maybe_log_state(src="STATUS")
+
         notify: Dict[str, bool] = {}
         for k in ("kb_notify", "boot_notify", "cc_notify", "batt_notify"):
             if k in kv:
@@ -696,10 +726,12 @@ class BleDongleLink:
                 self._request_status_resync()
             else:
                 self._ready_evt.clear()
+            self._maybe_log_state(src="EVT READY")
             return
 
         if kind == "ADV":
             self.state.advertising = (rest[0] == "1")
+            self._maybe_log_state(src="EVT ADV")
             return
 
         if kind == "CONN":
@@ -707,6 +739,9 @@ class BleDongleLink:
             if not self.state.connected:
                 self.state.ready = False
                 self._ready_evt.clear()
+            # Force status resync after connect/disconnect to pick up conn_params/phy.
+            self._request_status_resync()
+            self._maybe_log_state(src="EVT CONN")
             return
 
         if kind == "DISC" and rest:
@@ -714,10 +749,12 @@ class BleDongleLink:
                 self.state.last_disc_reason = int(rest[0], 0)
             except Exception:
                 self.state.last_disc_reason = None
+            self._maybe_log_state(src="EVT DISC")
             return
 
         if kind == "ERR":
             self.state.error = True
+            self._maybe_log_state(src="EVT ERR")
             return
 
         # ignore other EVT kinds for now (PROTO/CONN_PARAMS/PHY etc. are surfaced via STATUS)
