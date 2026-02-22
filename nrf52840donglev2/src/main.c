@@ -205,135 +205,40 @@ static uint8_t current_sec_level;
 static bool hid_zero_sent;
 static bool link_ready;
 
-/* --------------------------------------------------------------------------
- * USB CDC ACM command channel (PiHub <-> dongle)
+/* -------------------------------------------------------------------------
+ * USB HID command channel (PiHub <-> dongle)
  *
- * We expose a simple newline-delimited ASCII protocol on CDC ACM 0:
- *   PING            -> PONG
- *   STATUS          -> STATUS adv=<0/1> conn=<0/1> proto=<0/1> err=<0/1>
- *   UNPAIR          -> OK (clears bonds + restarts advertising)
- *   KB <16hex>      -> OK|BUSY|ERR <rc>
- *   CC <4hex>       -> OK|BUSY|ERR <rc>
+ * We expose the same protocol as before, but carried over a vendor-defined
+ * USB HID interface:
  *
- * Telemetry (emitted opportunistically when the link is up):
- *   EVT ADV 0|1
- *   EVT CONN 0|1
- *   EVT PROTO 0|1
- *   EVT CONN_PARAMS interval_ms=<...> latency=<...> timeout_ms=<...>
- *   EVT PHY tx=<1M|2M|Coded> rx=<...>
- *   EVT DISC reason=<n>
- *   EVT ERR 0|1
- * -------------------------------------------------------------------------- */
+ * Host -> dongle (HID OUT payload bytes):
+ *   - Binary hot path:
+ *       0x01 <8 bytes>   keyboard report (boot keyboard, 8 bytes)
+ *       0x02 <2 bytes>   consumer payload (LE usage, 2 bytes)
+ *   - ASCII ops (newline delimited):
+ *       PING\n, STATUS\n, UNPAIR\n
+ *
+ * Dongle -> host (HID IN payload bytes):
+ *   - ASCII lines, newline delimited (EVT..., STATUS..., OK/PONG/ERR...).
+ * ------------------------------------------------------------------------- */
 
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(cdc_acm_uart0), okay)
-#if DT_NODE_HAS_STATUS(DT_ALIAS(pihub_cmd_uart), okay)
-#define PIHUB_CMD_UART_NODE DT_ALIAS(pihub_cmd_uart)
-#else
-#define PIHUB_CMD_UART_NODE DT_NODELABEL(cdc_acm_uart0)
-#endif
-#define PIHUB_CMD_UART_ENABLED 1
-#elif DT_NODE_HAS_STATUS(DT_NODELABEL(zephyr_cdc_acm_uart), okay)
-#define PIHUB_CMD_UART_NODE DT_NODELABEL(zephyr_cdc_acm_uart)
-#define PIHUB_CMD_UART_ENABLED 1
-#else
-#define PIHUB_CMD_UART_ENABLED 0
-#endif
+#include <string.h>
 
-static const struct device *cmd_uart;
+int pihub_usb_hid_init(void);
+int pihub_usb_hid_write(const uint8_t *data, size_t len);
+
 static atomic_t cmd_uart_ready;
 
-/* ---------------- CMD UART non-blocking TX ----------------
- * Best-effort: enqueue and drain via UART TX IRQ.
- * Policy: DROP OLDEST on overflow (better UX than replaying stale bursts).
- */
-#define CMD_TX_RB_SIZE 512
-RING_BUF_DECLARE(cmd_tx_rb, CMD_TX_RB_SIZE);
-static struct k_work_delayable cmd_tx_kick;
-
-static void cmd_uart_kick_tx(void);
-
-static void cmd_tx_kick_work_handler(struct k_work *work)
-{
-    ARG_UNUSED(work);
-    cmd_uart_kick_tx();
-}
-
-/* Discard bytes from the ring until there is at least "need" bytes of space. */
-static void cmd_tx_drop_oldest_until_space(uint32_t need)
-{
-    uint32_t space = ring_buf_space_get(&cmd_tx_rb);
-    if (space >= need) {
-        return;
-    }
-
-    uint32_t to_drop = need - space;
-    uint8_t tmp[32];
-
-    while (to_drop > 0) {
-        uint32_t chunk = MIN(to_drop, (uint32_t)sizeof(tmp));
-        uint32_t got = ring_buf_get(&cmd_tx_rb, tmp, chunk);
-        if (got == 0) {
-            break;
-        }
-        to_drop -= got;
-    }
-}
-
-static void cmd_uart_isr(const struct device *dev, void *user_data)
-{
-    ARG_UNUSED(user_data);
-
-    if (!uart_irq_update(dev)) {
-        return;
-    }
-
-    while (uart_irq_tx_ready(dev)) {
-        uint8_t *data;
-        uint32_t len = ring_buf_get_claim(&cmd_tx_rb, &data, 64);
-
-        if (len == 0) {
-            uart_irq_tx_disable(dev);
-            return;
-        }
-
-        int sent = uart_fifo_fill(dev, data, len);
-        if (sent <= 0) {
-            /* Backend not accepting right now. Stop TX and retry later. */
-            uart_irq_tx_disable(dev);
-            (void)k_work_schedule(&cmd_tx_kick, K_MSEC(10));
-            return;
-        }
-
-        ring_buf_get_finish(&cmd_tx_rb, (uint32_t)sent);
-    }
-}
-
-static void cmd_uart_kick_tx(void)
-{
-    if (!atomic_get(&cmd_uart_ready) || (cmd_uart == NULL)) {
-        return;
-    }
-
-    if (ring_buf_size_get(&cmd_tx_rb) > 0) {
-        uart_irq_tx_enable(cmd_uart);
-    }
-}
-
+/* Best-effort send; if USB isn't configured yet, writes may fail and we drop. */
 static void cmd_uart_send_str(const char *s)
 {
-    if (!atomic_get(&cmd_uart_ready) || (cmd_uart == NULL)) {
+    if (!s) {
         return;
     }
-
-    size_t len = strlen(s);
-    if (len == 0) {
+    if (!atomic_get(&cmd_uart_ready)) {
         return;
     }
-
-    cmd_tx_drop_oldest_until_space((uint32_t)len);
-    (void)ring_buf_put(&cmd_tx_rb, (const uint8_t *)s, (uint32_t)len);
-
-    cmd_uart_kick_tx();
+    (void)pihub_usb_hid_write((const uint8_t *)s, strlen(s));
 }
 
 static void cmd_uart_send_line(const char *s)
@@ -342,7 +247,76 @@ static void cmd_uart_send_line(const char *s)
     cmd_uart_send_str("\n");
 }
 
+/* Feed bytes received from host (HID OUT) into the existing command handlers. */
+static void cmd_handle_line(char *line);
 
+void pihub_cmd_rx_bytes(const uint8_t *p, size_t n)
+{
+    static char line[96];
+    static size_t ln = 0;
+
+    if (!p || n == 0) {
+        return;
+    }
+
+    /* Binary hot path (single-frame). */
+    if (p[0] == 0x01 && n >= 9) {
+        int rc = send_keyboard_report(&p[1]);
+        if (rc == 0) {
+            cmd_uart_send_line("OK");
+        } else if (rc == -EBUSY || rc == -EAGAIN || rc == -ENOMEM) {
+            char b[32];
+            snprintk(b, sizeof(b), "BUSY %d", rc);
+            cmd_uart_send_line(b);
+        } else {
+            char b[32];
+            snprintk(b, sizeof(b), "ERR %d", rc);
+            cmd_uart_send_line(b);
+        }
+        return;
+    }
+
+    if (p[0] == 0x02 && n >= 3) {
+        int rc = send_consumer_report(&p[1]);
+        if (rc == 0) {
+            cmd_uart_send_line("OK");
+        } else if (rc == -EBUSY || rc == -EAGAIN || rc == -ENOMEM) {
+            char b[32];
+            snprintk(b, sizeof(b), "BUSY %d", rc);
+            cmd_uart_send_line(b);
+        } else {
+            char b[32];
+            snprintk(b, sizeof(b), "ERR %d", rc);
+            cmd_uart_send_line(b);
+        }
+        return;
+    }
+
+    /* ASCII stream (PING/STATUS/UNPAIR etc.) */
+    for (size_t i = 0; i < n; i++) {
+        uint8_t ch = p[i];
+        if (ch == 0) {
+            continue; /* ignore padding zeros */
+        }
+        if (ch == '\r') {
+            continue;
+        }
+        if (ch == '\n') {
+            line[ln] = '\0';
+            if (ln > 0) {
+                cmd_handle_line(line);
+            }
+            ln = 0;
+            continue;
+        }
+        if (ln < (sizeof(line) - 1)) {
+            line[ln++] = (char)ch;
+        } else {
+            /* Overflow: drop line. */
+            ln = 0;
+        }
+    }
+}
 
 static void fmt_interval_ms(char *dst, size_t dst_len, uint16_t interval_units)
 {
@@ -522,6 +496,7 @@ static void cmd_handle_line(char *line);
 #define PIHUB_BIN_KB 0x01
 #define PIHUB_BIN_CC 0x02
 
+#if IS_ENABLED(CONFIG_USB_CDC_ACM)
 static bool cmd_uart_read_exact(uint8_t *dst, size_t n, int sleep_ms)
 {
     /* Non-blocking UART backend: poll until we get n bytes. */
@@ -647,38 +622,11 @@ static void cmd_rx_thread_fn(void *a, void *b, void *c)
         }
     }
 }
+#endif /* CONFIG_USB_CDC_ACM */
 
-static void cmd_uart_init(void)
-{
-#if PIHUB_CMD_UART_ENABLED
-    cmd_uart = DEVICE_DT_GET(PIHUB_CMD_UART_NODE);
-    if (!device_is_ready(cmd_uart)) {
-        LOG_WRN("CMD UART not ready (DT_ALIAS(pihub_cmd_uart)). No PiHub protocol I/O.");
-        cmd_uart = NULL;
-        return;
-    }
 
-    /* Optional: make sure line control is enabled (ignored on some backends). */
-    (void)uart_line_ctrl_set(cmd_uart, UART_LINE_CTRL_DCD, 1);
-    (void)uart_line_ctrl_set(cmd_uart, UART_LINE_CTRL_DSR, 1);
+/* CDC ACM command init removed (HID-only build) */
 
-    /* Non-blocking TX init */
-    k_work_init_delayable(&cmd_tx_kick, cmd_tx_kick_work_handler);
-    (void)uart_irq_callback_set(cmd_uart, cmd_uart_isr);
-    uart_irq_tx_disable(cmd_uart);
-
-    atomic_set(&cmd_uart_ready, 0);
-
-    k_thread_create(&cmd_rx_thread, cmd_rx_stack,
-                    K_THREAD_STACK_SIZEOF(cmd_rx_stack),
-                    cmd_rx_thread_fn, NULL, NULL, NULL,
-                    CMD_RX_PRIO, 0, K_NO_WAIT);
-    k_thread_name_set(&cmd_rx_thread, "cmd_rx");
-#else
-    cmd_uart = NULL;
-    atomic_set(&cmd_uart_ready, 0);
-#endif
-}
 
 
 /* --- SW1 long-press bond clear (5 seconds) --- */
@@ -1582,7 +1530,8 @@ int main(void)
 	#endif
 
     /* Bring up CDC ACM command interface (PING/PONG + KB/CC). */
-    cmd_uart_init();
+    if (pihub_usb_hid_init() == 0) { atomic_set(&cmd_uart_ready, 1); }
+
 
     /* Set identity early (appearance is set via Kconfig: CONFIG_BT_DEVICE_APPEARANCE) */
     (void)bt_set_name("PiHub");
