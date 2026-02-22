@@ -383,6 +383,7 @@ class BleDongleLink:
     async def unpair(self) -> None:
         if self.is_open:
             await self._write_line("UNPAIR")
+            # Some firmware emits no EVT for UNPAIR; force a status resync.
             asyncio.create_task(self._delayed_status_resync(0.25), name="ble-dongle-unpair-status")
 
     # ---------- internals: connect / io ----------
