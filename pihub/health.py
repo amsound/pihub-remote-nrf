@@ -8,7 +8,7 @@ from aiohttp import web
 from typing import Optional
 
 from .ha_ws import HAWS
-from .bt_le.controller import BTLEController
+from .bt_le.controller import BleDongleLink
 from .input_unifying import UnifyingReader
 
 
@@ -21,7 +21,7 @@ class HealthServer:
         host: str,
         port: int,
         ws: HAWS,
-        bt: BTLEController,
+        bt: BleDongleLink,
         reader: UnifyingReader,
     ) -> None:
         self._host = host

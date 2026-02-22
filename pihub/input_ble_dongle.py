@@ -244,6 +244,40 @@ class BleDongleLink:
             if usage_id:
                 self.notify_consumer(usage_id, False)
 
+    async def send_key(self, *, usage: str, code: str, hold_ms: int = 40) -> None:
+        """HA command: single key tap."""
+        # fire down immediately (hot)
+        self.key_down(usage=usage, code=code)
+        # hold
+        await asyncio.sleep(max(0, int(hold_ms)) / 1000.0)
+        # release
+        self.key_up(usage=usage, code=code)
+
+    async def run_macro(
+        self,
+        steps: list[dict],
+        *,
+        default_hold_ms: int = 40,
+        inter_delay_ms: int = 400,
+    ) -> None:
+        """HA command: timed local macro sequence."""
+        tap_s = max(0, int(default_hold_ms)) / 1000.0
+        gap_s = max(0, int(inter_delay_ms)) / 1000.0
+
+        for i, step in enumerate(steps):
+            usage = (step or {}).get("usage")
+            code = (step or {}).get("code")
+            hold_ms = (step or {}).get("hold_ms", default_hold_ms)
+
+            if not (isinstance(usage, str) and isinstance(code, str)):
+                continue
+
+            await self.send_key(usage=usage, code=code, hold_ms=int(hold_ms))
+
+            # gap between steps (not after last)
+            if i != (len(steps) - 1):
+                await asyncio.sleep(gap_s)
+
     def compile_ble_frames(self, *, usage: str, code: str) -> CompiledBleFrames | None:
         k = (usage, code)
         if k in self._compiled:

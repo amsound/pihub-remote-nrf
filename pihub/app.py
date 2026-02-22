@@ -19,7 +19,7 @@ from .config import Config
 from .ha_ws import HAWS
 from .dispatcher import Dispatcher
 from .input_unifying import UnifyingReader
-from .bt_le.controller import BTLEController
+from .input_ble_dongle import BleDongleLink
 from .macros import MACROS
 from .health import HealthServer
 from .validation import DEFAULT_MS_WHITELIST, parse_ms_whitelist
@@ -40,7 +40,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _make_on_cmd(bt: BTLEController):
+def _make_on_cmd(bt: BleDongleLink):
     async def _on_cmd(data: dict) -> None:
         """
         Accept exactly two message shapes (HA → Pi):
@@ -113,9 +113,10 @@ async def main() -> None:
         logger.error("cannot start without Home Assistant token: %s", exc)
         raise SystemExit(1) from exc
 
-    bt = BTLEController(
-        serial_port=cfg.ble_serial_device,
-        baud=cfg.ble_serial_baud,
+    bt = BleDongleLink(
+        vid=0x2FE3,
+        pid=0x0100,
+        product_contains="PiHub Dongle",
     )
 
     async def _on_activity(activity: str | None) -> None:
