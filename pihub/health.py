@@ -8,7 +8,7 @@ from aiohttp import web
 from typing import Optional
 
 from .ha_ws import HAWS
-from .bt_le.controller import BleDongleLink
+from .input_ble_dongle import BleDongleLink
 from .input_unifying import UnifyingReader
 
 
@@ -68,8 +68,8 @@ class HealthServer:
         conn_params = ble_raw.get("conn_params") or {}
 
         ble_state = {
-            "serial_open": bool(ble_raw.get("adapter_present")),
-            "port": ble_raw.get("active_port"),
+            "adapter_present": bool(ble_raw.get("adapter_present")),
+            "device": ble_raw.get("active_path"),
             "ready": bool(ble_raw.get("ready")),
             "advertising": bool(ble_raw.get("advertising")),
             "connected": bool(ble_raw.get("connected")),
@@ -97,7 +97,7 @@ class HealthServer:
         if not usb_state["grabbed"]:
             degraded_reasons.append("usb.not_grabbed")
 
-        if not ble_state["serial_open"]:
+        if not ble_state["adapter_present"]:
             degraded_reasons.append("ble.adapter_missing")
 
         # Consider BLE "usable" if connected OR advertising (ready to connect).

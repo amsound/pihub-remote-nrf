@@ -8,19 +8,20 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Config:
-    # All fields are passed explicitly by Config.load(), so we don’t put per-field defaults here.
+    # Home Assistant
     ha_ws_url: str
     ha_token_file: str
     ha_activity: str
     ha_cmd_event: str
 
-    # Serial dongle transport (default)
-    ble_serial_device: str
-    ble_serial_baud: int
+    # HID dongle transport (HID-only)
+    ble_hid_vid: int
+    ble_hid_pid: int
+    ble_hid_product: str
 
+    # Health endpoint
     health_host: str
     health_port: int
-
 
     @staticmethod
     def load() -> "Config":
@@ -30,9 +31,11 @@ class Config:
         ha_activity   = os.getenv("HA_ACTIVITY", "input_select.activity")
         ha_cmd_event  = os.getenv("HA_CMD_EVENT", "pihub.cmd")
 
-        # Serial dongle (default transport)
-        ble_serial_device = os.getenv("BLE_SERIAL_DEVICE", "auto")
-        ble_serial_baud   = int(os.getenv("BLE_SERIAL_BAUD", "115200"))
+        # HID dongle
+        # Defaults match Zephyr’s defaults you observed: VID 0x2FE3, PID 0x0100.
+        ble_hid_vid = int(os.getenv("BLE_HID_VID", "0x2FE3"), 0)
+        ble_hid_pid = int(os.getenv("BLE_HID_PID", "0x0100"), 0)
+        ble_hid_product = os.getenv("BLE_HID_PRODUCT", "PiHub Dongle")
 
         health_host   = os.getenv("HEALTH_HOST", "0.0.0.0")
         try:
@@ -45,20 +48,19 @@ class Config:
             ha_token_file=ha_token_file,
             ha_activity=ha_activity,
             ha_cmd_event=ha_cmd_event,
-            ble_serial_device=ble_serial_device,
-            ble_serial_baud=ble_serial_baud,
+            ble_hid_vid=ble_hid_vid,
+            ble_hid_pid=ble_hid_pid,
+            ble_hid_product=ble_hid_product,
             health_host=health_host,
             health_port=health_port,
         )
 
     def load_token(self) -> str:
         """Return the HA token from environment or configured file."""
-        # 1) explicit env wins
         env_tok = (os.getenv("HA_TOKEN") or "").strip()
         if env_tok:
             return env_tok
 
-        # 2) fall back to file
         path = (self.ha_token_file or "").strip()
         if not path:
             raise RuntimeError("HA token unavailable: set HA_TOKEN or provide HA_TOKEN_FILE")

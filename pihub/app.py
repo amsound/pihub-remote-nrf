@@ -114,9 +114,9 @@ async def main() -> None:
         raise SystemExit(1) from exc
 
     bt = BleDongleLink(
-        vid=0x2FE3,
-        pid=0x0100,
-        product_contains="PiHub Dongle",
+        vid=cfg.ble_hid_vid,
+        pid=cfg.ble_hid_pid,
+        product_contains=(cfg.ble_hid_product or None),
     )
 
     async def _on_activity(activity: str | None) -> None:
