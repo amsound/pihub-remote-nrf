@@ -8,7 +8,7 @@ import logging
 import time
 from contextlib import suppress
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
-from pihub.bt_le.compiled_frames import CompiledBleFrames
+from .input_ble_dongle.compiled_frames import CompiledBleFrames
 
 try:
     from importlib import resources as importlib_resources
