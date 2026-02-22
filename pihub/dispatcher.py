@@ -107,13 +107,13 @@ class Dispatcher:
             try:
                 frames = self._bt.compile_ble_frames(mapping)
             except Exception:
-                logger.debug("BLE compile failed for activity=%s", activity, exc_info=True)
+                logger.debug("ble compile failed for activity=%s", activity, exc_info=True)
                 continue
             compiled[activity] = frames
             total += (len(frames.kb_down) + len(frames.cc_down))
 
         self._ble_frames_by_activity = compiled
-        logger.info("compiled %d BLE actions into binary frames", total)
+        logger.info("compiled %d ble HID codes into binary frames", total)
 
 
     def _precompile_emit_actions(self) -> None:
