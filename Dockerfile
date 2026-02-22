@@ -32,6 +32,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libglib2.0-0 libdbus-1-3 libbluetooth3 \
+      libhidapi-hidraw0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
