@@ -425,6 +425,7 @@ class BleDongleLink:
             return False
 
         dev = hid.Device(path=path)
+        dev.read_timeout = 50
 
         self._dev = dev
         self._path = path
@@ -500,7 +501,7 @@ class BleDongleLink:
                 # hid.read(size) returns list[int] or bytes-like depending on wrapper;
                 # the 'hid' package returns a list of ints.
                 loop = asyncio.get_running_loop()
-                data = await loop.run_in_executor(None, lambda: self._dev.read(self._in_report_bytes, timeout_ms=50))
+                data = await loop.run_in_executor(None, self._dev.read, self._in_report_bytes)
 
                 if not data:
                     await asyncio.sleep(0.01)
