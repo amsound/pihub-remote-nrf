@@ -1,53 +1,70 @@
-"""
-Bluetooth-over-USB dongle link (HID transport).
+"""Bluetooth-over-USB dongle link (serial / CDC ACM).
 
-Goal:
-- One module owns: discovery, reconnect, TX hot-path, RX parsing, state, key encoding,
-  precompiled frames, and ops commands (PING/STATUS/UNPAIR).
-- Designed to be wired like input_unifying.py: started by app, called by dispatcher.
+This module replaces the older split implementation (ble_serial.py + controller.py + hid_client.py)
+with a single file while keeping the same *behavioral contract*:
 
-Assumptions:
-- Firmware exposes a USB HID interface:
-  - Host->device: OUT reports carrying raw bytes (binary frames or ASCII commands).
-  - Device->host: IN reports carrying ASCII lines (EVT/STATUS/OK/PONG etc), newline-delimited.
+- Resilient auto-healing serial transport (reconnect w/ jittered backoff)
+- ASCII control plane (PING/STATUS/UNPAIR, EVT/STATUS/PONG replies)
+- Hot path key delivery:
+    - Default: binary frames:
+        - keyboard: 0x01 + 8-byte boot keyboard report
+        - consumer: 0x02 + 2-byte little-endian consumer usage
+    - Optional legacy text frames if your firmware expects them:
+        - "KB <16hex>\n" and "CC <4hex>\n"
+      Set PIHUB_SERIAL_HOTPATH=text to enable.
 
-This keeps your existing dongle protocol intact:
-  - Hot path: b"\\x01"+8 (keyboard report), b"\\x02"+2 (consumer payload)
-  - Ops: "PING\\n", "STATUS\\n", "UNPAIR\\n"
-  - Telemetry: "EVT ...\\n" and "STATUS ...\\n"
+HID usage tables are loaded from packaged assets: pihub.assets/hid_keymap.json
+with schema:
+  { "keyboard": { "<name>": <hid_usage_id>, ... },
+    "consumer": { "<name>": <usage_id>, ... } }
+
+Public API matches how the app/dispatcher previously used BTLEController/HIDClient/BleSerial:
+  - start()/stop()
+  - wait_ready()
+  - status property
+  - key_down()/key_up()
+  - send_key()/run_macro()
+  - ping()/status_cmd()/unpair()
+  - compile_ble_frames()/compiled_key_down()/compiled_key_up()
 """
 
 from __future__ import annotations
 
 import asyncio
+import glob
+import json
 import logging
 import os
 import random
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Literal
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
+
+import serial  # pyserial
+from serial import SerialException
 
 try:
-    # Prefer stdlib in 3.9+
     from importlib import resources as importlib_resources
 except ImportError:  # pragma: no cover
-    import importlib_resources  # type: ignore
-
-import hid  # pip: hid (hidapi wrapper)
+    import importlib_resources
 
 Usage = Literal["keyboard", "consumer"]
 
 logger = logging.getLogger(__name__)
 
 
-# ---- USB defaults you saw in menuconfig ----
-DEFAULT_VID = 0x2FE3
-DEFAULT_PID = 0x0100
+# ------------------------- compiled frames -------------------------
 
-# Default HID report sizes (safe for most HID endpoints)
-DEFAULT_OUT_REPORT_BYTES = 64
-DEFAULT_IN_REPORT_BYTES = 64
+@dataclass(frozen=True)
+class CompiledBleFrames:
+    """Precompiled hot-path frames for a single activity's BLE bindings."""
+    kb_down: Dict[str, bytes]  # code -> payload (bin or text)
+    kb_up: Dict[str, bytes]
+    cc_down: Dict[str, bytes]
+    cc_up: Dict[str, bytes]
 
+
+# ------------------------- dongle state -------------------------
 
 @dataclass
 class DongleState:
@@ -66,140 +83,122 @@ class DongleState:
     last_disc_reason: Optional[int] = None
 
 
-@dataclass(frozen=True)
-class CompiledBleFrames:
-    down: bytes
-    up: bytes
+def discover_cmd_ports() -> List[str]:
+    """Best-effort port discovery (Linux + macOS)."""
+    ports: List[str] = []
+    ports += sorted(glob.glob("/dev/ttyACM*"))
+    # Dedup preserving order
+    seen = set()
+    out: List[str] = []
+    for p in ports:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
 
+
+# ------------------------- main link -------------------------
 
 class BleDongleLink:
-    """
-    HID-based link to the PiHub dongle.
-
-    Public surface area (intentionally similar to the old BTLEController + BleSerial combo):
-      - start()/stop()
-      - key_down/key_up for dispatcher fallback
-      - compile_ble_frames + compiled_key_down/compiled_key_up for precompiled path
-      - unpair()/request_status()
-      - status property for health reporting
-    """
-
     def __init__(
         self,
+        serial_port: str = "auto",
+        baud: int = 115200,
         *,
-        vid: int = DEFAULT_VID,
-        pid: int = DEFAULT_PID,
-        product_contains: Optional[str] = None,
-        out_report_bytes: int = DEFAULT_OUT_REPORT_BYTES,
-        in_report_bytes: int = DEFAULT_IN_REPORT_BYTES,
         ping_timeout_s: float = 3.0,
         reconnect_delay_s: float = 0.5,
         status_poll_s: float = 30.0,
-        on_event: Optional[Callable[[str, DongleState], None]] = None,
+        **_ignored: object,
     ) -> None:
-        self._vid = vid
-        self._pid = pid
-        self._product_contains = product_contains
-        self._out_report_bytes = int(out_report_bytes)
-        self._in_report_bytes = int(in_report_bytes)
+        self._serial_port = (serial_port or "auto").strip()
+        self._baud = int(baud)
+
+        # Ports list: env override wins, then explicit, then discovery.
+        env_port = os.getenv("BLE_SERIAL_DEVICE", "").strip()
+        requested = (env_port or self._serial_port).strip()
+        if requested and requested.lower() != "auto":
+            self._ports = [requested]
+        else:
+            self._ports = discover_cmd_ports() or ["/dev/ttyACM0"]
+
         self._ping_timeout_s = float(ping_timeout_s)
         self._reconnect_delay_s = float(reconnect_delay_s)
         self._status_poll_s = float(status_poll_s)
-        self._on_event = on_event
 
+        # Hot path framing mode: bin (default) or text (legacy)
+        self._hotpath = os.getenv("PIHUB_SERIAL_HOTPATH", "bin").strip().lower()
+        if self._hotpath not in {"bin", "text"}:
+            self._hotpath = "bin"
+
+        # HID usage tables from assets
+        self._kb, self._cc = self._load_hid_tables()
+
+        # Serial handle + state
+        self._ser: Optional[serial.Serial] = None
+        self._active_port: Optional[str] = None
         self.state = DongleState()
-        self._pong_counter = 0
 
-        self._dev: Optional[hid.device] = None
-        self._path: Optional[bytes] = None
-
-        # tasks
+        # Tasks
         self._connect_task: Optional[asyncio.Task] = None
         self._reader_task: Optional[asyncio.Task] = None
-        self._writer_task: Optional[asyncio.Task] = None
         self._keepalive_task: Optional[asyncio.Task] = None
         self._status_poll_task: Optional[asyncio.Task] = None
-        self._status_resync_task: Optional[asyncio.Task] = None
 
-        # TX queue: hot path enqueues bytes; writer task writes to HID
+        # TX path
         self._tx_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=512)
+        self._tx_lock = asyncio.Lock()
 
-        # RX line reassembly
+        # RX line buffer
         self._rx_buf = bytearray()
 
-        # READY event for callers that want it
+        # Handshake tracking
+        self._pong_counter = 0
         self._ready_evt = asyncio.Event()
 
-        # HID tables (loaded from pihub.assets)
-        self._kb, self._cc = self._load_hid_tables_from_assets()
+        # compiled frames cache
+        self._compiled: Optional[CompiledBleFrames] = None
 
-        # Cache compiled frames for any (usage, code) we compile
-        self._compiled: Dict[Tuple[str, str], CompiledBleFrames] = {}
+        self._started = False
 
-    # ----------------- lifecycle -----------------
+        logger.info("initialised port=%s baud=%s hotpath=%s", self._ports[0] if self._ports else None, self._baud, self._hotpath)
+
+    # ---------- lifecycle ----------
 
     @property
     def is_open(self) -> bool:
-        return self._dev is not None
+        return self._ser is not None and getattr(self._ser, "is_open", False)
 
     @property
-    def active_path(self) -> Optional[str]:
-        if self._path is None:
-            return None
-        try:
-            return self._path.decode("utf-8", errors="replace")
-        except Exception:
-            return repr(self._path)
+    def active_port(self) -> Optional[str]:
+        return self._active_port
 
     @property
-    def link_ready(self) -> bool:
-        # mirrors the old serial_ready behavior: open + dongle says READY=1
+    def serial_ready(self) -> bool:
+        # "ready" is your firmware’s LINK_READY (connected+secured+notifying)
         return bool(self.is_open and self.state.ready)
 
     async def start(self) -> None:
-        if self._connect_task is None:
+        if self._started:
+            return
+        self._started = True
+        if self._connect_task is None or self._connect_task.done():
             self._connect_task = asyncio.create_task(self._connect_loop(), name="ble-dongle-connect")
 
     async def stop(self) -> None:
-        if self._connect_task is not None:
-            self._connect_task.cancel()
-            self._connect_task = None
-
-        for task_attr in (
-            "_reader_task",
-            "_writer_task",
-            "_keepalive_task",
-            "_status_poll_task",
-            "_status_resync_task",
-        ):
-            t = getattr(self, task_attr)
-            if t is not None:
+        self._started = False
+        for t in (self._connect_task, self._reader_task, self._keepalive_task, self._status_poll_task):
+            if t and not t.done():
                 t.cancel()
-                setattr(self, task_attr, None)
-
+        for t in (self._connect_task, self._reader_task, self._keepalive_task, self._status_poll_task):
+            if t:
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+        self._connect_task = self._reader_task = self._keepalive_task = self._status_poll_task = None
         self._close()
-        self.state = DongleState()
-        self._emit("link_lost")
-
-    # ----------------- public: health/status -----------------
-
-    @property
-    def status(self) -> dict:
-        return {
-            "adapter_present": self.is_open,
-            "active_path": self.active_path,
-            "ready": self.state.ready,
-            "advertising": self.state.advertising,
-            "connected": self.state.connected,
-            "proto_boot": self.state.proto_boot,
-            "sec": self.state.sec,
-            "suspend": self.state.suspend,
-            "notify": dict(self.state.notify) if self.state.notify else None,
-            "error": self.state.error,
-            "conn_params": dict(self.state.conn_params) if self.state.conn_params else None,
-            "phy": dict(self.state.phy) if self.state.phy else None,
-            "last_disc_reason": self.state.last_disc_reason,
-        }
 
     async def wait_ready(self, timeout: float = 5.0) -> bool:
         if self.state.ready:
@@ -210,437 +209,404 @@ class BleDongleLink:
         except asyncio.TimeoutError:
             return False
 
-    # ----------------- public: ops commands -----------------
+    # ---------- status / health snapshot ----------
 
-    def request_status(self) -> None:
-        # Keep human-readable and identical to your existing dongle protocol.
-        self.enqueue_line("STATUS")
+    @property
+    def status(self) -> dict:
+        return {
+            "adapter_present": self.is_open,
+            "active_port": self._active_port,
+            "ready": self.state.ready,
+            "advertising": self.state.advertising,
+            "connected": self.state.connected,
+            "proto_boot": self.state.proto_boot,
+            "sec": getattr(self.state, "sec", 0),
+            "suspend": getattr(self.state, "suspend", False),
+            "notify": dict(self.state.notify) if self.state.notify else None,
+            "error": self.state.error,
+            "conn_params": dict(self.state.conn_params) if self.state.conn_params else None,
+            "phy": dict(self.state.phy) if self.state.phy else None,
+            "last_disc_reason": self.state.last_disc_reason,
+        }
 
-    async def unpair(self) -> None:
-        # Keep human-readable and identical to your existing dongle protocol.
-        self.enqueue_line("UNPAIR")
+    # ---------- Dispatcher / HIDClient-style surface ----------
 
-    # ----------------- dispatcher-facing API -----------------
+    def _link_ready(self) -> bool:
+        return bool(self.serial_ready and self.state.connected)
 
-    def key_down(self, *, usage: str, code: str) -> None:
+    def notify_keyboard(self, report: bytes) -> None:
+        """Transport hook used by HID encoding path."""
+        if not self._link_ready():
+            return
+        if len(report) != 8:
+            return
+        if self._hotpath == "text":
+            payload = ("KB " + report.hex().upper() + "\n").encode("ascii")
+        else:
+            payload = b"\x01" + report
+        self._enqueue_nowait(payload)
+
+    def notify_consumer(self, usage_id: int, pressed: bool) -> None:
+        """Transport hook used by HID encoding path."""
+        if not self._link_ready():
+            return
+        usage = int(usage_id) if pressed else 0
+        usage &= 0xFFFF
+        le = bytes((usage & 0xFF, (usage >> 8) & 0xFF))
+        if self._hotpath == "text":
+            payload = ("CC " + le.hex().upper() + "\n").encode("ascii")
+        else:
+            payload = b"\x02" + le
+        self._enqueue_nowait(payload)
+
+    # edge-level API (sync, hot path)
+    def key_down(self, *, usage: Usage, code: str) -> None:
         if usage == "keyboard":
             down = self._encode_keyboard_down(code)
             if down is None:
                 return
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("keyboard %s down", code)
             self.notify_keyboard(down)
         elif usage == "consumer":
             usage_id = self._encode_consumer_usage(code)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("consumer %s down (0x%04X)", code, usage_id)
             if usage_id:
                 self.notify_consumer(usage_id, True)
 
-    def key_up(self, *, usage: str, code: str) -> None:
+    def key_up(self, *, usage: Usage, code: str) -> None:
         if usage == "keyboard":
             if code not in self._kb:
                 logger.warning("unknown keyboard code %s up; ignoring", code)
                 return
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("keyboard %s up", code)
             self.notify_keyboard(b"\x00\x00\x00\x00\x00\x00\x00\x00")
         elif usage == "consumer":
             usage_id = self._encode_consumer_usage(code)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("consumer %s up (0x%04X)", code, usage_id)
             if usage_id:
                 self.notify_consumer(usage_id, False)
 
-    async def send_key(self, *, usage: str, code: str, hold_ms: int = 40) -> None:
-        """HA command: single key tap."""
-        # fire down immediately (hot)
+    # tap API (async)
+    async def send_key(self, *, usage: Usage, code: str, hold_ms: int = 40) -> None:
         self.key_down(usage=usage, code=code)
-        # hold
         await asyncio.sleep(max(0, int(hold_ms)) / 1000.0)
-        # release
         self.key_up(usage=usage, code=code)
 
     async def run_macro(
         self,
-        steps: list[dict],
+        steps: List[Dict[str, Any]],
         *,
         default_hold_ms: int = 40,
         inter_delay_ms: int = 400,
     ) -> None:
-        """HA command: timed local macro sequence."""
-        tap_s = max(0, int(default_hold_ms)) / 1000.0
-        gap_s = max(0, int(inter_delay_ms)) / 1000.0
-
-        for i, step in enumerate(steps):
-            usage = (step or {}).get("usage")
-            code = (step or {}).get("code")
-            hold_ms = (step or {}).get("hold_ms", default_hold_ms)
-
-            if not (isinstance(usage, str) and isinstance(code, str)):
+        for step in steps:
+            if "wait_ms" in step:
+                await asyncio.sleep(max(0, int(step["wait_ms"])) / 1000.0)
                 continue
+            usage = step.get("usage")
+            code = step.get("code")
+            hold = int(step.get("hold_ms", default_hold_ms))
+            if isinstance(usage, str) and isinstance(code, str):
+                await self.send_key(usage=usage, code=code, hold_ms=hold)
+                await asyncio.sleep(max(0, int(inter_delay_ms)) / 1000.0)
 
-            await self.send_key(usage=usage, code=code, hold_ms=int(hold_ms))
+    # ---------- compiled hot path ----------
 
-            # gap between steps (not after last)
-            if i != (len(steps) - 1):
-                await asyncio.sleep(gap_s)
+    def compile_ble_frames(self, bindings: Dict[str, List[Dict[str, Any]]]) -> CompiledBleFrames:
+        kb_down: Dict[str, bytes] = {}
+        kb_up: Dict[str, bytes] = {}
+        cc_down: Dict[str, bytes] = {}
+        cc_up: Dict[str, bytes] = {}
 
-    def compile_ble_frames(self, *, usage: str, code: str) -> CompiledBleFrames | None:
-        k = (usage, code)
-        if k in self._compiled:
-            return self._compiled[k]
+        for _rem_key, actions in (bindings or {}).items():
+            for a in actions or []:
+                if (a or {}).get("do") != "ble":
+                    continue
+                usage = a.get("usage")
+                code = a.get("code")
+                if not (isinstance(usage, str) and isinstance(code, str)):
+                    continue
 
-        frames: Optional[CompiledBleFrames] = None
+                if usage == "keyboard":
+                    down = self._encode_keyboard_down(code)
+                    if down is None:
+                        continue
+                    up = b"\x00\x00\x00\x00\x00\x00\x00\x00"
+                    if self._hotpath == "text":
+                        kb_down[code] = ("KB " + down.hex().upper() + "\n").encode("ascii")
+                        kb_up[code] = ("KB " + up.hex().upper() + "\n").encode("ascii")
+                    else:
+                        kb_down[code] = b"\x01" + down
+                        kb_up[code] = b"\x01" + up
 
-        if usage == "keyboard":
-            down8 = self._encode_keyboard_down(code)
-            if down8 is None:
-                return None
-            if code not in self._kb:
-                return None
-            frames = CompiledBleFrames(down=b"\x01" + down8, up=b"\x01" + (b"\x00" * 8))
+                elif usage == "consumer":
+                    usage_id = self._encode_consumer_usage(code)
+                    if not usage_id:
+                        continue
+                    le = bytes((usage_id & 0xFF, (usage_id >> 8) & 0xFF))
+                    z2 = b"\x00\x00"
+                    if self._hotpath == "text":
+                        cc_down[code] = ("CC " + le.hex().upper() + "\n").encode("ascii")
+                        cc_up[code] = ("CC " + z2.hex().upper() + "\n").encode("ascii")
+                    else:
+                        cc_down[code] = b"\x02" + le
+                        cc_up[code] = b"\x02" + z2
 
-        elif usage == "consumer":
-            usage_id = self._encode_consumer_usage(code)
-            if not usage_id:
-                return None
-            usage_id &= 0xFFFF
-            down2 = bytes((usage_id & 0xFF, (usage_id >> 8) & 0xFF))
-            frames = CompiledBleFrames(down=b"\x02" + down2, up=b"\x02\x00\x00")
-
-        if frames is not None:
-            self._compiled[k] = frames
+        frames = CompiledBleFrames(kb_down=kb_down, kb_up=kb_up, cc_down=cc_down, cc_up=cc_up)
+        self._compiled = frames
         return frames
 
-    def compiled_key_down(self, frames: CompiledBleFrames) -> None:
-        self.enqueue_bin_frame(frames.down)
+    def compiled_key_down(self, frames: CompiledBleFrames, *, usage: Usage, code: str) -> None:
+        payload = frames.kb_down.get(code) if usage == "keyboard" else frames.cc_down.get(code)
+        if payload:
+            self._enqueue_nowait(payload)
 
-    def compiled_key_up(self, frames: CompiledBleFrames) -> None:
-        self.enqueue_bin_frame(frames.up)
+    def compiled_key_up(self, frames: CompiledBleFrames, *, usage: Usage, code: str) -> None:
+        payload = frames.kb_up.get(code) if usage == "keyboard" else frames.cc_up.get(code)
+        if payload:
+            self._enqueue_nowait(payload)
 
-    # ----------------- HIDClient-style transport hooks -----------------
+    # ---------- ops / control plane ----------
 
-    def notify_keyboard(self, report8: bytes) -> None:
-        if not self.link_ready:
-            return
-        if len(report8) != 8:
-            return
-        self.enqueue_bin_frame(b"\x01" + report8)
+    async def ping(self) -> None:
+        if self.is_open:
+            await self._write_line("PING")
 
-    def notify_consumer(self, usage_id: int, pressed: bool) -> None:
-        if not self.link_ready:
-            return
-        usage = (usage_id & 0xFFFF) if pressed else 0
-        le = bytes((usage & 0xFF, (usage >> 8) & 0xFF))
-        self.enqueue_bin_frame(b"\x02" + le)
+    async def status_cmd(self) -> None:
+        if self.is_open:
+            await self._write_line("STATUS")
 
-    # ----------------- TX queue API -----------------
+    async def unpair(self) -> None:
+        if self.is_open:
+            await self._write_line("UNPAIR")
 
-    def enqueue_bin_frame(self, payload: bytes) -> None:
-        """
-        HOT PATH: enqueue raw bytes to be sent to dongle as HID OUT report.
-        """
-        if not self.is_open:
-            return
+    # ---------- internals: connect / io ----------
 
-        if self._tx_q.full():
-            try:
-                _ = self._tx_q.get_nowait()
-            except Exception:
-                pass
-
+    def _close(self) -> None:
         try:
-            self._tx_q.put_nowait(payload)
-        except Exception:
-            pass
-
-    def enqueue_line(self, line: str) -> None:
-        framed = (line.strip() + "\n").encode("ascii", errors="replace")
-        self.enqueue_bin_frame(framed)
-
-    # ----------------- internals: connect/reconnect -----------------
+            if self._ser is not None:
+                self._ser.close()
+        finally:
+            self._ser = None
+            self._active_port = None
+            self.state = DongleState()
+            self._ready_evt.clear()
 
     @staticmethod
     def _sleep_with_jitter(base_s: float, jitter_frac: float = 0.25) -> float:
         j = base_s * jitter_frac
         return max(0.05, base_s + random.uniform(-j, j))
 
-    def _close(self) -> None:
-        try:
-            if self._dev is not None:
-                try:
-                    self._dev.close()
-                except Exception:
-                    pass
-        finally:
-            self._dev = None
-            self._path = None
-            self._rx_buf.clear()
-
-    def _find_device_path(self) -> Optional[bytes]:
-        """
-        Find a hidraw device by VID/PID and optional product substring.
-        Returns the 'path' bytes used by hid.device().open_path().
-        """
-        for d in hid.enumerate(self._vid, self._pid):
-            try:
-                prod = (d.get("product_string") or "") if isinstance(d, dict) else ""
-                if self._product_contains and self._product_contains.lower() not in str(prod).lower():
-                    continue
-                path = d.get("path") if isinstance(d, dict) else None
-                if isinstance(path, (bytes, bytearray)):
-                    return bytes(path)
-            except Exception:
-                continue
-        return None
-
     async def _connect_loop(self) -> None:
         backoff = self._reconnect_delay_s
         backoff_max = 8.0
 
-        while True:
+        while self._started:
             if self.is_open:
                 await asyncio.sleep(0.25)
                 continue
 
-            try:
-                ok = await self._try_open_and_handshake()
-                if ok:
-                    logger.info("dongle ready via HID path=%s", self.active_path)
-                    asyncio.create_task(self._log_state_once_after_open(), name="ble-dongle-state-once")
+            connected = False
+            for port in list(self._ports):
+                try:
+                    if await self._try_open_and_handshake(port):
+                        logger.info("port ready on %s", port)
+                        # emit an INFO line once status settles
+                        asyncio.create_task(self._log_state_once_after_open(), name="ble-dongle-state-once")
 
-                    if self._keepalive_task is None or self._keepalive_task.done():
-                        self._keepalive_task = asyncio.create_task(self._keepalive_loop(), name="ble-dongle-keepalive")
+                        if self._keepalive_task is None or self._keepalive_task.done():
+                            self._keepalive_task = asyncio.create_task(self._keepalive_loop(), name="ble-dongle-keepalive")
 
-                    if self._status_poll_s > 0 and (self._status_poll_task is None or self._status_poll_task.done()):
-                        self._status_poll_task = asyncio.create_task(self._status_poll_loop(), name="ble-dongle-status-poll")
+                        if self._status_poll_s > 0 and (self._status_poll_task is None or self._status_poll_task.done()):
+                            self._status_poll_task = asyncio.create_task(self._status_poll_loop(), name="ble-dongle-status-poll")
 
-                    backoff = self._reconnect_delay_s
-                    continue
+                        connected = True
+                        backoff = self._reconnect_delay_s
+                        break
 
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.debug("open/handshake failed: %r", exc)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug("open/handshake failed on %s: %r", port, exc)
+
+            if connected:
+                continue
 
             await asyncio.sleep(self._sleep_with_jitter(backoff))
             backoff = min(backoff * 2.0, backoff_max)
 
-    async def _try_open_and_handshake(self) -> bool:
-        path = self._find_device_path()
-        if not path:
-            return False
+    async def _try_open_and_handshake(self, port: str) -> bool:
+        ser = serial.Serial(
+            port=port,
+            baudrate=self._baud,
+            timeout=0.1,
+            write_timeout=0.5,
+            exclusive=True,
+        )
+        try:
+            ser.setDTR(True)
+            ser.setRTS(True)
+        except Exception:
+            pass
+        try:
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+        except Exception:
+            pass
 
-        dev = hid.Device(path=path)
-        dev.read_timeout = 50
-
-        self._dev = dev
-        self._path = path
+        self._ser = ser
+        self._active_port = port
         self.state = DongleState()
         self._pong_counter = 0
         self._ready_evt.clear()
 
         if self._reader_task is None or self._reader_task.done():
             self._reader_task = asyncio.create_task(self._reader_loop(), name="ble-dongle-reader")
-        if self._writer_task is None or self._writer_task.done():
-            self._writer_task = asyncio.create_task(self._writer_loop(), name="ble-dongle-writer")
-
-        # small settle
+        # writer loop is implicit via _tx_q + _write_payload()
         await asyncio.sleep(0.15)
 
         ok = await self._handshake_once(timeout_s=1.0)
         if ok:
             self._request_status_resync()
-        else:
+        if not ok:
             await self._force_reconnect("handshake_timeout")
         return ok
 
     async def _force_reconnect(self, reason: str) -> None:
-        logger.debug("forcing HID reconnect (%s)", reason)
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            self._reader_task = None
-        if self._writer_task is not None:
-            self._writer_task.cancel()
-            self._writer_task = None
+        logger.warning("link lost; will retry") if reason != "handshake_timeout" else logger.debug("forcing reconnect (%s)", reason)
         self._close()
-        self.state = DongleState()
-        self._ready_evt.clear()
-        self._emit("link_lost")
 
-    # ----------------- internals: reader/writer -----------------
+    async def _handshake_once(self, *, timeout_s: float = 1.0) -> bool:
+        await self._write_line("PING")
+        try:
+            await asyncio.wait_for(self._wait_pong_increment(), timeout=timeout_s)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
-    async def _writer_loop(self) -> None:
-        while True:
+    async def _wait_pong_increment(self) -> None:
+        start = self._pong_counter
+        while self._pong_counter == start:
+            await asyncio.sleep(0.01)
+
+    def _request_status_resync(self) -> None:
+        asyncio.create_task(self.status_cmd(), name="ble-dongle-status")
+
+    async def _log_state_once_after_open(self) -> None:
+        await asyncio.sleep(0.25)
+        logger.info("state: adv=%s conn=%s ready=%s", int(self.state.advertising), int(self.state.connected), int(self.state.ready))
+
+    async def _keepalive_loop(self) -> None:
+        while self._started and self.is_open:
             try:
-                payload = await self._tx_q.get()
-                if self._dev is None:
-                    continue
-
-                # HID writes usually expect: [report_id_byte] + data.
-                # For report-id-less devices, report_id=0 is used.
-                # Firmware uses HID_REPORT_ID(0x01)
-                out = bytes([0x01]) + payload
-
-                # Pad or truncate to the configured report size+1 (report_id included).
-                target = 1 + self._out_report_bytes
-                if len(out) < target:
-                    out = out + (b"\x00" * (target - len(out)))
-                elif len(out) > target:
-                    out = out[:target]
-
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self._dev.write, out)  # type: ignore[arg-type]
-
+                await asyncio.sleep(max(0.5, self._ping_timeout_s))
+                if not self.is_open:
+                    return
+                prev = self._pong_counter
+                await self._write_line("PING")
+                # wait for pong to bump
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < self._ping_timeout_s:
+                    if self._pong_counter != prev:
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    await self._force_reconnect("ping_timeout")
+                    return
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("writer error, reconnecting: %r", exc)
-                await self._force_reconnect("writer_error")
-                await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
+                logger.warning("keepalive error: %r", exc)
+                await self._force_reconnect("keepalive_error")
+                return
+
+    async def _status_poll_loop(self) -> None:
+        while self._started and self.is_open:
+            try:
+                await asyncio.sleep(self._status_poll_s)
+                if self.is_open:
+                    await self._write_line("STATUS")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("status poll error: %r", exc)
+
+    def _enqueue_nowait(self, payload: bytes) -> None:
+        if not self._link_ready():
+            return
+        try:
+            self._tx_q.put_nowait(payload)
+        except asyncio.QueueFull:
+            logger.debug("tx queue full; dropping payload (%d bytes)", len(payload))
+
+    async def _write_line(self, line: str) -> None:
+        await self._write_payload((line.strip() + "\n").encode("ascii", errors="replace"))
+
+    async def _write_payload(self, payload: bytes) -> None:
+        if not self.is_open:
+            return
+        try:
+            # Keep ordering by funneling through a single writer lock.
+            loop = asyncio.get_running_loop()
+            async with self._tx_lock:
+                await loop.run_in_executor(None, self._ser.write, payload)  # type: ignore[arg-type]
+                await loop.run_in_executor(None, self._ser.flush)  # type: ignore[arg-type]
+        except Exception as exc:
+            logger.warning("writer error, reconnecting: %r", exc)
+            await self._force_reconnect("writer_error")
 
     async def _reader_loop(self) -> None:
-        while True:
+        while self._started and self.is_open:
             try:
-                if self._dev is None:
+                if self._ser is None:
                     await asyncio.sleep(0.1)
                     continue
-
-                # hid.read(size) returns list[int] or bytes-like depending on wrapper;
-                # the 'hid' package returns a list of ints.
-                loop = asyncio.get_running_loop()
-                data = await loop.run_in_executor(None, self._dev.read, self._in_report_bytes)
-
-                if not data:
-                    await asyncio.sleep(0.01)
+                line = await self._read_line()
+                if not line:
                     continue
 
-                if isinstance(data, list):
-                    chunk = bytes(data)
-                elif isinstance(data, (bytes, bytearray)):
-                    chunk = bytes(data)
-                else:
-                    chunk = bytes(data)
+                if line == "PONG":
+                    self._pong_counter += 1
+                    # A PONG means the link is alive
+                    return_ready = not self.state.ready
+                    if return_ready:
+                        # don't force ready true here; READY comes from EVT/STATUS
+                        pass
+                    continue
 
-                # Drop HID report-id byte if present (we use report id 0x01).
-                if chunk and chunk[0] in (0x00, 0x01):
-                    chunk = chunk[1:]
+                if line.startswith("STATUS "):
+                    self._handle_status_line(line)
+                    continue
 
-                self._ingest_rx_bytes(chunk)
+                if line.startswith("EVT "):
+                    self._handle_evt_line(line)
+                    continue
 
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.warning("reader error, reconnecting: %r", exc)
                 await self._force_reconnect("reader_error")
-                await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
-
-    def _ingest_rx_bytes(self, chunk: bytes) -> None:
-        # Many HID implementations pad with zeros; strip trailing zeros but keep interior zeros.
-        chunk = chunk.rstrip(b"\x00")
-        if not chunk:
-            return
-
-        self._rx_buf.extend(chunk)
-
-        while True:
-            nl = self._rx_buf.find(b"\n")
-            if nl < 0:
-                # guard against runaway buffer
-                if len(self._rx_buf) > 4096:
-                    self._rx_buf.clear()
                 return
 
-            line = bytes(self._rx_buf[:nl]).decode("utf-8", errors="replace").strip()
-            del self._rx_buf[: nl + 1]
+    async def _read_line(self) -> str:
+        # simple async wrapper around serial.readline()
+        if self._ser is None:
+            return ""
+        loop = asyncio.get_running_loop()
+        raw = await loop.run_in_executor(None, self._ser.readline)  # type: ignore[arg-type]
+        if not raw:
+            return ""
+        try:
+            return raw.decode("ascii", errors="replace").strip()
+        except Exception:
+            return ""
 
-            if not line:
-                continue
-
-            if line == "PONG":
-                self._pong_counter += 1
-                self._emit("pong")
-                self._request_status_resync()
-                continue
-
-            if line.startswith("STATUS "):
-                self._handle_status_line(line)
-                continue
-
-            if line.startswith("EVT "):
-                self._handle_evt_line(line)
-                continue
-
-            # Allow firmware debug strings without crashing
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug("dongle: %s", line)
-
-    # ----------------- internals: handshake/keepalive/status -----------------
-
-    async def _handshake_once(self, timeout_s: float) -> bool:
-        start_pong = self._pong_counter
-        self.enqueue_line("PING")
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            await asyncio.sleep(0.05)
-            if self._pong_counter > start_pong:
-                return True
-        return False
-
-    async def _schedule_status_resync(self) -> None:
-        await asyncio.sleep(0.2)
-        if self.is_open:
-            self.enqueue_line("STATUS")
-
-    def _request_status_resync(self) -> None:
-        if self._status_resync_task is None or self._status_resync_task.done():
-            self._status_resync_task = asyncio.create_task(self._schedule_status_resync())
-
-    async def _log_state_once_after_open(self) -> None:
-        await asyncio.sleep(0.35)
-        if not self.is_open:
-            return
-
-        if self.state.ready:
-            logger.info("state: ready=True")
-        elif self.state.advertising and not self.state.connected:
-            logger.info("state: adv=True")
-        elif self.state.connected and not self.state.ready:
-            logger.info("state: conn=True ready=False")
-        else:
-            logger.info("state: present=True")
-
-    async def _keepalive_loop(self) -> None:
-        missed = 0
-        while True:
-            try:
-                await asyncio.sleep(2.0)
-                if not self.is_open:
-                    missed = 0
-                    continue
-
-                before = self._pong_counter
-                self.enqueue_line("PING")
-                await asyncio.sleep(1.0)
-
-                if self._pong_counter > before:
-                    missed = 0
-                else:
-                    missed += 1
-                    if missed >= 3:
-                        missed = 0
-                        await self._force_reconnect("keepalive_timeout")
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                await self._force_reconnect("keepalive_error")
-
-    async def _status_poll_loop(self) -> None:
-        while True:
-            try:
-                await asyncio.sleep(self._status_poll_s + random.uniform(-0.5, 0.5))
-                if not self.is_open or not self.state.connected:
-                    continue
-                self.enqueue_line("STATUS")
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                pass
-
-    # ----------------- parsing: STATUS / EVT -----------------
+    # ---------- STATUS parsing (matches ble_serial.py) ----------
 
     @staticmethod
     def _parse_kv_tokens(tokens: List[str]) -> Dict[str, str]:
@@ -689,28 +655,37 @@ class BleDongleLink:
         self.state.notify = notify if notify else None
 
         conn_params: Dict[str, Any] = {}
+        if "interval_ms_x100" in kv:
+            conn_params["interval_ms_x100"] = self._to_int(kv.get("interval_ms_x100"))
         if "interval_ms" in kv:
-            conn_params["interval_ms"] = self._to_float(kv.get("interval_ms"), 0.0)
+            interval_ms = self._to_float(kv.get("interval_ms"), 0.0)
+            conn_params["interval_ms_x100"] = int(round(interval_ms * 100.0))
         if "latency" in kv:
             conn_params["latency"] = self._to_int(kv.get("latency"))
         if "timeout_ms" in kv:
             conn_params["timeout_ms"] = self._to_int(kv.get("timeout_ms"))
-        self.state.conn_params = conn_params if conn_params else None
+        if conn_params:
+            self.state.conn_params = conn_params
 
         phy: Dict[str, Any] = {}
         if "phy_tx" in kv:
             phy["tx"] = self._to_int(kv.get("phy_tx"))
         if "phy_rx" in kv:
             phy["rx"] = self._to_int(kv.get("phy_rx"))
-        self.state.phy = phy if phy else None
+        if phy:
+            self.state.phy = phy
 
-        self._emit("status")
+        if self.state.ready:
+            self._ready_evt.set()
+        else:
+            self._ready_evt.clear()
+
+    # ---------- EVT parsing (subset from ble_serial.py) ----------
 
     def _handle_evt_line(self, line: str) -> None:
         parts = line.split()
         if len(parts) < 3:
             return
-
         kind = parts[1]
         rest = parts[2:]
 
@@ -718,111 +693,59 @@ class BleDongleLink:
             self.state.ready = (rest[0] == "1")
             if self.state.ready:
                 self._ready_evt.set()
+                self._request_status_resync()
             else:
                 self._ready_evt.clear()
-            self._emit("ready")
-            if self.state.ready:
-                self._request_status_resync()
             return
 
         if kind == "ADV":
             self.state.advertising = (rest[0] == "1")
-            self._emit("adv")
             return
 
         if kind == "CONN":
             self.state.connected = (rest[0] == "1")
-            self._emit("conn")
-            self._request_status_resync()
+            if not self.state.connected:
+                self.state.ready = False
+                self._ready_evt.clear()
             return
 
-        if kind == "DISC":
-            r = rest[0]
-            if r.startswith("reason="):
-                r = r.split("=", 1)[1]
+        if kind == "DISC" and rest:
             try:
-                self.state.last_disc_reason = int(r)
+                self.state.last_disc_reason = int(rest[0], 0)
             except Exception:
                 self.state.last_disc_reason = None
-            self._emit("disc")
-            self._request_status_resync()
             return
 
-        if kind == "CONN_PARAMS":
-            kv: Dict[str, Any] = {}
-            for tok in rest:
-                if "=" in tok:
-                    k, v = tok.split("=", 1)
-                    try:
-                        kv[k] = int(v)
-                    except Exception:
-                        kv[k] = v
-            self.state.conn_params = kv
-            self._emit("conn_params")
+        if kind == "ERR":
+            self.state.error = True
             return
 
-        if kind == "PHY":
-            kv: Dict[str, Any] = {}
-            for tok in rest:
-                if "=" in tok:
-                    k, v = tok.split("=", 1)
-                    kv[k] = v
-            self.state.phy = kv
-            self._emit("phy")
-            return
+        # ignore other EVT kinds for now (PROTO/CONN_PARAMS/PHY etc. are surfaced via STATUS)
 
-    def _emit(self, event: str) -> None:
-        # Human-friendly INFO logs at this module, similar to BleSerial’s behavior :contentReference[oaicite:7]{index=7}
-        if event in ("ready", "adv", "conn", "disc", "link_lost"):
-            if event == "ready":
-                logger.info("link ready=%s", 1 if self.state.ready else 0)
-            elif event == "adv":
-                logger.info("advertising=%s", 1 if self.state.advertising else 0)
-            elif event == "conn":
-                logger.info("connected=%s", 1 if self.state.connected else 0)
-            elif event == "disc":
-                logger.info("disconnected reason=%s", self.state.last_disc_reason)
-            elif event == "link_lost":
-                logger.warning("link lost; will retry")
+    # ---------- HID table loading / encoding ----------
 
-        if self._on_event is not None:
-            try:
-                self._on_event(event, self.state)
-            except Exception:
-                logger.exception("on_event handler failed")
-
-    # ----------------- HID tables from assets -----------------
-
-    def _load_hid_tables_from_assets(self) -> Tuple[Dict[str, int], Dict[str, int]]:
-        """
-        Load hid_keymap.json from packaged assets (pihub.assets),
-        matching the style used by dispatcher for keymap.json :contentReference[oaicite:8]{index=8}.
-        """
+    def _load_hid_tables(self) -> Tuple[Dict[str, int], Dict[str, int]]:
+        identifier = "pihub.assets:hid_keymap.json"
         try:
             resource = importlib_resources.files("pihub.assets") / "hid_keymap.json"
             raw = resource.read_text(encoding="utf-8")
-        except Exception as exc:
-            logger.warning("hid_keymap.json missing in pihub.assets (%r); HID codes will be empty", exc)
-            return {}, {}
-
-        try:
-            import json
             data = json.loads(raw) or {}
         except Exception as exc:
-            logger.warning("hid_keymap.json invalid JSON (%r); HID codes will be empty", exc)
-            return {}, {}
+            logger.warning("failed to load %s (%r); BLE key encoding will be disabled", identifier, exc)
+            data = {}
 
-        kb = {k: int(v) for k, v in (data.get("keyboard") or {}).items()}
-        cc = {k: int(v) for k, v in (data.get("consumer") or {}).items()}
+        kb = {str(k): int(v) for k, v in (data.get("keyboard") or {}).items()} if isinstance(data, dict) else {}
+        cc = {str(k): int(v) for k, v in (data.get("consumer") or {}).items()} if isinstance(data, dict) else {}
         return kb, cc
 
     def _encode_keyboard_down(self, code: str) -> Optional[bytes]:
-        hid_code = self._kb.get(code)
-        if hid_code is None:
+        hid = self._kb.get(code)
+        if hid is None:
             logger.warning("unknown keyboard code %s down; ignoring", code)
             return None
-        # Boot keyboard 8 bytes: mods(1), reserved(1), key1..key6
-        return bytes([0x00, 0x00, int(hid_code) & 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
+        if not (0 <= int(hid) <= 255):
+            return None
+        return bytes([0x00, 0x00, int(hid), 0x00, 0x00, 0x00, 0x00, 0x00])
 
     def _encode_consumer_usage(self, code: str) -> int:
         return int(self._cc.get(code) or 0)

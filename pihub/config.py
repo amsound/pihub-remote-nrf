@@ -14,10 +14,9 @@ class Config:
     ha_activity: str
     ha_cmd_event: str
 
-    # HID dongle transport (HID-only)
-    ble_hid_vid: int
-    ble_hid_pid: int
-    ble_hid_product: str
+    # HID dongle transport (ACM)
+    ble_serial_device: str
+    ble_serial_baud: int
 
     # Health endpoint
     health_host: str
@@ -32,10 +31,8 @@ class Config:
         ha_cmd_event  = os.getenv("HA_CMD_EVENT", "pihub.cmd")
 
         # HID dongle
-        # Defaults match Zephyr’s defaults you observed: VID 0x2FE3, PID 0x0100.
-        ble_hid_vid = int(os.getenv("BLE_HID_VID", "0x2FE3"), 0)
-        ble_hid_pid = int(os.getenv("BLE_HID_PID", "0x0100"), 0)
-        ble_hid_product = os.getenv("BLE_HID_PRODUCT", "PiHub Dongle")
+        ble_serial_device = os.getenv("BLE_SERIAL_DEVICE", "/dev/ttyACM0")
+        ble_serial_baud = int(os.getenv("BLE_SERIAL_BAUD", "115200"))
 
         health_host   = os.getenv("HEALTH_HOST", "0.0.0.0")
         try:
@@ -48,9 +45,8 @@ class Config:
             ha_token_file=ha_token_file,
             ha_activity=ha_activity,
             ha_cmd_event=ha_cmd_event,
-            ble_hid_vid=ble_hid_vid,
-            ble_hid_pid=ble_hid_pid,
-            ble_hid_product=ble_hid_product,
+            ble_serial_device=ble_serial_device,
+            ble_serial_baud=ble_serial_baud,
             health_host=health_host,
             health_port=health_port,
         )

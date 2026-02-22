@@ -114,9 +114,8 @@ async def main() -> None:
         raise SystemExit(1) from exc
 
     bt = BleDongleLink(
-        vid=cfg.ble_hid_vid,
-        pid=cfg.ble_hid_pid,
-        product_contains=(cfg.ble_hid_product or None),
+        serial_port=cfg.ble_serial_device,
+        baud=cfg.ble_serial_baud,
     )
 
     async def _on_activity(activity: str | None) -> None:
