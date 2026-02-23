@@ -118,6 +118,9 @@ class BleDongleLink:
         self._reconnect_task: Optional[asyncio.Task] = None
         self._poll_task: Optional[asyncio.Task] = None
 
+        self._resync_task: Optional[asyncio.Task] = None
+        self._resync_delay_s: float = 0.15
+
         self._tx_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=int(tx_queue))
         self._tx_lock = asyncio.Lock()
 
@@ -418,6 +421,29 @@ class BleDongleLink:
             except Exception:
                 await asyncio.sleep(0.5)
 
+
+def _request_status_soon(self, *, delay_s: Optional[float] = None) -> None:
+    """Debounced STATUS request to resync state after transient EVT ordering."""
+    if not self.is_open:
+        return
+    if self._resync_task is not None and not self._resync_task.done():
+        return
+
+    d = self._resync_delay_s if delay_s is None else float(delay_s)
+
+    async def _runner() -> None:
+        try:
+            await asyncio.sleep(max(0.0, d))
+            await self.status_cmd()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        finally:
+            self._resync_task = None
+
+    self._resync_task = asyncio.create_task(_runner(), name="ble-serial-resync")
+
     async def _try_open_and_handshake(self) -> bool:
         port = self._find_port()
         if not port:
@@ -499,6 +525,9 @@ class BleDongleLink:
         self._ready_evt.clear()
 
     async def _close_serial(self) -> None:
+        if self._resync_task and not self._resync_task.done():
+            self._resync_task.cancel()
+        self._resync_task = None
         ser, self._ser = self._ser, None
         self._port = None
         if ser is None:
@@ -595,12 +624,21 @@ class BleDongleLink:
 
         if src == "ADV" and len(parts) >= 3:
             self.state.advertising = parts[2] == "1"
+            self._request_status_soon()
         elif src == "CONN" and len(parts) >= 3:
-            self.state.connected = parts[2] == "1"
+            is_conn = parts[2] == "1"
+            self.state.connected = is_conn
+            if not is_conn:
+                self.state.ready = False
+                self.state.conn_params = None
+                self.state.phy = None
+                self.state.notify = None
+            self._request_status_soon()
         elif src == "READY" and len(parts) >= 3:
             self.state.ready = parts[2] == "1"
             if self.state.ready:
                 self._ready_evt.set()
+            self._request_status_soon()
         elif src == "DISC":
             # EVT DISC reason=19
             for tok in parts[2:]:
@@ -672,6 +710,11 @@ class BleDongleLink:
         self.state.advertising = _i("adv", 0) == 1
         self.state.connected = _i("conn", 0) == 1
         self.state.ready = _i("ready", 0) == 1
+        if not self.state.connected:
+            self.state.ready = False
+            self.state.conn_params = None
+            self.state.phy = None
+            self.state.notify = None
         self.state.sec = _i("sec", 0)
         self.state.error = _i("err", 0) == 1
         proto = _i("proto", 1)
@@ -714,15 +757,15 @@ class BleDongleLink:
 
         if after != before:
             logger.info(
-                "state: adv=%d conn=%d ready=%d sec=%d proto=%s interval_ms=%.2f latency=%d timeout_ms=%d err=%d (STATUS)",
+                "state: adv=%d conn=%d ready=%d sec=%d proto=%s interval_ms=%s latency=%s timeout_ms=%s err=%d (STATUS)",
                 1 if self.state.advertising else 0,
                 1 if self.state.connected else 0,
                 1 if self.state.ready else 0,
                 self.state.sec,
                 "report" if self.state.proto_report else "boot",
-                self.state.conn_params.interval_ms if self.state.conn_params else 0.0,
-                self.state.conn_params.latency if self.state.conn_params else 0,
-                self.state.conn_params.timeout_ms if self.state.conn_params else 0,
+                f"{self.state.conn_params.interval_ms:.2f}" if (self.state.connected and self.state.conn_params) else "-",
+                self.state.conn_params.latency if (self.state.connected and self.state.conn_params) else "-",
+                self.state.conn_params.timeout_ms if (self.state.connected and self.state.conn_params) else "-",
                 1 if self.state.error else 0,
             )
 
