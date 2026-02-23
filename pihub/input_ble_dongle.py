@@ -422,27 +422,27 @@ class BleDongleLink:
                 await asyncio.sleep(0.5)
 
 
-def _request_status_soon(self, *, delay_s: Optional[float] = None) -> None:
-    """Debounced STATUS request to resync state after transient EVT ordering."""
-    if not self.is_open:
-        return
-    if self._resync_task is not None and not self._resync_task.done():
-        return
+    def _request_status_soon(self, *, delay_s: Optional[float] = None) -> None:
+        """Debounced STATUS request to resync state after transient EVT ordering."""
+        if not self.is_open:
+            return
+        if self._resync_task is not None and not self._resync_task.done():
+            return
 
-    d = self._resync_delay_s if delay_s is None else float(delay_s)
+        d = self._resync_delay_s if delay_s is None else float(delay_s)
 
-    async def _runner() -> None:
-        try:
-            await asyncio.sleep(max(0.0, d))
-            await self.status_cmd()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass
-        finally:
-            self._resync_task = None
+        async def _runner() -> None:
+            try:
+                await asyncio.sleep(max(0.0, d))
+                await self.status_cmd()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            finally:
+                self._resync_task = None
 
-    self._resync_task = asyncio.create_task(_runner(), name="ble-serial-resync")
+        self._resync_task = asyncio.create_task(_runner(), name="ble-serial-resync")
 
     async def _try_open_and_handshake(self) -> bool:
         port = self._find_port()
