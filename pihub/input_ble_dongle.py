@@ -26,10 +26,7 @@ from typing import Any, Dict, List, Optional, Literal
 import serial  # pyserial
 from serial import SerialException
 
-try:
-    from importlib import resources as importlib_resources
-except ImportError:  # pragma: no cover
-    import importlib_resources
+from importlib import resources as importlib_resources
 
 Usage = Literal["keyboard", "consumer"]
 
@@ -133,6 +130,11 @@ class BleDongleLink:
 
         # optional tx trace
         self._tx_trace = bool(os.getenv("PIHUB_BLE_TX_TRACE", "").strip())
+
+        # tidy state logging
+        self._last_log_sig: Optional[tuple] = None
+        self._last_log_ts: float = 0.0
+        self._log_min_interval_s: float = 0.10
 
         # HID usage maps loaded from assets/hid_keymap.json
         self._hid_kb: Dict[str, int] = {}
@@ -353,6 +355,85 @@ class BleDongleLink:
         cc = doc.get("consumer") if isinstance(doc, dict) else None
         self._hid_kb = {str(k): int(v) for k, v in (kb or {}).items()} if isinstance(kb, dict) else {}
         self._hid_cc = {str(k): int(v) for k, v in (cc or {}).items()} if isinstance(cc, dict) else {}
+
+    def _state_label(self) -> str:
+        if self.state.connected and self.state.ready:
+            return "READY"
+        if self.state.connected and not self.state.ready:
+            return "CONNECTED_NOT_READY"
+        if self.state.advertising and not self.state.connected:
+            return "ADVERTISING"
+        if not self.state.connected and not self.state.advertising:
+            return "DISCONNECTED"
+        return "STATE"
+
+    def _log_state(self, *, source: str) -> None:
+        """Emit a deduped state summary; includes conn params when connected."""
+        now = time.monotonic()
+        label = self._state_label()
+
+        interval = None
+        latency = None
+        timeout = None
+        if self.state.connected and self.state.conn_params:
+            interval = float(self.state.conn_params.interval_ms)
+            latency = int(self.state.conn_params.latency)
+            timeout = int(self.state.conn_params.timeout_ms)
+
+        proto = "report" if self.state.proto_report else "boot"
+
+        sig = (
+            label,
+            bool(self.state.advertising),
+            bool(self.state.connected),
+            bool(self.state.ready),
+            int(self.state.sec),
+            bool(self.state.error),
+            proto if self.state.connected else "-",
+            interval,
+            latency,
+            timeout,
+            self.state.last_disc_reason,
+        )
+
+        if self._last_log_sig == sig and (now - self._last_log_ts) < 2.0:
+            return
+        if (now - self._last_log_ts) < self._log_min_interval_s and self._last_log_sig == sig:
+            return
+
+        self._last_log_sig = sig
+        self._last_log_ts = now
+
+        if label == "READY":
+            logger.info(
+                "ble: READY sec=%d proto=%s interval_ms=%.2f latency=%d timeout_ms=%d err=%d (%s)",
+                self.state.sec,
+                proto,
+                interval or 0.0,
+                latency or 0,
+                timeout or 0,
+                1 if self.state.error else 0,
+                source,
+            )
+        elif label == "ADVERTISING":
+            logger.info("ble: ADVERTISING (%s)", source)
+        elif label == "CONNECTED_NOT_READY":
+            logger.info("ble: CONNECTED (not ready) sec=%d err=%d (%s)", self.state.sec, 1 if self.state.error else 0, source)
+        elif label == "DISCONNECTED":
+            if self.state.last_disc_reason is not None:
+                logger.info("ble: DISCONNECTED reason=%s (%s)", self.state.last_disc_reason, source)
+            else:
+                logger.info("ble: DISCONNECTED (%s)", source)
+        else:
+            logger.info(
+                "ble: state adv=%d conn=%d ready=%d sec=%d err=%d (%s)",
+                1 if self.state.advertising else 0,
+                1 if self.state.connected else 0,
+                1 if self.state.ready else 0,
+                self.state.sec,
+                1 if self.state.error else 0,
+                source,
+            )
 
     # ---------- TX/RX plumbing ----------
 
@@ -628,6 +709,8 @@ class BleDongleLink:
         elif src == "CONN" and len(parts) >= 3:
             is_conn = parts[2] == "1"
             self.state.connected = is_conn
+            if is_conn:
+                self.state.last_disc_reason = None
             if not is_conn:
                 self.state.ready = False
                 self.state.conn_params = None
@@ -655,6 +738,7 @@ class BleDongleLink:
                 latency = int(kv.get("latency", "0") or 0)
                 timeout_ms = int(kv.get("timeout_ms", "0") or 0)
                 self.state.conn_params = ConnParams(interval_ms=interval_ms, latency=latency, timeout_ms=timeout_ms)
+                self._log_state(source="EVT CONN_PARAMS")
             except ValueError:
                 pass
         elif src == "PHY":
@@ -665,15 +749,7 @@ class BleDongleLink:
 
         after = (self.state.advertising, self.state.connected, self.state.ready, self.state.sec, self.state.error)
         if after != before:
-            logger.info(
-                "state: adv=%d conn=%d ready=%d sec=%d err=%d (EVT %s)",
-                1 if self.state.advertising else 0,
-                1 if self.state.connected else 0,
-                1 if self.state.ready else 0,
-                self.state.sec,
-                1 if self.state.error else 0,
-                src,
-            )
+            self._log_state(source=f"EVT {src}")
 
     def _handle_status(self, line: str) -> None:
         # STATUS adv=0 conn=1 sec=2 ready=1 proto=1 err=0 kb_notify=1 boot_notify=0 cc_notify=1 ...
@@ -756,19 +832,7 @@ class BleDongleLink:
         )
 
         if after != before:
-            logger.info(
-                "state: adv=%d conn=%d ready=%d sec=%d proto=%s interval_ms=%s latency=%s timeout_ms=%s err=%d (STATUS)",
-                1 if self.state.advertising else 0,
-                1 if self.state.connected else 0,
-                1 if self.state.ready else 0,
-                self.state.sec,
-                "report" if self.state.proto_report else "boot",
-                f"{self.state.conn_params.interval_ms:.2f}" if (self.state.connected and self.state.conn_params) else "-",
-                self.state.conn_params.latency if (self.state.connected and self.state.conn_params) else "-",
-                self.state.conn_params.timeout_ms if (self.state.connected and self.state.conn_params) else "-",
-                1 if self.state.error else 0,
-            )
+            self._log_state(source=f"EVT {src}")
 
     def _sleep_with_jitter(self, base_s: float) -> float:
         return max(0.05, base_s + random.uniform(0.0, min(0.25, base_s)))
-
