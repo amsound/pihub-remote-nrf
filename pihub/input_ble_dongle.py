@@ -832,7 +832,7 @@ class BleDongleLink:
         )
 
         if after != before:
-            self._log_state(source=f"EVT {src}")
+            self._log_state(source="STATUS")
 
     def _sleep_with_jitter(self, base_s: float) -> float:
         return max(0.05, base_s + random.uniform(0.0, min(0.25, base_s)))
