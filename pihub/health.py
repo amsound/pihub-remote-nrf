@@ -66,25 +66,16 @@ class HealthServer:
 
         ble_raw = self._bt.status
         conn_params = ble_raw.get("conn_params") or {}
-
         connected = bool(ble_raw.get("connected"))
-
-        # Canonical: firmware uses proto=1 => report, proto=0 => boot.
-        # input_ble_dongle exposes this as proto_report.
-        proto_report = bool(ble_raw.get("proto_report")) if connected else False
-
-        # Prefer reporting the actual active serial path. If not opened yet (or adapter missing),
-        # this may be None/empty.
-        active_path = ble_raw.get("active_path") or ble_raw.get("port")
 
         ble_state = {
             "adapter_present": bool(ble_raw.get("adapter_present")),
-            "device": active_path,
+            "device": ble_raw.get("active_port"),
             "ready": bool(ble_raw.get("ready")),
             "advertising": bool(ble_raw.get("advertising")),
             "connected": connected,
             "sec": ble_raw.get("sec"),
-            "proto_report": proto_report,
+            "proto_report": bool(ble_raw.get("proto_report")) if connected else False,
             "error": bool(ble_raw.get("error")),
             "conn_params": conn_params or None,
             "phy": ble_raw.get("phy"),
@@ -107,15 +98,19 @@ class HealthServer:
         if not usb_state["grabbed"]:
             degraded_reasons.append("usb.not_grabbed")
 
+        # BLE health (strict): OK only when READY.
         if not ble_state["adapter_present"]:
             degraded_reasons.append("ble.adapter_missing")
-
-        # Consider BLE "usable" if connected OR advertising (ready to connect).
-        if not ble_state["connected"] and not ble_state["advertising"]:
-            degraded_reasons.append("ble.not_advertising")
-
-        if not ble_state["connected"]:
-            degraded_reasons.append("ble.not_connected")
+        else:
+            if ble_state["ready"]:
+                # GOOD: ready implies connected+usable
+                pass
+            elif ble_state["advertising"]:
+                # DEGRADED: alive and waiting for a connection
+                degraded_reasons.append("ble.advertising")
+            else:
+                # DEGRADED: anything else (not ready, not advertising)
+                degraded_reasons.append("ble.not_ready")
 
         return {
             "status": "ok" if not degraded_reasons else "degraded",
