@@ -367,6 +367,27 @@ class BleDongleLink:
             return "DISCONNECTED"
         return "STATE"
 
+
+    @staticmethod
+    def _label_for(*, advertising: bool, connected: bool, ready: bool) -> str:
+        if connected and ready:
+            return "READY"
+        if connected and not ready:
+            return "CONNECTED_NOT_READY"
+        if advertising and not connected:
+            return "ADVERTISING"
+        if not connected and not advertising:
+            return "DISCONNECTED"
+        return "STATE"
+
+    @staticmethod
+    def _fmt_diff(changes: dict) -> str:
+        parts = []
+        for k in sorted(changes.keys()):
+            a, b = changes[k]
+            parts.append(f"{k}={a}->{b}")
+        return " ".join(parts)
+
     def _log_state(self, *, source: str) -> None:
         """Emit a deduped state summary; includes conn params when connected."""
         now = time.monotonic()
@@ -453,7 +474,14 @@ class BleDongleLink:
         try:
             self._tx_q.put_nowait(payload)
         except asyncio.QueueFull:
-            logger.debug("tx queue full; dropping payload (%d bytes)", len(payload))
+            # Prefer dropping the oldest payload to preserve the most recent transitions
+            # (e.g., don’t drop a key-up).
+            with contextlib.suppress(asyncio.QueueEmpty):
+                _ = self._tx_q.get_nowait()
+            with contextlib.suppress(asyncio.QueueFull):
+                self._tx_q.put_nowait(payload)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("tx queue full; dropped oldest and kept newest (%d bytes)", len(payload))
 
     async def _write_line(self, line: str) -> None:
         if not self.is_open:
@@ -530,13 +558,24 @@ class BleDongleLink:
         if not port:
             return False
 
+
         try:
-            ser = serial.Serial(
-                port=port,
-                baudrate=self._baud,
-                timeout=0,          # non-blocking reads
-                write_timeout=0.5,
-            )
+            # pyserial's 'exclusive' is POSIX-only; keep best-effort compatibility.
+            try:
+                ser = serial.Serial(
+                    port=port,
+                    baudrate=self._baud,
+                    timeout=0,          # non-blocking reads
+                    write_timeout=0.5,
+                    exclusive=True,
+                )
+            except TypeError:
+                ser = serial.Serial(
+                    port=port,
+                    baudrate=self._baud,
+                    timeout=0,          # non-blocking reads
+                    write_timeout=0.5,
+                )
         except SerialException as exc:
             logger.debug("open failed on %s: %r", port, exc)
             return False
@@ -546,6 +585,13 @@ class BleDongleLink:
         self.state = DongleState()
         self._pong_counter = 0
         self._ready_evt.clear()
+        # Avoid stale/fragmented telemetry across reconnects.
+        self._rx_buf.clear()
+        with contextlib.suppress(Exception):
+            ser.reset_input_buffer()
+        with contextlib.suppress(Exception):
+            ser.reset_output_buffer()
+
 
         if self._reader_task is None or self._reader_task.done():
             self._reader_task = asyncio.create_task(self._reader_loop(), name="ble-serial-reader")
@@ -742,10 +788,19 @@ class BleDongleLink:
             except ValueError:
                 pass
         elif src == "PHY":
-            # EVT PHY 2 2 (or tx/rx)
-            if len(parts) >= 4:
+            # Firmware may emit either "EVT PHY 2 2" or "EVT PHY tx=1M rx=2M".
+            if len(parts) >= 4 and parts[2].isdigit() and parts[3].isdigit():
                 with contextlib.suppress(ValueError):
                     self.state.phy = Phy(tx=int(parts[2]), rx=int(parts[3]))
+            else:
+                kv = {}
+                for tok in parts[2:]:
+                    if "=" in tok:
+                        k, v = tok.split("=", 1)
+                        kv[k] = v
+                if kv:
+                    # Keep presence; numeric mapping can be added later if needed.
+                    self.state.phy = Phy(tx=0, rx=0)
 
         after = (self.state.advertising, self.state.connected, self.state.ready, self.state.sec, self.state.error)
         if after != before:
@@ -832,7 +887,36 @@ class BleDongleLink:
         )
 
         if after != before:
-            self._log_state(source="STATUS")
+            # STATUS may be polled frequently; keep it quiet at INFO unless it causes a
+            # user-visible state transition. Always provide a DEBUG diff.
+            changes = {}
+
+            if before[0] != after[0]:
+                changes["adv"] = (int(before[0]), int(after[0]))
+            if before[1] != after[1]:
+                changes["conn"] = (int(before[1]), int(after[1]))
+            if before[2] != after[2]:
+                changes["ready"] = (int(before[2]), int(after[2]))
+            if before[3] != after[3]:
+                changes["sec"] = (before[3], after[3])
+            if before[4] != after[4]:
+                changes["err"] = (int(before[4]), int(after[4]))
+            if before[5] != after[5]:
+                changes["proto"] = ("report" if before[5] else "boot", "report" if after[5] else "boot")
+            if before[6] != after[6]:
+                changes["interval_ms"] = (before[6], after[6])
+            if before[7] != after[7]:
+                changes["latency"] = (before[7], after[7])
+            if before[8] != after[8]:
+                changes["timeout_ms"] = (before[8], after[8])
+
+            if changes and logger.isEnabledFor(logging.DEBUG):
+                logger.debug("ble: STATUS %s", self._fmt_diff(changes))
+
+            old_label = self._label_for(advertising=bool(before[0]), connected=bool(before[1]), ready=bool(before[2]))
+            new_label = self._state_label()
+            if new_label != old_label:
+                self._log_state(source="STATUS")
 
     def _sleep_with_jitter(self, base_s: float) -> float:
         return max(0.05, base_s + random.uniform(0.0, min(0.25, base_s)))

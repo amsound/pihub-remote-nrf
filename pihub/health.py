@@ -67,14 +67,24 @@ class HealthServer:
         ble_raw = self._bt.status
         conn_params = ble_raw.get("conn_params") or {}
 
+        connected = bool(ble_raw.get("connected"))
+
+        # Canonical: firmware uses proto=1 => report, proto=0 => boot.
+        # input_ble_dongle exposes this as proto_report.
+        proto_report = bool(ble_raw.get("proto_report")) if connected else False
+
+        # Prefer reporting the actual active serial path. If not opened yet (or adapter missing),
+        # this may be None/empty.
+        active_path = ble_raw.get("active_path") or ble_raw.get("port")
+
         ble_state = {
             "adapter_present": bool(ble_raw.get("adapter_present")),
-            "device": ble_raw.get("active_path"),
+            "device": active_path,
             "ready": bool(ble_raw.get("ready")),
             "advertising": bool(ble_raw.get("advertising")),
-            "connected": bool(ble_raw.get("connected")),
+            "connected": connected,
             "sec": ble_raw.get("sec"),
-            "proto_boot": bool(ble_raw.get("proto_boot")),
+            "proto_report": proto_report,
             "error": bool(ble_raw.get("error")),
             "conn_params": conn_params or None,
             "phy": ble_raw.get("phy"),
