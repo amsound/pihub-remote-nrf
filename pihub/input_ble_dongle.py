@@ -207,6 +207,15 @@ class BleDongleLink:
         if self.is_open:
             await self._write_line("UNPAIR")
 
+    def release_all(self) -> None:
+        """Best-effort host-side failsafe to avoid stuck keys."""
+        if not self.is_open:
+            return
+        with contextlib.suppress(asyncio.QueueFull):
+            self._tx_q.put_nowait(b"\x01" + (b"\x00" * 8))
+        with contextlib.suppress(asyncio.QueueFull):
+            self._tx_q.put_nowait(b"\x02\x00\x00")
+
     # ---------- edge-level API ----------
 
     def key_down(self, *, usage: Usage, code: str) -> None:
@@ -353,17 +362,6 @@ class BleDongleLink:
         cc = doc.get("consumer") if isinstance(doc, dict) else None
         self._hid_kb = {str(k): int(v) for k, v in (kb or {}).items()} if isinstance(kb, dict) else {}
         self._hid_cc = {str(k): int(v) for k, v in (cc or {}).items()} if isinstance(cc, dict) else {}
-
-    def _state_label(self) -> str:
-        if self.state.connected and self.state.ready:
-            return "READY"
-        if self.state.connected and not self.state.ready:
-            return "CONNECTED_NOT_READY"
-        if self.state.advertising and not self.state.connected:
-            return "ADVERTISING"
-        if not self.state.connected and not self.state.advertising:
-            return "DISCONNECTED"
-        return "STATE"
 
     @staticmethod
     def _fmt_diff(changes: dict) -> str:
@@ -736,12 +734,20 @@ class BleDongleLink:
         if self._resync_task and not self._resync_task.done():
             self._resync_task.cancel()
         self._resync_task = None
+        self._clear_tx_queue()
         ser, self._ser = self._ser, None
         self._port = None
         if ser is None:
             return
         with contextlib.suppress(Exception):
             ser.close()
+
+    def _clear_tx_queue(self) -> None:
+        while True:
+            try:
+                self._tx_q.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
     async def _writer_loop(self) -> None:
         while True:
@@ -754,7 +760,6 @@ class BleDongleLink:
                 loop = asyncio.get_running_loop()
                 async with self._tx_lock:
                     n = await loop.run_in_executor(None, self._ser.write, payload)  # type: ignore[arg-type]
-                    await loop.run_in_executor(None, self._ser.flush)  # type: ignore[arg-type]
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug("serial wrote %s bytes", n)
             except asyncio.CancelledError:
