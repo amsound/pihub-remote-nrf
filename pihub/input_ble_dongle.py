@@ -505,14 +505,16 @@ class BleDongleLink:
 
         # Ready boundary
         if label == "ready":
-            # If we just became ready, say it once with notify flags
+            # If we just became ready, say it once
             if prev_ready is False or prev_label != "ready":
-                logger.info(
-                    "connection now ready (kb_notify=%d cc_notify=%d batt_notify=%d)",
-                    kb_n,
-                    cc_n,
-                    batt_n,
-                )
+                has_notifies = bool(self.state.notify) and (kb_n or cc_n or batt_n)
+                if has_notifies:
+                    logger.info(
+                        "connection ready (kb_notify=%d cc_notify=%d batt_notify=%d)",
+                        kb_n, cc_n, batt_n
+                    )
+                else:
+                    logger.info("connection now ready")
                 return
 
             # Already ready: if connection params changed, log as an update (not a second "connected")
