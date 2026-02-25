@@ -367,19 +367,6 @@ class BleDongleLink:
             return "DISCONNECTED"
         return "STATE"
 
-
-    @staticmethod
-    def _label_for(*, advertising: bool, connected: bool, ready: bool) -> str:
-        if connected and ready:
-            return "READY"
-        if connected and not ready:
-            return "CONNECTED_NOT_READY"
-        if advertising and not connected:
-            return "ADVERTISING"
-        if not connected and not advertising:
-            return "DISCONNECTED"
-        return "STATE"
-
     @staticmethod
     def _fmt_diff(changes: dict) -> str:
         parts = []
@@ -388,21 +375,62 @@ class BleDongleLink:
             parts.append(f"{k}={a}->{b}")
         return " ".join(parts)
 
+    def _state_label(self) -> str:
+        # canonical internal labels, lowercase for readability
+        if self.state.connected and self.state.ready:
+            return "ready"
+        if self.state.connected and not self.state.ready:
+            return "connected_not_ready"
+        if self.state.advertising and not self.state.connected:
+            return "advertising"
+        if not self.state.connected and not self.state.advertising:
+            return "disconnected"
+        return "state"
+
+    @staticmethod
+    def _label_for(*, advertising: bool, connected: bool, ready: bool) -> str:
+        if connected and ready:
+            return "ready"
+        if connected and not ready:
+            return "connected_not_ready"
+        if advertising and not connected:
+            return "advertising"
+        if not connected and not advertising:
+            return "disconnected"
+        return "state"
+
+
     def _log_state(self, *, source: str) -> None:
-        """Emit a deduped state summary; includes conn params when connected."""
+        """
+        Emit a deduped, friendly INFO message for human-readable state transitions.
+        The 'source' (STATUS vs EVT) is only shown at DEBUG.
+        """
         now = time.monotonic()
         label = self._state_label()
 
-        interval = None
-        latency = None
-        timeout = None
+        # Convenience
+        port = self._port or "unknown"
+        err = 1 if self.state.error else 0
+
+        interval = latency = timeout = None
         if self.state.connected and self.state.conn_params:
             interval = float(self.state.conn_params.interval_ms)
             latency = int(self.state.conn_params.latency)
             timeout = int(self.state.conn_params.timeout_ms)
 
-        proto = "report" if self.state.proto_report else "boot"
+        # notify flags are useful at "ready" boundary
+        kb_n = int(self.state.notify.get("kb", 0)) if self.state.notify else 0
+        cc_n = int(self.state.notify.get("cc", 0)) if self.state.notify else 0
+        batt_n = int(self.state.notify.get("batt", 0)) if self.state.notify else 0
 
+        # We want to log:
+        # - advertising started / stopped
+        # - connected to device
+        # - connection now ready (...)
+        # - connected (interval/latency/timeout) (when params change while ready)
+        # - disconnected
+        #
+        # Use a signature that avoids spam but still logs meaningful changes.
         sig = (
             label,
             bool(self.state.advertising),
@@ -410,11 +438,14 @@ class BleDongleLink:
             bool(self.state.ready),
             int(self.state.sec),
             bool(self.state.error),
-            proto if self.state.connected else "-",
             interval,
             latency,
             timeout,
+            kb_n,
+            cc_n,
+            batt_n,
             self.state.last_disc_reason,
+            port,
         )
 
         if self._last_log_sig == sig and (now - self._last_log_ts) < 2.0:
@@ -422,39 +453,82 @@ class BleDongleLink:
         if (now - self._last_log_ts) < self._log_min_interval_s and self._last_log_sig == sig:
             return
 
+        # Detect transition compared to previous signature (if any)
+        prev = self._last_log_sig
+        prev_label = prev[0] if isinstance(prev, tuple) and len(prev) > 0 else None
+        prev_adv = bool(prev[1]) if isinstance(prev, tuple) and len(prev) > 1 else None
+        prev_ready = bool(prev[3]) if isinstance(prev, tuple) and len(prev) > 3 else None
+        prev_params = (prev[6], prev[7], prev[8]) if isinstance(prev, tuple) and len(prev) > 8 else (None, None, None)
+
         self._last_log_sig = sig
         self._last_log_ts = now
 
-        if label == "READY":
-            logger.info(
-                "ble: READY sec=%d proto=%s interval_ms=%.2f latency=%d timeout_ms=%d err=%d (%s)",
-                self.state.sec,
-                proto,
-                interval or 0.0,
-                latency or 0,
-                timeout or 0,
-                1 if self.state.error else 0,
+        # Debug: show source + full state line if you want it
+        if logger.isEnabledFor(logging.DEBUG):
+            # keep it compact
+            logger.debug(
+                "state change (%s): label=%s adv=%d conn=%d ready=%d sec=%d err=%d port=%s interval=%.2f latency=%s timeout=%s",
                 source,
-            )
-        elif label == "ADVERTISING":
-            logger.info("ble: ADVERTISING (%s)", source)
-        elif label == "CONNECTED_NOT_READY":
-            logger.info("ble: CONNECTED (not ready) sec=%d err=%d (%s)", self.state.sec, 1 if self.state.error else 0, source)
-        elif label == "DISCONNECTED":
-            if self.state.last_disc_reason is not None:
-                logger.info("ble: DISCONNECTED reason=%s (%s)", self.state.last_disc_reason, source)
-            else:
-                logger.info("ble: DISCONNECTED (%s)", source)
-        else:
-            logger.info(
-                "ble: state adv=%d conn=%d ready=%d sec=%d err=%d (%s)",
+                label,
                 1 if self.state.advertising else 0,
                 1 if self.state.connected else 0,
                 1 if self.state.ready else 0,
                 self.state.sec,
-                1 if self.state.error else 0,
-                source,
+                err,
+                port,
+                interval or 0.0,
+                latency if latency is not None else "-",
+                timeout if timeout is not None else "-",
             )
+
+        # --- Friendly INFO messages ---
+        # Advertising transitions
+        if label == "advertising":
+            if prev_adv is False:
+                logger.info("advertising started")
+            else:
+                # only log "advertising started" once; skip repeats
+                logger.info("advertising started")
+            return
+
+        if prev_adv is True and label != "advertising":
+            # We were advertising and we are no longer (usually because we connected)
+            logger.info("advertising stopped")
+            # don't return; allow connect/ready message in same transition
+
+        # Connected (not ready yet)
+        if label == "connected_not_ready":
+            # Only log this when we transition into it
+            if prev_label != "connected_not_ready":
+                logger.info("connected to device (%s)", port)
+            return
+
+        # Ready boundary
+        if label == "ready":
+            # If we just became ready, say it once with notify flags
+            if prev_ready is False or prev_label != "ready":
+                logger.info(
+                    "connection now ready (kb_notify=%d cc_notify=%d batt_notify=%d)",
+                    kb_n,
+                    cc_n,
+                    batt_n,
+                )
+                return
+
+            # Already ready: if conn params changed, log them (nice, compact)
+            cur_params = (interval, latency, timeout)
+            if prev_params != cur_params and interval is not None and latency is not None and timeout is not None:
+                logger.info("connected (interval_ms=%.2f latency=%d timeout_ms=%d)", interval, latency, timeout)
+            return
+
+        # Disconnected
+        if label == "disconnected":
+            # Keep it clean; reason only at DEBUG (or show if you prefer)
+            logger.info("disconnected")
+            return
+
+        # Fallback
+        logger.info("state updated")
 
     # ---------- TX/RX plumbing ----------
 
@@ -868,8 +942,7 @@ class BleDongleLink:
 
         phy_tx = _i("phy_tx", 0)
         phy_rx = _i("phy_rx", 0)
-        if phy_tx or phy_rx:
-            self.state.phy = Phy(tx=phy_tx, rx=phy_rx)
+        self.state.phy = Phy(tx=phy_tx, rx=phy_rx)
 
         if self.state.ready:
             self._ready_evt.set()
