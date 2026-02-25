@@ -515,10 +515,20 @@ class BleDongleLink:
                 )
                 return
 
-            # Already ready: if conn params changed, log them (nice, compact)
+            # Already ready: if connection params changed, log as an update (not a second "connected")
             cur_params = (interval, latency, timeout)
-            if prev_params != cur_params and interval is not None and latency is not None and timeout is not None:
-                logger.info("connected (interval_ms=%.2f latency=%d timeout_ms=%d)", interval, latency, timeout)
+            if (
+                prev_params != cur_params
+                and interval is not None
+                and latency is not None
+                and timeout is not None
+            ):
+                logger.info(
+                    "connection params updated (interval_ms=%.2f latency=%d timeout_ms=%d)",
+                    interval,
+                    latency,
+                    timeout,
+                )
             return
 
         # Disconnected
