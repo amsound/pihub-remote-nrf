@@ -81,6 +81,7 @@ def _make_on_cmd(bt: BleDongleLink):
             return
         
         if text == "unpair":
+            bt.release_all()
             await bt.unpair()
             return
 

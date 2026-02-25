@@ -118,7 +118,8 @@ class BleDongleLink:
         self._resync_task: Optional[asyncio.Task] = None
         self._resync_delay_s: float = 0.15
 
-        self._tx_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=int(tx_queue))
+        self._tx_epoch: int = 0
+        self._tx_q: asyncio.Queue[tuple[int, bytes]] = asyncio.Queue(maxsize=int(tx_queue))
         self._tx_lock = asyncio.Lock()
 
         self._rx_buf = bytearray()
@@ -127,9 +128,6 @@ class BleDongleLink:
         # reconnect knobs
         self._reconnect_delay_s = 0.5
         self._reconnect_delay_max_s = 8.0
-
-        # optional tx trace
-        self._tx_trace = bool(os.getenv("PIHUB_BLE_TX_TRACE", "").strip())
 
         # tidy state logging
         self._last_log_sig: Optional[tuple] = None
@@ -486,9 +484,6 @@ class BleDongleLink:
         if label == "advertising":
             if prev_adv is False:
                 logger.info("advertising started")
-            else:
-                # only log "advertising started" once; skip repeats
-                logger.info("advertising started")
             return
 
         if prev_adv is True and label != "advertising":
@@ -549,7 +544,7 @@ class BleDongleLink:
         if not (self.is_open and self.state.connected and self.state.ready):
             return
 
-        if (self._tx_trace or logger.isEnabledFor(logging.DEBUG)) and payload:
+        if logger.isEnabledFor(logging.DEBUG) and payload:
             if payload[0] == 0x01 and len(payload) == 9:
                 logger.debug("tx kb: %s", payload.hex())
             elif payload[0] == 0x02 and len(payload) == 3:
@@ -558,14 +553,14 @@ class BleDongleLink:
                 logger.debug("tx raw(%d): %s", len(payload), payload.hex())
 
         try:
-            self._tx_q.put_nowait(payload)
+            self._tx_q.put_nowait((self._tx_epoch, payload))
         except asyncio.QueueFull:
             # Prefer dropping the oldest payload to preserve the most recent transitions
             # (e.g., don’t drop a key-up).
             with contextlib.suppress(asyncio.QueueEmpty):
                 _ = self._tx_q.get_nowait()
             with contextlib.suppress(asyncio.QueueFull):
-                self._tx_q.put_nowait(payload)
+                self._tx_q.put_nowait((self._tx_epoch, payload))
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("tx queue full; dropped oldest and kept newest (%d bytes)", len(payload))
 
@@ -573,7 +568,7 @@ class BleDongleLink:
         if not self.is_open:
             return
         framed = (line.strip() + "\n").encode("ascii", errors="replace")
-        await self._tx_q.put(framed)
+        await self._tx_q.put((self._tx_epoch, framed))
 
     async def _reconnect_loop(self) -> None:
         while True:
@@ -751,14 +746,16 @@ class BleDongleLink:
     async def _writer_loop(self) -> None:
         while True:
             try:
-                payload = await self._tx_q.get()
+                epoch, payload = await self._tx_q.get()
+                if epoch != self._tx_epoch:
+                    continue
                 if self._ser is None:
                     continue
                 loop = asyncio.get_running_loop()
                 async with self._tx_lock:
                     n = await loop.run_in_executor(None, self._ser.write, payload)  # type: ignore[arg-type]
                     await loop.run_in_executor(None, self._ser.flush)  # type: ignore[arg-type]
-                if self._tx_trace or logger.isEnabledFor(logging.DEBUG):
+                if logger.isEnabledFor(logging.DEBUG):
                     logger.debug("serial wrote %s bytes", n)
             except asyncio.CancelledError:
                 raise

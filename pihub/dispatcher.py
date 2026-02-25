@@ -225,6 +225,8 @@ class Dispatcher:
         await self._cancel_all_repeat_tasks()
         await self._cancel_all_hold_tasks()
         self._pressed_at.clear()
+        with suppress(Exception):
+            self._bt.release_all()
 
     # ---- Repeat helpers (WS only) ----
     async def _start_repeat(self, rem_key: str, text: str, extras: dict) -> None:
