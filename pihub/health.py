@@ -62,23 +62,63 @@ class HealthServer:
         ws_connected = self._ws.is_connected
         ws_state = {"connected": ws_connected, "last_activity": self._ws.last_activity}
 
-        usb_state = self._reader.status
+        # ---------------- USB ----------------
+        usb_raw = self._reader.status
 
+        usb_present = bool(usb_raw.get("receiver_present"))
+        usb_path = usb_raw.get("input_path")
+        usb_link_up = bool(usb_raw.get("input_open"))
+
+        # For USB, there isn't a firmware-computed "ready" signal, so we provide a
+        # practical "link_ready" derived from your existing explicit flags.
+        usb_link_ready = bool(
+            usb_raw.get("input_open")
+            and usb_raw.get("reader_running")
+            and usb_raw.get("grabbed")
+            and usb_raw.get("paired_remote")
+        )
+
+        usb_state = {
+            # canonical
+            "present": usb_present,
+            "path": usb_path,
+            "link_up": usb_link_up,
+            "link_ready": usb_link_ready,
+            "error": bool(usb_raw.get("error")) if "error" in usb_raw else (not usb_link_up),
+
+            # usb-specific passthrough (keep what you already use)
+            "receiver_present": usb_present,
+            "paired_remote": bool(usb_raw.get("paired_remote")),
+            "reader_running": bool(usb_raw.get("reader_running")),
+            "input_open": bool(usb_raw.get("input_open")),
+            "input_path": usb_path,
+            "grabbed": bool(usb_raw.get("grabbed")),
+        }
+
+        # ---------------- BLE ----------------
         ble_raw = self._bt.status
         conn_params = ble_raw.get("conn_params") or {}
-        connected = bool(ble_raw.get("connected"))
+
+        ble_present = bool(ble_raw.get("adapter_present"))
+        ble_path = ble_raw.get("active_port") or ble_raw.get("device")
+        ble_connected = bool(ble_raw.get("connected"))
+        ble_advertising = bool(ble_raw.get("advertising"))
+
+        # Firmware-computed READY: expose as link_ready (no extra semantics).
+        ble_link_ready = bool(ble_raw.get("ready"))
 
         ble_state = {
-            "adapter_present": bool(ble_raw.get("adapter_present")),
-            "device": ble_raw.get("active_port"),
-            "ready": bool(ble_raw.get("ready")),
-            "advertising": bool(ble_raw.get("advertising")),
-            "connected": connected,
-            "sec": ble_raw.get("sec"),
-            "proto_report": bool(ble_raw.get("proto_report")) if connected else False,
+            # canonical
+            "present": ble_present,
+            "path": ble_path,
+            "link_up": ble_present,          # serial open == link up for CDC ACM
+            "link_ready": ble_link_ready,    # firmware READY
             "error": bool(ble_raw.get("error")),
+
+            # ble-specific passthrough (clean set)
+            "advertising": ble_advertising,
+            "connected": ble_connected,
             "conn_params": conn_params or None,
-            "phy": ble_raw.get("phy"),
             "last_disc_reason": ble_raw.get("last_disc_reason"),
         }
 
@@ -87,6 +127,7 @@ class HealthServer:
         if not ws_state["connected"]:
             degraded_reasons.append("ws.not_connected")
 
+        # USB degraded reasons (keep your strict checks)
         if not usb_state["receiver_present"]:
             degraded_reasons.append("usb.receiver_not_detected")
         if not usb_state["paired_remote"]:
@@ -98,18 +139,15 @@ class HealthServer:
         if not usb_state["grabbed"]:
             degraded_reasons.append("usb.not_grabbed")
 
-        # BLE health (strict): OK only when READY.
-        if not ble_state["adapter_present"]:
+        # BLE health (strict): OK only when link_ready (firmware READY).
+        if not ble_state["present"]:
             degraded_reasons.append("ble.adapter_missing")
         else:
-            if ble_state["ready"]:
-                # GOOD: ready implies connected+usable
+            if ble_state["link_ready"]:
                 pass
             elif ble_state["advertising"]:
-                # DEGRADED: alive and waiting for a connection
                 degraded_reasons.append("ble.advertising")
             else:
-                # DEGRADED: anything else (not ready, not advertising)
                 degraded_reasons.append("ble.not_ready")
 
         return {
