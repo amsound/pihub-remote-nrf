@@ -949,8 +949,10 @@ class BleDongleLink:
         interval_ms = _f("interval_ms", 0.0)
         latency = _i("latency", 0)
         timeout_ms = _i("timeout_ms", 0)
-        if interval_ms or latency or timeout_ms:
+        if self.state.connected and (interval_ms or latency or timeout_ms):
             self.state.conn_params = ConnParams(interval_ms=interval_ms, latency=latency, timeout_ms=timeout_ms)
+        else:
+            self.state.conn_params = None
 
         phy_tx = _i("phy_tx", 0)
         phy_rx = _i("phy_rx", 0)
