@@ -269,9 +269,9 @@ class HAWS:
                             await self._apply_activity(new_state)
                             continue  # already handled
 
-                    # 2) Your custom command events (unchanged).
+                    # 2) Custom command events
                     if ev_type == self._event_name:
-                        if edata.get("dest") == "pi":
+                        if edata.get("dest") == "pihub":
                             t = edata.get("text", "?")
                             if t == "macro":
                                 logger.debug("cmd macro %s", edata.get("name", "?"))
