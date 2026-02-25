@@ -212,9 +212,9 @@ class BleDongleLink:
         if not self.is_open:
             return
         with contextlib.suppress(asyncio.QueueFull):
-            self._tx_q.put_nowait(b"\x01" + (b"\x00" * 8))
+            self._tx_q.put_nowait((self._tx_epoch, b"\x01" + (b"\x00" * 8)))
         with contextlib.suppress(asyncio.QueueFull):
-            self._tx_q.put_nowait(b"\x02\x00\x00")
+            self._tx_q.put_nowait((self._tx_epoch, b"\x02\x00\x00"))
 
     # ---------- edge-level API ----------
 
