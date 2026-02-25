@@ -482,6 +482,9 @@ class BleDongleLink:
         if label == "advertising":
             if prev_adv is False:
                 logger.info("advertising started")
+            else:
+                # only log "advertising started" once; skip repeats
+                logger.info("advertising started")
             return
 
         if prev_adv is True and label != "advertising":
