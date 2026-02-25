@@ -43,11 +43,11 @@ logger = logging.getLogger(__name__)
 def _make_on_cmd(bt: BleDongleLink):
     async def _on_cmd(data: dict) -> None:
         """
-        Accept exactly two message shapes (HA → Pi):
+        Accept exactly two message shapes (HA → PiHub):
 
           1) Single BLE key (tap):
              {
-               "dest": "pi",
+               "dest": "pihub",
                "text": "ble_key",
                "usage": "keyboard" | "consumer",
                "code": "<symbolic_code>",
@@ -56,13 +56,13 @@ def _make_on_cmd(bt: BleDongleLink):
 
           2) BLE Unpair command:
              {
-               "dest": "pi",
+               "dest": "pihub",
                "text": "unpair",
              }
 
           3) Macro by name (timed sequence, local to Pi):
              {
-               "dest": "pi",
+               "dest": "pihub",
                "text": "macro",
                "name": "<macro_name>",     # must exist in MACROS
                "tap_ms": 40,               # optional per-key hold, default 40ms (whitelist)

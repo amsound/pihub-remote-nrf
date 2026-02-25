@@ -39,7 +39,7 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 
 ```yaml
 services:
-  pihub:
+  pihub-nrf:
     image: a1exm/pihub-nrf:latest
     network_mode: host
     restart: unless-stopped
@@ -47,13 +47,17 @@ services:
     device_cgroup_rules:
       - 'c 13:* rmw'
     environment:
-      HA_TOKEN: "###############"                        # This ENV takes precedence
-      # DEBUG: 1                                         # optional for debug chatter
+      HA_TOKEN: "TOKEN HERE"      # This ENV takes precedence
+      # DEBUG: 1                  # optional for debug chatter
     volumes:
       - /dev/input:/dev/input:ro
       - /dev/input/by-id:/dev/input/by-id:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+    devices:
+      - /dev/serial/by-id/usb-ZEPHYR_USB-DEV_425DAED15E820B58-if00:/dev/ttyACM0
+    group_add:
+      - dialout
 
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:stable
@@ -67,12 +71,12 @@ services:
       - ./homeassistant:/config
       - /etc/localtime:/etc/localtime:ro
 ```
-then
+
+Start with:
+
 ```bash
 docker compose up -d
 ```
-
-> ✅ I've tested with these settings and works without full blown `--privileged`.
 
 ### Build then push to docker hub (personal reminder):
 
@@ -81,7 +85,7 @@ docker compose up -d
 git fetch origin
 git reset --hard origin/main
 export DOCKER_BUILDKIT=1
-docker build -f Dockerfile -t pihub:latest .
+docker build -f Dockerfile -t pihub-nrf:latest .
 ```
 
 then push image to docker hub:
@@ -101,8 +105,10 @@ docker push a1exm/pihub-nrf:latest
 | Variable             | Description                                                   | Default / Notes                    |
 | -------------------- | ------------------------------------------------------------- | ---------------------------------- |
 | `HA_TOKEN`           | HA Long-Lived Access Token                                    | ENV takes priority                 |
-| `HA_TOKEN_FILE`      | Path to a file containing the HA Long-Lived Access Token      | Fallback if `HA_TOKEN` not set     |
+| `HA_TOKEN_FILE`      | HA Long-Lived Access Token alternative                        | Expects /run/secrets/ha_token      |
 | `HA_WS_URL`          | Home Assistant WebSocket URL                                  | Defaults to `127.0.0.1`            |
+| `HA_CMD_EVENT`       | Home Assistant Event Bus                                      | Defaults to `pihub.cmd`            |
+| `HA_ACTIVITY`        | Home Assistant Activty for Keymap changes                     | Defaults to `input_select.activity`|
 | `HEALTH_HOST`        | Bind address for the HTTP health endpoint                     | Defaults to `0.0.0.0`              |
 | `HEALTH_PORT`        | Port for the HTTP health endpoint                             | Defaults to `9123`                 |
 | `DEBUG`              | Debug knob                                                    | Defaults to INFO/WARN              |
@@ -135,8 +141,23 @@ An HTTP endpoint publishes a JSON snapshot at `http://<host>:9123/health`:
   },
   "ble": {
     "adapter_present": true,
+    "device": "/dev/ttyACM0",
+    "ready": true,
     "advertising": false,
-    "connected": true
+    "connected": true,
+    "sec": 2,
+    "proto_report": false,
+    "error": false,
+    "conn_params": {
+      "interval_ms": 15,
+      "latency": 0,
+      "timeout_ms": 3000
+    },
+    "phy": {
+      "tx": 0,
+      "rx": 0
+    },
+    "last_disc_reason": 19
   }
 }
 ```
@@ -153,14 +174,18 @@ PiHub uses the existing **bidirectional** `pihub.cmd` convention and **does not 
 
 Example:
 
-```json
-{"dest": "ha", "text": "media_next"}
+```yaml
+dest: ha
+text: media_next
 ```
 
 Volume
 
-```json
-{"dest": "ha", "do": "emit", "text": "volume_up", "repeat": true}
+```yaml
+dest: ha
+do: emit
+text: volume_up
+repeat: true
 ```
 
 ### Home Assistant → PiHub (commands/state)
@@ -170,15 +195,20 @@ Volume
 
 **Macro:**
 
-```json
-{"dest": "pi", "text": "macro", "name": "power_on"}
+```yaml
+dest: pihub
+text: macro
+name: power_on
 ```
 > Options: **power_on / power_off / return_home**, executed from HA.
 
 **Send a BLE key:**
 
-```json
-{"dest": "pi", "text": "ble_key", "usage": "consumer", "code": "menu"}
+```yaml
+dest: pihub
+text: ble_key
+usage: consumer
+code: menu
 ```
 > BLE: per-button may use **consumer or keyboard** usages. 40ms default hold.
 Optionally include `"hold_ms": "40"` - values accepted: `0, 40, 80, 100, 500, 2000.`
@@ -192,10 +222,10 @@ Optionally include `"hold_ms": "40"` - values accepted: `0, 40, 80, 100, 500, 20
 * Falls back to `MSC_SCAN` for stubborn keys
 * Maps physical keys → canonical `rem_*` names, then keymap decides action:
 
-  * `emit` → sends WebSocket `{"dest":"ha","text":...}`
-  * `ble` → sends BLE Consumer/Keyboard usage
-  * Optional `min_hold_ms` "Long Press" - hold for 'X' ms then trigger
-  * Optional `repeat` (synthetic; **HA only**)
+  * `emit` → sends to HA via WebSocket
+  * `ble` → sends BLE Consumer/Keyboard usage to dongle via CDC-ACM
+  * Optional `min_hold_ms` "Long Press" - e.g hold for 1000ms then trigger
+  * Optional `repeat` (synthetic, for HA only)
 
 ---
 
@@ -211,7 +241,6 @@ Optionally include `"hold_ms": "40"` - values accepted: `0, 40, 80, 100, 500, 20
 ## 🧪 Troubleshooting
 
 * **No input events?** Look for `/dev/input/by-id/*event-kbd` (often `usb-Logitech_USB_Receiver-*event-kbd`); if missing, fall back to `/dev/input/by-path/*-event-kbd`. If no remote is paired/active, there may be no `event-kbd` node even if the receiver is plugged in. Ensure the relevant `/dev/input` paths are bind-mounted read-only into the container.
-* **BLE not reacting?** Verify BlueZ DBus socket is present (`/var/run/dbus/system_bus_socket`) and mounted read-only. Use `bluetoothctl` to remove all known devices
 * **Offline drops?** Expected by design: when HA WS is down, send paths return `False` and do not crash the process.
 * **Token issues?** Confirm `HA_TOKEN` is set (preferred) or `HA_TOKEN_FILE` path is mounted and readable.
 
