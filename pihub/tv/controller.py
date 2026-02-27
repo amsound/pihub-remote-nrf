@@ -13,6 +13,8 @@ from .ws_client import TvWsClient
 
 logger = logging.getLogger(__name__)
 
+POWER_RETRY_S = 1.5
+
 @dataclass
 class TvSnapshot:
     dmr_up: bool
@@ -153,7 +155,7 @@ class TvController:
                     await self.ws.connect(self._session)
 
                 # If websocket is reachable, occasionally send KEY_POWER (your “perfect on” trick)
-                if self.ws.state.connected and (now - last_power_sent) > 6.0:
+                if self.ws.state.connected and (now - last_power_sent) > POWER_RETRY_S:
                     await self.ws.send_key("KEY_POWER")
                     last_power_sent = now
 
