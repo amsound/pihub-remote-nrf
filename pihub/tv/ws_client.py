@@ -33,6 +33,7 @@ class TvWsClient:
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._lock = asyncio.Lock()
         self.state = TvWsState()
+        self._rx_task: Optional[asyncio.Task] = None
 
     def _read_token(self) -> str:
         try:
@@ -57,15 +58,50 @@ class TvWsClient:
         return base
 
     def _write_token(self, token: str) -> None:
+        token = token.strip()
+        if not token:
+            return
         try:
             os.makedirs(os.path.dirname(self._token_file) or ".", exist_ok=True)
             with open(self._token_file, "w", encoding="utf-8") as f:
-                f.write(token.strip() + "\n")
+                f.write(token + "\n")
             self.state.token_present = True
-            logger.info("token saved to %s", self._token_file)
+            logger.info("[tvws] token saved to %s", self._token_file)
         except Exception as e:
             self.state.last_error = repr(e)
-            logger.warning("failed to save token to %s: %r", self._token_file, e)
+            logger.exception("[tvws] failed to save token to %s: %r", self._token_file, e)
+
+    async def _rx_loop(self) -> None:
+        ws = self._ws
+        if ws is None:
+            return
+        try:
+            async for msg in ws:
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    continue
+
+                # Useful when debugging: uncomment next line temporarily
+                # logger.debug("[tvws] rx: %s", msg.data)
+
+                try:
+                    j = json.loads(msg.data)
+                except Exception:
+                    continue
+
+                data = (j or {}).get("data")
+                # Some models send data as a dict, others as a JSON string
+                if isinstance(data, str):
+                    try:
+                        data = json.loads(data)
+                    except Exception:
+                        data = None
+
+                if isinstance(data, dict):
+                    tok = data.get("token")
+                    if isinstance(tok, str) and tok.strip():
+                        self._write_token(tok)
+        except Exception as e:
+            logger.debug("[tvws] rx loop ended: %r", e)
 
     async def connect(self, session: aiohttp.ClientSession, *, timeout_s: float = 2.0) -> bool:
         async with self._lock:
@@ -82,6 +118,11 @@ class TvWsClient:
                     timeout=timeout_s,
                 )
                 self.state.connected = True
+
+                # start background receiver to capture token + keep state updated
+                if self._rx_task is None or self._rx_task.done():
+                    self._rx_task = asyncio.create_task(self._rx_loop(), name="tvws_rx")
+
                 self.state.last_error = ""
                 logger.debug("connected")
 
