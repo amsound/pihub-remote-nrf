@@ -129,16 +129,7 @@ class TvController:
             await asyncio.sleep(0.2)
         return False
 
-    async def power_on(self, *, timeout_s: float = 20.0) -> bool:
-        """
-        Idempotent-ish discrete ON:
-        - If DMR already up -> return True
-        - If DMR down:
-            * spam WOL
-            * send KEY_POWER immediately once if WS can connect
-            * optionally send exactly one more KEY_POWER at +5s if still OFF
-            * otherwise rely on WOL
-        """
+    async def power_on(self, *, timeout_s: float = 60.0) -> bool:
         if not self._session:
             return False
         if self._dmr_cached:
@@ -149,47 +140,59 @@ class TvController:
             loop = asyncio.get_running_loop()
             deadline = loop.time() + timeout_s
 
-            sent_power_1 = False
-            sent_power_2 = False
-            t0 = loop.time()
+            POWER_INTERVAL_S = 4.0
+            WOL_INTERVAL_S = 1.0
+            WS_CONNECT_INTERVAL_S = 0.8
 
-            # We want an immediate WS attempt in the "cat hit OFF" gap.
-            # After that, don't churn connect attempts too hard.
-            next_ws_attempt = 0.0
+            last_power = -1e9
+            last_wol = -1e9
+            last_ws_attempt = -1e9
 
             while loop.time() < deadline:
-                # 1) WOL spam (cheap + safe)
-                try:
-                    send_wol(self.tv_mac)
-                except Exception:
-                    pass
+                now = loop.time()
 
-                # 2) Stop condition: DMR is up => on
+                # Stop condition
                 if await dmr_up(self._session, self.tv_ip):
                     self._dmr_cached = True
-                    await self.ws.connect(self._session)
+                    await self.ws.connect(self._session)  # keep ws up for instant keys
                     return True
 
-                now = loop.time()
-                elapsed = now - t0
+                # 1) WOL spam until DMR up
+                if (now - last_wol) >= WOL_INTERVAL_S:
+                    try:
+                        send_wol(self.tv_mac)
+                    except Exception:
+                        pass
+                    last_wol = now
 
-                # 3) Try to get a WS connection quickly at the start, then back off
-                if now >= next_ws_attempt and not self.ws.state.connected:
-                    next_ws_attempt = now + 0.8  # light backoff (don’t wait 3s)
-                    await self.ws.connect(self._session)
+                # 2) Keep trying to (re)connect websocket frequently (best effort)
+                if not self.ws.state.connected and (now - last_ws_attempt) >= WS_CONNECT_INTERVAL_S:
+                    last_ws_attempt = now
+                    try:
+                        await self.ws.connect(self._session)
+                    except Exception:
+                        pass
 
-                # 4) Send POWER at most twice, only while DMR is still down
-                # First POWER: as soon as we have WS
-                if self.ws.state.connected and not sent_power_1:
-                    await self.ws.send_key("KEY_POWER")
-                    sent_power_1 = True
+                # 3) Send KEY_POWER immediately, then every 3 seconds until DMR up
+                if (now - last_power) >= POWER_INTERVAL_S:
+                    # Best-effort send; no ACK required
+                    try:
+                        # try current connection
+                        sent = await self.ws.send_key("KEY_POWER")
+                    except Exception:
+                        sent = False
 
-                # Second POWER: exactly once at +5s if still off
-                if self.ws.state.connected and sent_power_1 and (not sent_power_2) and elapsed >= 5.0:
-                    await self.ws.send_key("KEY_POWER")
-                    sent_power_2 = True
+                    if not sent:
+                        # try reconnect + send once
+                        try:
+                            await self.ws.connect(self._session)
+                            await self.ws.send_key("KEY_POWER")
+                        except Exception:
+                            pass
 
-                await asyncio.sleep(0.5)
+                    last_power = now
+
+                await asyncio.sleep(0.2)
 
             return False
         finally:
