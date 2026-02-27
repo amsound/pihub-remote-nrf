@@ -106,7 +106,7 @@ class TvController:
     async def power_off(self, *, wait: bool = True, timeout_s: float = 25.0) -> bool:
         if not self._session:
             return False
-        if not self._dmr_cached:
+        if self._dmr_cached is False:
             return True  # already off
 
         # Send POWER only if on (dmr truth)
@@ -130,7 +130,7 @@ class TvController:
     async def power_on(self, *, timeout_s: float = 60.0) -> bool:
         if not self._session:
             return False
-        if self._dmr_cached:
+        if self._dmr_cached is True:
             return True  # already on
 
         self._power_on_active = True
