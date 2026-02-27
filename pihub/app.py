@@ -167,6 +167,7 @@ async def main() -> None:
             name=cfg.tv_name,
         )
         await tv.start()
+        await tv.poll()
 
         async def _tv_poller():
             while True:

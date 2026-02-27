@@ -35,6 +35,13 @@ class TvWsClient:
         self.state = TvWsState()
         self._rx_task: Optional[asyncio.Task] = None
 
+        # Only log transitions
+        self._logged_connected: Optional[bool] = None
+        self._logged_token_present: Optional[bool] = None
+
+        # Emit initial token presence once at startup
+        self._refresh_token_present()
+
     def _read_token(self) -> str:
         try:
             tok = open(self._token_file, "r", encoding="utf-8").read().strip()
@@ -47,15 +54,17 @@ class TvWsClient:
             self.state.token_present = False
             return ""
 
-    def _ws_url(self) -> str:
-        # This matches the pattern you saw in samsungtvws logs.
-        # Token is appended if present. Name must be base64.
-        name_b64 = _b64_name(self._name)
-        token = self._read_token()
-        base = f"wss://{self._tv_ip}:8002/api/v2/channels/samsung.remote.control?name={name_b64}"
-        if token:
-            base += f"&token={token}"
-        return base
+    def _refresh_token_present(self) -> None:
+        tok = self._read_token()
+        token_present = bool(tok)
+        if self._logged_token_present is None or token_present != self._logged_token_present:
+            self._logged_token_present = token_present
+            logger.info(
+                "initialised tvws tv_ip=%s token_present=%s",
+                self._tv_ip,
+                "true" if token_present else "false",
+            )
+
 
     def _write_token(self, token: str) -> None:
         token = token.strip()
@@ -66,10 +75,21 @@ class TvWsClient:
             with open(self._token_file, "w", encoding="utf-8") as f:
                 f.write(token + "\n")
             self.state.token_present = True
-            logger.info("[tvws] token saved to %s", self._token_file)
+            self._logged_token_present = True
+            logger.info("token saved to %s", self._token_file)
         except Exception as e:
             self.state.last_error = repr(e)
-            logger.exception("[tvws] failed to save token to %s: %r", self._token_file, e)
+            logger.exception("failed to save token to %s: %r", self._token_file, e)
+
+    def _ws_url(self) -> str:
+        # This matches the pattern you saw in samsungtvws logs.
+        # Token is appended if present. Name must be base64.
+        name_b64 = _b64_name(self._name)
+        token = self._read_token()
+        base = f"wss://{self._tv_ip}:8002/api/v2/channels/samsung.remote.control?name={name_b64}"
+        if token:
+            base += f"&token={token}"
+        return base
 
     async def _rx_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         try:
@@ -115,9 +135,13 @@ class TvWsClient:
                 )
                 self.state.connected = True
                 self.state.last_error = ""
-                logger.debug("[tvws] connected")
 
-                # IMPORTANT: ensure only one rx task exists
+                # Log transition to connected (once)
+                if self._logged_connected is None or self._logged_connected is False:
+                    self._logged_connected = True
+                    logger.info("websocket connected, tv on")
+
+                # ensure only one rx task exists
                 if self._rx_task and not self._rx_task.done():
                     self._rx_task.cancel()
 
@@ -128,7 +152,13 @@ class TvWsClient:
             except Exception as e:
                 self.state.connected = False
                 self.state.last_error = repr(e)
-                logger.debug("[tvws] connect failed: %r", e)
+
+                # Only log disconnect transition if we thought we were connected before
+                if self._logged_connected is True:
+                    self._logged_connected = False
+                    logger.info("websocket disconnected")
+
+                logger.debug("connect failed: %r", e)
                 self._ws = None
                 return False
 
@@ -141,13 +171,15 @@ class TvWsClient:
             ws, self._ws = self._ws, None
             self.state.connected = False
 
-        # do the actual ws close outside the lock
+            if self._logged_connected is True:
+                self._logged_connected = False
+                logger.info("websocket disconnected")
+
         if ws and not ws.closed:
             try:
                 await ws.close()
             except Exception:
                 pass
-        logger.debug("[tvws] closed")
 
     async def send_key(self, key: str) -> bool:
         payload = {

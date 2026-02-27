@@ -28,12 +28,26 @@ class TvController:
         self.name = name
         self.ws = TvWsClient(tv_ip=tv_ip, token_file=token_file, name=name)
 
+        logger.info(
+            "initialised tv tv_ip=%s tv_mac=%s token_present=%s",
+            tv_ip,
+            tv_mac,
+            "true" if self.ws.state.token_present else "false",
+        )
+
         self._session: Optional[aiohttp.ClientSession] = None
         self._dmr_cached: bool = False
 
     async def start(self) -> None:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
+
+        s = self.snapshot()
+        logger.info(
+            "status dmr_up=%s ws_connected=%s",
+            "true" if s.dmr_up else "false",
+            "true" if s.ws_connected else "false",
+        )
 
     async def stop(self) -> None:
         await self.ws.close()
@@ -47,8 +61,16 @@ class TvController:
         """
         if not self._session:
             return
+
+        prev_up = self._dmr_cached
         up = await dmr_up(self._session, self.tv_ip)
         self._dmr_cached = up
+
+        if up != prev_up:
+            if up:
+                logger.info("dmr now up")
+            else:
+                logger.info("dmr now down, websocket disconnect, tv off")
 
         if up:
             # ensure websocket is up for instant keys
