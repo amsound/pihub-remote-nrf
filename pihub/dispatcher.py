@@ -19,7 +19,7 @@ from .validation import parse_ms
 
 # Global repeat knobs (WS only; BLE never repeats)
 REPEAT_INITIAL_MS = 400
-REPEAT_RATE_MS = 400
+REPEAT_RATE_MS = 300
 
 EdgeCB = Callable[[str, str], Awaitable[None]] | Callable[[str, str], None]
 

@@ -136,7 +136,9 @@ def _make_on_cmd(bt: BleDongleLink, tv: TvController | None):
                 return
             return
 
-        # Unknown command -> drop silently by design
+        # Fallback: treat unknown action as raw KEY_* string
+        if action.startswith("KEY_"):
+            await tv.ws.send_key(action)
         return
 
     return _on_cmd
