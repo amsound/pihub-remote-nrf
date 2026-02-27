@@ -129,7 +129,16 @@ class TvController:
             await asyncio.sleep(0.2)
         return False
 
-    async def power_on(self, *, timeout_s: float = 60.0) -> bool:
+    async def power_on(self, *, timeout_s: float = 20.0) -> bool:
+        """
+        Idempotent-ish discrete ON:
+        - If DMR already up -> return True
+        - If DMR down:
+            * spam WOL
+            * send KEY_POWER immediately once if WS can connect
+            * optionally send exactly one more KEY_POWER at +5s if still OFF
+            * otherwise rely on WOL
+        """
         if not self._session:
             return False
         if self._dmr_cached:
@@ -137,35 +146,50 @@ class TvController:
 
         self._power_on_active = True
         try:
-            deadline = asyncio.get_running_loop().time() + timeout_s
-            last_power_sent = 0.0
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout_s
 
-            while asyncio.get_running_loop().time() < deadline:
-                # WOL spam covers the transition window
+            sent_power_1 = False
+            sent_power_2 = False
+            t0 = loop.time()
+
+            # We want an immediate WS attempt in the "cat hit OFF" gap.
+            # After that, don't churn connect attempts too hard.
+            next_ws_attempt = 0.0
+
+            while loop.time() < deadline:
+                # 1) WOL spam (cheap + safe)
                 try:
                     send_wol(self.tv_mac)
                 except Exception:
                     pass
 
-                now = asyncio.get_running_loop().time()
-
-                # Throttle websocket connect attempts to avoid flapping / event loop churn
-                if not self.ws.state.connected and (now - self._last_ws_connect_attempt) > 3.0:
-                    self._last_ws_connect_attempt = now
-                    await self.ws.connect(self._session)
-
-                # If websocket is reachable, occasionally send KEY_POWER (your “perfect on” trick)
-                if self.ws.state.connected and (now - last_power_sent) > POWER_RETRY_S:
-                    await self.ws.send_key("KEY_POWER")
-                    last_power_sent = now
-
-                # DMR truth: once up, mark cached and ensure ws is up
+                # 2) Stop condition: DMR is up => on
                 if await dmr_up(self._session, self.tv_ip):
                     self._dmr_cached = True
                     await self.ws.connect(self._session)
                     return True
 
-                await asyncio.sleep(1.0)
+                now = loop.time()
+                elapsed = now - t0
+
+                # 3) Try to get a WS connection quickly at the start, then back off
+                if now >= next_ws_attempt and not self.ws.state.connected:
+                    next_ws_attempt = now + 0.8  # light backoff (don’t wait 3s)
+                    await self.ws.connect(self._session)
+
+                # 4) Send POWER at most twice, only while DMR is still down
+                # First POWER: as soon as we have WS
+                if self.ws.state.connected and not sent_power_1:
+                    await self.ws.send_key("KEY_POWER")
+                    sent_power_1 = True
+
+                # Second POWER: exactly once at +5s if still off
+                if self.ws.state.connected and sent_power_1 and (not sent_power_2) and elapsed >= 5.0:
+                    await self.ws.send_key("KEY_POWER")
+                    sent_power_2 = True
+
+                await asyncio.sleep(0.5)
 
             return False
         finally:
