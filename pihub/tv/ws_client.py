@@ -56,6 +56,17 @@ class TvWsClient:
             base += f"&token={token}"
         return base
 
+    def _write_token(self, token: str) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._token_file) or ".", exist_ok=True)
+            with open(self._token_file, "w", encoding="utf-8") as f:
+                f.write(token.strip() + "\n")
+            self.state.token_present = True
+            logger.info("token saved to %s", self._token_file)
+        except Exception as e:
+            self.state.last_error = repr(e)
+            logger.warning("failed to save token to %s: %r", self._token_file, e)
+
     async def connect(self, session: aiohttp.ClientSession, *, timeout_s: float = 2.0) -> bool:
         async with self._lock:
             if self._ws and not self._ws.closed:
@@ -67,17 +78,34 @@ class TvWsClient:
                     url,
                     heartbeat=30,
                     autoping=True,
-                    ssl=False,  # Samsung uses self-signed/odd certs on IP
+                    ssl=False,
                     timeout=timeout_s,
                 )
                 self.state.connected = True
                 self.state.last_error = ""
-                logger.debug("[tvws] connected")
+                logger.debug("connected")
+
+                # NEW: read initial connect event and save token if provided
+                try:
+                    msg = await self._ws.receive(timeout=2.0)
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        try:
+                            j = json.loads(msg.data)
+                            data = (j or {}).get("data") or {}
+                            tok = data.get("token")
+                            if isinstance(tok, str) and tok.strip():
+                                self._write_token(tok)
+                        except Exception:
+                            pass
+                except Exception:
+                    # don't fail connect just because we didn't read a token
+                    pass
+
                 return True
             except Exception as e:
                 self.state.connected = False
                 self.state.last_error = repr(e)
-                logger.debug("[tvws] connect failed: %r", e)
+                logger.debug("connect failed: %r", e)
                 self._ws = None
                 return False
 
@@ -90,7 +118,7 @@ class TvWsClient:
                     await ws.close()
                 except Exception:
                     pass
-            logger.debug("[tvws] closed")
+            logger.debug("closed")
 
     async def send_key(self, key: str) -> bool:
         payload = {
