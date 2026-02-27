@@ -22,6 +22,12 @@ class Config:
     health_host: str
     health_port: int
 
+    # Samsung TV
+    tv_ip: str
+    tv_mac: str
+    tv_token_file: str
+    tv_name: str
+
     @staticmethod
     def load() -> "Config":
         """Build a Config from environment (compose env)."""
@@ -40,6 +46,11 @@ class Config:
         except ValueError:
             health_port = 9123
 
+        tv_ip = (os.getenv("TV_IP", "") or "").strip()
+        tv_mac = (os.getenv("TV_MAC", "") or "").strip()
+        tv_token_file = (os.getenv("TV_TOKEN_FILE", "/data/samsungtv-token.txt") or "").strip()
+        tv_name = (os.getenv("TV_NAME", "PiHub Remote") or "").strip()
+
         return Config(
             ha_ws_url=ha_ws_url,
             ha_token_file=ha_token_file,
@@ -49,6 +60,10 @@ class Config:
             ble_serial_baud=ble_serial_baud,
             health_host=health_host,
             health_port=health_port,
+            tv_ip=tv_ip,
+            tv_mac=tv_mac,
+            tv_token_file=tv_token_file,
+            tv_name=tv_name,
         )
 
     def load_token(self) -> str:

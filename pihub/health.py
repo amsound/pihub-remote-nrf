@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 from aiohttp import web
 from typing import Optional
+from .tv import TvController
 
 from .ha_ws import HAWS
 from .input_ble_dongle import BleDongleLink
@@ -23,6 +24,7 @@ class HealthServer:
         ws: HAWS,
         bt: BleDongleLink,
         reader: UnifyingReader,
+        tv: Optional[TvController] = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -32,6 +34,8 @@ class HealthServer:
 
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
+
+        self._tv = tv
 
     async def start(self) -> None:
         if self._runner is not None:
@@ -95,6 +99,17 @@ class HealthServer:
             "grabbed": bool(usb_raw.get("grabbed")),
         }
 
+        # ---------------- TV -----------------
+        tv_state = None
+        if self._tv is not None:
+            s = self._tv.snapshot()
+            tv_state = {
+                "dmr_up": s.dmr_up,
+                "ws_connected": s.ws_connected,
+                "token_present": s.token_present,
+                "last_error": s.last_error,
+            }
+
         # ---------------- BLE ----------------
         ble_raw = self._bt.status
         conn_params = ble_raw.get("conn_params") or {}
@@ -155,5 +170,6 @@ class HealthServer:
             "degraded_reasons": degraded_reasons,
             "ws": ws_state,
             "usb": usb_state,
+            "tv": tv_state,
             "ble": ble_state,
         }

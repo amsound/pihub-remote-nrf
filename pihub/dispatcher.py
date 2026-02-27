@@ -38,10 +38,11 @@ class Dispatcher:
       - { "do": "noop" }  # explicit no-op action
     """
 
-    def __init__(self, cfg: Any, send_cmd: Callable[..., Awaitable[bool]], bt_le: Any) -> None:
+    def __init__(self, cfg: Any, send_cmd: Callable[..., Awaitable[bool]], bt_le: Any, tv: Any = None) -> None:
         self._cfg = cfg
         self._send_cmd = send_cmd
         self._bt = bt_le
+        self._tv = tv
         self._last_cmd_fail_log = 0.0
 
         # Load full keymap document, then split into parts we use
@@ -340,6 +341,10 @@ class Dispatcher:
         if kind == "emit":
             await self._handle_emit_action(a, edge, rem_key=rem_key, action_index=action_index)
             return
+        
+        if kind == "tv":
+            await self._handle_tv_action(a, edge)
+            return
 
         # Unknown action -> ignore
         return
@@ -365,6 +370,45 @@ class Dispatcher:
         elif edge == "up":
             self._bt.key_up(usage=usage, code=code)
 
+    async def _handle_tv_action(self, a: dict, edge: str) -> None:
+        # Only act on down edge (like emit default)
+        if edge != "down":
+            return
+
+        if self._tv is None:
+            return
+
+        action = a.get("action")
+        if isinstance(action, str) and action:
+            # "Nice" aliases
+            if action == "pair":
+                await pair_tv(tv_ip=self._tv.tv_ip, token_file=self._tv.token_file, name=self._tv.name)
+                return
+            if action == "power_on":
+                await self._tv.power_on()
+                return
+            if action == "power_off":
+                await self._tv.power_off(wait=False)
+                return
+            if action == "volume_up":
+                await self._tv.volume_up()
+                return
+            if action == "volume_down":
+                await self._tv.volume_down()
+                return
+            if action == "mute_toggle":
+                await self._tv.mute_toggle()
+                return
+
+            # Fallback: treat unknown action as a raw key string
+            await self._tv.ws.send_key(action)
+            return
+
+        # Back-compat raw key path
+        key = a.get("key")
+        if not isinstance(key, str) or not key:
+            return
+        await self._tv.ws.send_key(key)
 
     async def _handle_emit_action(
         self,
@@ -496,5 +540,5 @@ class Dispatcher:
                     if not isinstance(action, dict):
                         raise ValueError(f"action {activity}.{rem_key}[{idx}] must be a dict")
                     kind = action.get("do")
-                    if kind not in {"emit", "ble", "noop"}:
+                    if kind not in {"emit", "ble", "noop", "tv"}:
                         raise ValueError(f"action {activity}.{rem_key}[{idx}] has unknown do={kind!r}")

@@ -59,9 +59,9 @@
       "rem_activity_2":   [ { "do": "emit", "text": "watch" } ],
       "rem_activity_3":   [ { "do": "noop" } ],
 
-      "rem_vol_up":       [ { "do": "emit", "text": "volume_up", "repeat": true } ],
-      "rem_vol_down":     [ { "do": "emit", "text": "volume_down", "repeat": true } ],     
-      "rem_mute":         [ { "do": "emit", "text": "mute_toggle" }],
+      "rem_vol_up":   [ { "do": "tv", "action":"volume_up", "repeat": true } ],
+      "rem_vol_down": [ { "do": "tv", "action":"volume_down", "repeat": true } ],
+      "rem_mute":     [ { "do": "tv", "action":"mute_toggle" } ],
       
       "rem_rewind":       [ { "do": "ble", "usage": "consumer", "code": "rewind"       } ],
       "rem_play":         [ { "do": "ble", "usage": "consumer", "code": "play_pause"   } ],
