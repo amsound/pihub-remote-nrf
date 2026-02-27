@@ -60,7 +60,7 @@ class TvWsClient:
         if self._logged_token_present is None or token_present != self._logged_token_present:
             self._logged_token_present = token_present
             logger.info(
-                "initialised tvws tv_ip=%s token_present=%s",
+                "initialised tv websocket tv_ip=%s token_present=%s",
                 self._tv_ip,
                 "true" if token_present else "false",
             )
@@ -117,7 +117,7 @@ class TvWsClient:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.debug("[tvws] rx loop ended: %r", e)
+            logger.debug("rx loop ended: %r", e)
 
     async def connect(self, session: aiohttp.ClientSession, *, timeout_s: float = 2.0) -> bool:
         async with self._lock:
@@ -139,7 +139,7 @@ class TvWsClient:
                 # Log transition to connected (once)
                 if self._logged_connected is None or self._logged_connected is False:
                     self._logged_connected = True
-                    logger.info("websocket connected, tv on")
+                    logger.info("websocket connected")
 
                 # ensure only one rx task exists
                 if self._rx_task and not self._rx_task.done():

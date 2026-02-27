@@ -76,9 +76,9 @@ class TvController:
 
         if up != prev_up:
             if up:
-                logger.info("dmr now up")
+                logger.info("TV On - dmr up")
             else:
-                logger.info("dmr now down, tv off")
+                logger.info("TV Off - dmr down")
 
         now = asyncio.get_running_loop().time()
 
