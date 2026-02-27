@@ -114,6 +114,10 @@ def _make_on_cmd(bt: BleDongleLink, tv: TvController | None):
             action = str(data.get("action") or "")
             if action == "pair":
                 res = await pair_tv(tv_ip=tv.tv_ip, token_file=tv.token_file, name=tv.name)
+                if res.get("ok"):
+                    logger.info("[tv] pair command ok: %s", res)
+                else:
+                    logger.warning("[tv] pair command failed: %s", res)
                 return
             if action == "power_on":
                 await tv.power_on()
