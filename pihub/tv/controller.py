@@ -38,6 +38,9 @@ class TvController:
         self._session: Optional[aiohttp.ClientSession] = None
         self._dmr_cached: bool = False
 
+        self._power_on_active: bool = False
+        self._last_ws_connect_attempt: float = 0.0
+
     async def start(self) -> None:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
@@ -58,6 +61,9 @@ class TvController:
     async def poll(self) -> None:
         """
         Periodic poll: update dmr status and connect/disconnect ws accordingly.
+
+        Important: while power_on() is running, do NOT close the websocket on DMR-down,
+        otherwise we flap connect/close and KEY_POWER never lands reliably.
         """
         if not self._session:
             return
@@ -70,16 +76,23 @@ class TvController:
             if up:
                 logger.info("dmr now up")
             else:
-                logger.info("dmr now down, websocket disconnect, tv off")
+                logger.info("dmr now down, tv off")
+
+        now = asyncio.get_running_loop().time()
 
         if up:
-            # ensure websocket is up for instant keys
-            if not self.ws.state.connected:
+            # ensure websocket is up for instant keys (throttled)
+            if not self.ws.state.connected and (now - self._last_ws_connect_attempt) > 3.0:
+                self._last_ws_connect_attempt = now
                 await self.ws.connect(self._session)
-        else:
-            # TV off -> drop websocket
-            if self.ws.state.connected:
-                await self.ws.close()
+            return
+
+        # DMR down: only close ws if we're NOT trying to power on
+        if self._power_on_active:
+            return
+
+        if self.ws.state.connected:
+            await self.ws.close()
 
     def snapshot(self) -> TvSnapshot:
         st = self.ws.state
@@ -120,32 +133,41 @@ class TvController:
         if self._dmr_cached:
             return True  # already on
 
-        deadline = asyncio.get_running_loop().time() + timeout_s
-        last_power_sent = 0.0
+        self._power_on_active = True
+        try:
+            deadline = asyncio.get_running_loop().time() + timeout_s
+            last_power_sent = 0.0
 
-        while asyncio.get_running_loop().time() < deadline:
-            # WOL spam covers the transition window
-            try:
-                send_wol(self.tv_mac)
-            except Exception:
-                pass
+            while asyncio.get_running_loop().time() < deadline:
+                # WOL spam covers the transition window
+                try:
+                    send_wol(self.tv_mac)
+                except Exception:
+                    pass
 
-            # If websocket is reachable, occasionally send KEY_POWER (your “perfect on” trick)
-            await self.ws.connect(self._session)
-            now = asyncio.get_running_loop().time()
-            if self.ws.state.connected and (now - last_power_sent) > 6.0:
-                await self.ws.send_key("KEY_POWER")
-                last_power_sent = now
+                now = asyncio.get_running_loop().time()
 
-            if await dmr_up(self._session, self.tv_ip):
-                self._dmr_cached = True
-                # keep ws connected for instant keys
-                await self.ws.connect(self._session)
-                return True
+                # Throttle websocket connect attempts to avoid flapping / event loop churn
+                if not self.ws.state.connected and (now - self._last_ws_connect_attempt) > 3.0:
+                    self._last_ws_connect_attempt = now
+                    await self.ws.connect(self._session)
 
-            await asyncio.sleep(1.0)
+                # If websocket is reachable, occasionally send KEY_POWER (your “perfect on” trick)
+                if self.ws.state.connected and (now - last_power_sent) > 6.0:
+                    await self.ws.send_key("KEY_POWER")
+                    last_power_sent = now
 
-        return False
+                # DMR truth: once up, mark cached and ensure ws is up
+                if await dmr_up(self._session, self.tv_ip):
+                    self._dmr_cached = True
+                    await self.ws.connect(self._session)
+                    return True
+
+                await asyncio.sleep(1.0)
+
+            return False
+        finally:
+            self._power_on_active = False
 
     async def volume_up(self) -> bool:
         if not self._session or not self._dmr_cached:

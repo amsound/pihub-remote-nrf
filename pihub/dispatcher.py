@@ -229,7 +229,7 @@ class Dispatcher:
         with suppress(Exception):
             self._bt.release_all()
 
-    # ---- Repeat helpers (WS only) ----
+    # ---- Repeat helpers (WS and TV) ----
     async def _start_repeat(self, rem_key: str, text: str, extras: dict) -> None:
         if rem_key in self._repeat_tasks:
             return
@@ -238,7 +238,15 @@ class Dispatcher:
             try:
                 await asyncio.sleep(REPEAT_INITIAL_MS / 1000.0)
                 while True:
-                    await self._send_with_log(text=text, **extras)
+                    # Special-case: TV key repeat
+                    if text == "__tv__":
+                        key = extras.get("_tv_key")
+                        if isinstance(key, str) and self._tv is not None:
+                            await self._tv.ws.send_key(key)
+                    else:
+                        # Default path: HA emit repeat
+                        await self._send_with_log(text=text, **extras)
+
                     await asyncio.sleep(REPEAT_RATE_MS / 1000.0)
             except asyncio.CancelledError:
                 pass
@@ -343,7 +351,7 @@ class Dispatcher:
             return
         
         if kind == "tv":
-            await self._handle_tv_action(a, edge)
+            await self._handle_tv_action(a, edge, rem_key=rem_key, action_index=action_index)
             return
 
         # Unknown action -> ignore
@@ -370,7 +378,14 @@ class Dispatcher:
         elif edge == "up":
             self._bt.key_up(usage=usage, code=code)
 
-    async def _handle_tv_action(self, a: dict, edge: str) -> None:
+    async def _handle_tv_action(
+        self,
+        a: dict,
+        edge: str,
+        *,
+        rem_key: str | None,
+        action_index: int = 0,
+    ) -> None:
         # Only act on down edge (like emit default)
         if edge != "down":
             return
@@ -378,9 +393,12 @@ class Dispatcher:
         if self._tv is None:
             return
 
+        want_repeat = bool(a.get("repeat"))
+
+        # --- "Nice" aliases path ---
         action = a.get("action")
         if isinstance(action, str) and action:
-            # "Nice" aliases
+            # Non-repeatable actions
             if action == "pair":
                 await pair_tv(tv_ip=self._tv.tv_ip, token_file=self._tv.token_file, name=self._tv.name)
                 return
@@ -390,25 +408,37 @@ class Dispatcher:
             if action == "power_off":
                 await self._tv.power_off(wait=False)
                 return
-            if action == "volume_up":
-                await self._tv.volume_up()
-                return
-            if action == "volume_down":
-                await self._tv.volume_down()
-                return
             if action == "mute_toggle":
                 await self._tv.mute_toggle()
                 return
 
-            # Fallback: treat unknown action as a raw key string
+            # Repeatable actions
+            if action == "volume_up":
+                await self._tv.volume_up()
+                if want_repeat and rem_key:
+                    await self._start_repeat(rem_key, text="__tv__", extras={"_tv_key": "KEY_VOLUP"})
+                return
+
+            if action == "volume_down":
+                await self._tv.volume_down()
+                if want_repeat and rem_key:
+                    await self._start_repeat(rem_key, text="__tv__", extras={"_tv_key": "KEY_VOLDOWN"})
+                return
+
+            # Fallback: treat unknown action as a raw TV key string (repeatable if desired)
             await self._tv.ws.send_key(action)
+            if want_repeat and rem_key:
+                await self._start_repeat(rem_key, text="__tv__", extras={"_tv_key": action})
             return
 
-        # Back-compat raw key path
+        # --- Back-compat raw key path ---
         key = a.get("key")
         if not isinstance(key, str) or not key:
             return
+
         await self._tv.ws.send_key(key)
+        if want_repeat and rem_key:
+            await self._start_repeat(rem_key, text="__tv__", extras={"_tv_key": key})
 
     async def _handle_emit_action(
         self,
