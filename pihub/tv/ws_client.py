@@ -138,7 +138,7 @@ class TvWsClient:
                 # Log transition to connected (once)
                 if self._logged_connected is None or self._logged_connected is False:
                     self._logged_connected = True
-                    logger.info("websocket connected")
+                    logger.info("tv websocket connected")
 
                 # ensure only one rx task exists
                 if self._rx_task and not self._rx_task.done():
@@ -155,7 +155,7 @@ class TvWsClient:
                 # Only log disconnect transition if we thought we were connected before
                 if self._logged_connected is True:
                     self._logged_connected = False
-                    logger.info("websocket disconnected")
+                    logger.debug("tv websocket disconnected")
 
                 logger.debug("connect failed: %r", e)
                 self._ws = None
@@ -172,7 +172,7 @@ class TvWsClient:
 
             if self._logged_connected is True:
                 self._logged_connected = False
-                logger.info("websocket disconnected")
+                logger.debug("tv websocket disconnected")
 
         if ws and not ws.closed:
             try:

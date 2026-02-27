@@ -48,7 +48,7 @@ class TvController:
             self._session = aiohttp.ClientSession()
 
         s = self.snapshot()
-        logger.info(
+        logger.debug(
             "status dmr_up=%s ws_connected=%s",
             "true" if s.dmr_up else "false",
             "true" if s.ws_connected else "false",
@@ -75,10 +75,7 @@ class TvController:
         self._dmr_cached = up
 
         if up != prev_up:
-            if up:
-                logger.info("TV On - dmr up")
-            else:
-                logger.info("TV Off - dmr down")
+            logger.info("tv on dmr %s", "up" if up else "down")
 
         now = asyncio.get_running_loop().time()
 
