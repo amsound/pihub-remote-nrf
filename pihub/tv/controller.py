@@ -140,7 +140,7 @@ class TvController:
             loop = asyncio.get_running_loop()
             deadline = loop.time() + timeout_s
 
-            POWER_INTERVAL_S = 4.0
+            POWER_INTERVAL_S = 3.0
             WOL_INTERVAL_S = 1.0
             WS_CONNECT_INTERVAL_S = 0.8
 

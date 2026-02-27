@@ -65,7 +65,6 @@ class TvWsClient:
                 "true" if token_present else "false",
             )
 
-
     def _write_token(self, token: str) -> None:
         token = token.strip()
         if not token:
