@@ -134,12 +134,10 @@ def _make_on_cmd(bt: BleDongleLink, tv: TvController | None):
             if action == "mute_toggle":
                 await tv.mute_toggle()
                 return
+            # Fallback: treat unknown action as raw KEY_* string
+            if action.startswith("KEY_"):
+                await tv.ws.send_key(action)
             return
-
-        # Fallback: treat unknown action as raw KEY_* string
-        if action.startswith("KEY_"):
-            await tv.ws.send_key(action)
-        return
 
     return _on_cmd
 
