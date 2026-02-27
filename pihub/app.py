@@ -23,6 +23,7 @@ from .input_ble_dongle import BleDongleLink
 from .macros import MACROS
 from .health import HealthServer
 from .validation import DEFAULT_MS_WHITELIST, parse_ms_whitelist
+from .tv import TvController, pair_tv
 
 
 def _debug_enabled() -> bool:
@@ -145,6 +146,21 @@ async def main() -> None:
     except RuntimeError as exc:
         logger.error("cannot start without Home Assistant token: %s", exc)
         raise SystemExit(1) from exc
+    
+    tv = None
+    if cfg.tv_ip and cfg.tv_mac:
+        tv = TvController(tv_ip=cfg.tv_ip, tv_mac=cfg.tv_mac, token_file=cfg.tv_token_file, name=cfg.tv_name)
+        await tv.start()
+
+        async def _tv_poller():
+            while True:
+                await tv.poll()
+                await asyncio.sleep(0.5)
+
+        tv_task = asyncio.create_task(_tv_poller(), name="tv_poller")
+        started.append(("tv", tv.stop))
+    else:
+        tv_task = None
 
     bt = BleDongleLink(
         serial_port=cfg.ble_serial_device,
@@ -165,27 +181,10 @@ async def main() -> None:
         on_cmd=_on_cmd,
     )
 
-    from .tv import TvController, pair_tv
-
     async def _send_cmd(text: str, **extra) -> bool:
         return await ws.send_cmd(text, **extra)
 
     DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt, tv=tv)
-
-    tv = None
-    if cfg.tv_ip and cfg.tv_mac:
-        tv = TvController(tv_ip=cfg.tv_ip, tv_mac=cfg.tv_mac, token_file=cfg.tv_token_file, name=cfg.tv_name)
-        await tv.start()
-
-        async def _tv_poller():
-            while True:
-                await tv.poll()
-                await asyncio.sleep(0.5)
-
-        tv_task = asyncio.create_task(_tv_poller(), name="tv_poller")
-        started.append(("tv", tv.stop))
-    else:
-        tv_task = None
 
     reader = UnifyingReader(
         scancode_map=DispatcherRef.scancode_map,
@@ -199,6 +198,7 @@ async def main() -> None:
         ws=ws,
         bt=bt,
         reader=reader,
+        tv=tv,
     )
 
     stop = asyncio.Event()
