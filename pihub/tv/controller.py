@@ -38,7 +38,7 @@ class TvController:
         )
 
         self._session: Optional[aiohttp.ClientSession] = None
-        self._dmr_cached: bool = False
+        self._dmr_cached: bool | None = None
 
         self._power_on_active: bool = False
         self._last_ws_connect_attempt: float = 0.0
@@ -70,12 +70,13 @@ class TvController:
         if not self._session:
             return
 
-        prev_up = self._dmr_cached
+        prev_up = self._dmr_cached  # None | bool
         up = await dmr_up(self._session, self.tv_ip)
         self._dmr_cached = up
 
-        if up != prev_up:
-            logger.info("tv on dmr %s", "up" if up else "down")
+        # Log once on first poll (prev_up is None), then only on transitions
+        if prev_up is None or up != prev_up:
+            logger.info("tv %s (dmr %s)", "on" if up else "off", "up" if up else "down")
 
         now = asyncio.get_running_loop().time()
 
