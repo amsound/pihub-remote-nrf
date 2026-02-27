@@ -146,10 +146,22 @@ async def main() -> None:
     except RuntimeError as exc:
         logger.error("cannot start without Home Assistant token: %s", exc)
         raise SystemExit(1) from exc
-    
-    tv = None
+
+    # Track started subsystems so we can always shut down cleanly (even if startup fails).
+    # Stop order should generally be reverse of start order.
+    started = []  # list[tuple[str, callable]]
+
+    # --- TV (create before wiring callbacks that reference it) ---
+    tv: TvController | None = None
+    tv_task: asyncio.Task | None = None
+
     if cfg.tv_ip and cfg.tv_mac:
-        tv = TvController(tv_ip=cfg.tv_ip, tv_mac=cfg.tv_mac, token_file=cfg.tv_token_file, name=cfg.tv_name)
+        tv = TvController(
+            tv_ip=cfg.tv_ip,
+            tv_mac=cfg.tv_mac,
+            token_file=cfg.tv_token_file,
+            name=cfg.tv_name,
+        )
         await tv.start()
 
         async def _tv_poller():
@@ -159,9 +171,8 @@ async def main() -> None:
 
         tv_task = asyncio.create_task(_tv_poller(), name="tv_poller")
         started.append(("tv", tv.stop))
-    else:
-        tv_task = None
 
+    # --- BLE ---
     bt = BleDongleLink(
         serial_port=cfg.ble_serial_device,
         baud=cfg.ble_serial_baud,
@@ -218,10 +229,6 @@ async def main() -> None:
 
     ws_task = asyncio.create_task(ws.start(), name="ha_ws")
     ws_task.add_done_callback(_monitor_ws)
-
-    # Track started subsystems so we can always shut down cleanly (even if startup fails).
-    # Stop order should generally be reverse of start order.
-    started = []  # list[tuple[str, callable]]
 
     try:
         await bt.start()
