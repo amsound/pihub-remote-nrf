@@ -92,28 +92,19 @@ class _LocalAiohttpRequester:
     async def async_http_request(self, request, **_kwargs):
         method = getattr(request, "method", None)
         url = getattr(request, "url", None)
-        headers = getattr(request, "headers", None) or {}
+        headers = getattr(request, "headers", None)  # keep original type (often MultiDict)
         body = getattr(request, "body", None)
         timeout = getattr(request, "timeout", None)
+
+        if headers is None:
+            headers = {}
 
         if not isinstance(method, str) or not isinstance(url, str):
             raise TypeError(f"Unsupported request object: {request!r}")
 
-        # SUBSCRIBE can be very fragile on LinkPlay stacks; keep it simple.
         m_upper = method.upper()
 
-        # Force connection close on SUBSCRIBE/UNSUBSCRIBE (fixes many embedded stacks).
-        if m_upper in {"SUBSCRIBE", "UNSUBSCRIBE"}:
-            headers = dict(headers or {})
-            headers.setdefault("Connection", "close")
-
-            # Debug: show what we're about to send
-            try:
-                logger.warning("[speaker] %s url=%s headers=%s", m_upper, url, headers)
-            except Exception:
-                pass
-
-        # Timeout can be float seconds or timedelta-like depending on version
+        # Normalize timeout to seconds
         total = 10.0
         if timeout is not None:
             try:
@@ -127,10 +118,44 @@ class _LocalAiohttpRequester:
         # For LAN + some self-signed HTTPS URLs, disable verification when https.
         ssl = False if url.startswith("https://") else None
 
+        # SUBSCRIBE/UNSUBSCRIBE are fragile on some LinkPlay stacks.
+        if m_upper in {"SUBSCRIBE", "UNSUBSCRIBE"}:
+            # Add Connection: close without destroying header structure
+            try:
+                if hasattr(headers, "add"):
+                    headers.add("Connection", "close")
+                elif isinstance(headers, dict):
+                    headers.setdefault("Connection", "close")
+                else:
+                    headers = {**dict(headers), "Connection": "close"}
+            except Exception:
+                pass
+
+            # LinkPlay quirk: some firmwares only accept "Callback" not "CALLBACK"
+            if m_upper == "SUBSCRIBE":
+                try:
+                    if isinstance(headers, dict):
+                        if "CALLBACK" in headers and "Callback" not in headers:
+                            headers["Callback"] = headers.pop("CALLBACK")
+                    elif hasattr(headers, "getall") and hasattr(headers, "add"):
+                        vals = headers.getall("CALLBACK", [])
+                        # If CALLBACK exists but Callback doesn't, mirror it
+                        if vals and not headers.getall("Callback", []):
+                            for v in vals:
+                                headers.add("Callback", v)
+                except Exception:
+                    pass
+
+            # Debug: show what we're about to send (best-effort)
+            try:
+                logger.warning("[speaker] %s url=%s headers=%s", m_upper, url, dict(headers))
+            except Exception:
+                logger.warning("[speaker] %s url=%s (headers not dictable)", m_upper, url)
+
         async with self._session.request(
             method=method,
             url=url,
-            headers=dict(headers),
+            headers=headers,  # IMPORTANT: don't coerce to dict; preserve casing/structure
             data=body,
             timeout=aiohttp.ClientTimeout(total=total),
             ssl=ssl,
