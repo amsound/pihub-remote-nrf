@@ -782,6 +782,12 @@ class LinkPlaySpeaker:
     # -------------------- UPnP event callback + state extraction --------------------
 
     def _on_event(self, service: Any, state_variables: Any) -> None:
+
+        logger.info("NOTIFY received: svc_type=%s svc_id=%s vars=%s",
+                    getattr(service, "service_type", None),
+                    getattr(service, "service_id", None),
+                    len(state_variables or []))
+
         self._state.last_event_ts = time.time()
 
         # Service identifiers (best-effort)
