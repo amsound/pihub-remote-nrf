@@ -1,20 +1,20 @@
 """
 LinkPlay/WiiM speaker controller.
-"""
-from async_upnp_client.aiohttp import AiohttpRequester
-from async_upnp_client.client_factory import UpnpFactory
-from async_upnp_client.event_handler import UpnpEventHandler
-from async_upnp_client.exceptions import UpnpError
-from async_upnp_client.profiles.dlna import DmrDevice, TransportState
-from async_upnp_client.ssdp import SSDP_IP_V4, SSDP_PORT
 
-# async_upnp_client moved AiohttpNotifyServer between versions.
-try:
-    # Newer/most common location
-    from async_upnp_client.aiohttp import AiohttpNotifyServer  # type: ignore
-except Exception:  # pragma: no cover
-    # Older fallback
-    from async_upnp_client.event_handler import AiohttpNotifyServer  # type: ignore
+Option B:
+- UPnP (GENA NOTIFY / LastChange) for state updates (push)
+- UPnP actions for transport + volume/mute
+- LinkPlay HTTPS httpapi.asp only for "play URL" (self-signed cert => ssl=False)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import socket
+import time
+from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -22,7 +22,8 @@ import aiohttp
 
 from async_upnp_client.aiohttp import AiohttpRequester
 from async_upnp_client.client_factory import UpnpFactory
-from async_upnp_client.event_handler import AiohttpNotifyServer, UpnpEventHandler
+from async_upnp_client.aiohttp import AiohttpNotifyServer
+from async_upnp_client.event_handler import UpnpEventHandler
 from async_upnp_client.exceptions import UpnpError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.ssdp import SSDP_IP_V4, SSDP_PORT
@@ -335,7 +336,25 @@ class LinkPlaySpeaker:
         local_ip = self._get_local_ip_for_peer(self._host)
 
         # 3) Start notify server + event handler
-        self._notify_server = AiohttpNotifyServer(host=local_ip, port=0)
+        requester = AiohttpRequester()
+
+        # AiohttpNotifyServer moved to async_upnp_client.aiohttp and its constructor
+        # signature varies by version. Try the modern keyword signature first,
+        # then fall back.
+        notify_server = None
+        try:
+            # Common newer signature: (requester, listen_port, listen_host, public_ip, loop)
+            notify_server = AiohttpNotifyServer(
+                requester=requester,
+                listen_port=0,
+                listen_host=local_ip,
+                public_ip=local_ip,
+            )
+        except TypeError:
+            # Older signature variant (positional requester, listen_port, listen_host)
+            notify_server = AiohttpNotifyServer(requester, 0, local_ip)
+
+        self._notify_server = notify_server
         await self._notify_server.async_start_server()
 
         callback_url = self._notify_server.callback_url
@@ -345,12 +364,9 @@ class LinkPlaySpeaker:
         self._event_handler = UpnpEventHandler(self._notify_server)
 
         # 4) Build DMR device wrapper
-        requester = AiohttpRequester()
         factory = UpnpFactory(requester)
-
         upnp_device = await factory.async_create_device(location)
         dmr = DmrDevice(upnp_device, self._event_handler)
-        dmr.on_event = self._on_event
 
         # 5) Subscribe (auto-renew)
         await dmr.async_subscribe_services(auto_resubscribe=True)
