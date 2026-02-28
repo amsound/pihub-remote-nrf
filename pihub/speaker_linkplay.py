@@ -392,6 +392,12 @@ class LinkPlaySpeaker:
             "artist": s.artist,
             "album": s.album,
             "last_event_ts": s.last_event_ts,
+            # Human-friendly extras
+            "event_age_s": (time.time() - float(s.last_event_ts)) if s.last_event_ts else None,
+            "last_event_iso": (
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(s.last_event_ts)))
+                if s.last_event_ts else None
+            ),
         }
 
     async def start(self) -> None:
