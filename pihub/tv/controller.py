@@ -51,13 +51,6 @@ class TvController:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
 
-        s = self.snapshot()
-        logger.debug(
-            "status dmr_up=%s ws_connected=%s",
-            "true" if s.dmr_up else "false",
-            "true" if s.ws_connected else "false",
-        )
-
     async def stop(self) -> None:
         await self.ws.close()
         sess, self._session = self._session, None
