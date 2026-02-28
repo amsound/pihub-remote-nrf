@@ -334,6 +334,8 @@ class LinkPlaySpeaker:
         self._avtransport_uri: str | None = None
         self._current_track_uri: str | None = None
 
+        self._logged_first_subscribe = False
+
     @property
     def enabled(self) -> bool:
         return bool(self._host)
@@ -393,7 +395,7 @@ class LinkPlaySpeaker:
             "album": s.album,
             "last_event_ts": s.last_event_ts,
             # Human-friendly extras
-            "event_age_s": (time.time() - float(s.last_event_ts)) if s.last_event_ts else None,
+            "event_age_s": int(time.time() - float(s.last_event_ts)) if s.last_event_ts else None,
             "last_event_iso": (
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(s.last_event_ts)))
                 if s.last_event_ts else None
@@ -744,9 +746,17 @@ class LinkPlaySpeaker:
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"prime_update: {err!r}"
 
-        logger.info("subscribed via UPnP callback=%s location=%s", callback_url, location)
+        msg = "subscribed via UPnP callback=%s location=%s"
+        if not self._logged_first_subscribe:
+            logger.info(msg, callback_url, location)
+            self._logged_first_subscribe = True
+        else:
+            logger.debug(msg, callback_url, location)
 
     async def _disconnect_upnp(self) -> None:
+        # Allow the next successful subscribe to log at INFO again.
+        self._logged_first_subscribe = False
+
         d, self._device = self._device, None
         if d is not None:
             with contextlib.suppress(Exception):
