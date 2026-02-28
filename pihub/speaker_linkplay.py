@@ -567,7 +567,10 @@ class LinkPlaySpeaker:
         return await self._ssdp_msearch_once(host, st="ssdp:all", mx=2, timeout=2.5)
 
     async def _ssdp_msearch_once(self, host: str, *, st: str, mx: int, timeout: float) -> str | None:
-        loop = asyncio.get_running_loop()
+        """
+        uvloop does not implement loop.sock_sendto/sock_recvfrom for UDP sockets
+        (raises NotImplementedError). Use create_datagram_endpoint instead.
+        """
         msg = (
             "M-SEARCH * HTTP/1.1\r\n"
             f"HOST: {SSDP_IP_V4}:{SSDP_PORT}\r\n"
@@ -577,38 +580,57 @@ class LinkPlaySpeaker:
             "\r\n"
         ).encode("utf-8")
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        sock.setblocking(False)
+        loop = asyncio.get_running_loop()
+        found_location: str | None = None
+        done = asyncio.Event()
 
-        with contextlib.suppress(Exception):
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-
-        sock.bind(("0.0.0.0", 0))
-
-        try:
-            await loop.sock_sendto(sock, msg, (SSDP_IP_V4, SSDP_PORT))
-
-            end = loop.time() + timeout
-            while loop.time() < end:
-                remaining = end - loop.time()
+        class _SSDPProto(asyncio.DatagramProtocol):
+            def connection_made(self, transport):
+                # send immediately on bind
                 try:
-                    data, addr = await asyncio.wait_for(loop.sock_recvfrom(sock, 65535), timeout=remaining)
-                except asyncio.TimeoutError:
-                    break
+                    transport.sendto(msg, (SSDP_IP_V4, SSDP_PORT))
+                except Exception:
+                    # ignore send issues; we'll just time out
+                    pass
 
-                sender_ip = addr[0]
+            def datagram_received(self, data: bytes, addr):
+                nonlocal found_location
+                try:
+                    sender_ip = addr[0]
+                except Exception:
+                    return
                 if sender_ip != host:
-                    continue
+                    return
 
                 headers = self._parse_ssdp_response(data)
-                location = headers.get("location")
-                if location:
-                    return location
-        finally:
-            with contextlib.suppress(Exception):
-                sock.close()
+                loc = headers.get("location")
+                if loc:
+                    found_location = loc
+                    done.set()
 
-        return None
+            def error_received(self, exc):
+                # ignore and let timeout handle it
+                pass
+
+        transport = None
+        try:
+            # Bind to ephemeral port; allow broadcast; TTL is handled by stack.
+            transport, _proto = await loop.create_datagram_endpoint(
+                lambda: _SSDPProto(),
+                local_addr=("0.0.0.0", 0),
+                allow_broadcast=True,
+            )
+
+            try:
+                await asyncio.wait_for(done.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
+
+        finally:
+            if transport is not None:
+                transport.close()
+
+        return found_location
 
     @staticmethod
     def _parse_ssdp_response(data: bytes) -> dict[str, str]:
