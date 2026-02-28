@@ -20,9 +20,8 @@ from urllib.parse import quote
 
 import aiohttp
 
-from async_upnp_client.aiohttp import AiohttpRequester
-from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.aiohttp import AiohttpNotifyServer
+from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.event_handler import UpnpEventHandler
 from async_upnp_client.exceptions import UpnpError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
@@ -65,6 +64,51 @@ class SpeakerState:
     album: str | None = None
 
     last_event_ts: float | None = None
+
+
+class _LocalAiohttpRequester:
+    """
+    Minimal requester for async-upnp-client.
+
+    Some async-upnp-client aiohttp requester classes vary across versions and can
+    raise NotImplementedError() if not constructed exactly right. This requester
+    is stable and always implements async_http_request().
+    """
+
+    def __init__(self, session: aiohttp.ClientSession) -> None:
+        self._session = session
+
+    async def async_http_request(
+        self,
+        method: str,
+        url: str,
+        headers=None,
+        body=None,
+        timeout: float = 10,
+        **kwargs,
+    ):
+        # Many LinkPlay devices use self-signed HTTPS endpoints.
+        # Disable verification (LAN-trusted usage).
+        ssl = kwargs.get("ssl", False)
+
+        req_headers = dict(headers or {})
+        data = body
+
+        async with self._session.request(
+            method=method,
+            url=url,
+            headers=req_headers,
+            data=data,
+            timeout=aiohttp.ClientTimeout(total=float(timeout)),
+            ssl=ssl,
+        ) as resp:
+            raw = await resp.read()
+            hdrs = {k: v for k, v in resp.headers.items()}
+
+            # Return the shape async-upnp-client expects. Different versions accept
+            # either a tuple-like response or a namedtuple/dataclass; the safest
+            # broadly-compatible return is (status_code, headers, body).
+            return resp.status, hdrs, raw
 
 
 class LinkPlaySpeaker:
@@ -111,6 +155,7 @@ class LinkPlaySpeaker:
 
     def snapshot(self) -> dict[str, Any]:
         s = self._state
+
         def _pct(v: float | None) -> int | None:
             if v is None:
                 return None
@@ -139,7 +184,6 @@ class LinkPlaySpeaker:
 
         self._stop.clear()
         self._session = aiohttp.ClientSession()
-
         self._task = asyncio.create_task(self._runner(), name="speaker_linkplay")
 
     async def stop(self) -> None:
@@ -281,34 +325,29 @@ class LinkPlaySpeaker:
             return
         if self._session is None:
             return
-        # Drop if we don't currently believe it's reachable.
         if not self._state.reachable:
             return
 
         cmd = f"setPlayerCmd:play:{url}"
-        cmd_q = quote(cmd, safe=":/?&=%")  # keep URLs readable
+        cmd_q = quote(cmd, safe=":/?&=%")
         endpoint = f"{self._http_scheme}://{self._host}{_HTTPAPI_PATH}?command={cmd_q}"
 
         try:
             timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
-            # Self-signed cert on speaker => ssl=False.
             async with self._session.get(endpoint, timeout=timeout, ssl=False) as resp:
                 await resp.read()
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"play_url: {err!r}"
-            # If HTTPS endpoint fails, treat as temporarily unreachable.
             self._state.reachable = False
 
     # -------------------- Internal runner --------------------
 
     async def _runner(self) -> None:
-        # Simple reconnect loop with backoff; state is push-driven once subscribed.
         backoff = 1.0
         while not self._stop.is_set():
             try:
                 await self._connect_and_subscribe()
                 backoff = 1.0
-                # Stay alive until stop or subscription breaks.
                 while not self._stop.is_set() and self._device is not None:
                     await asyncio.sleep(1.0)
             except asyncio.CancelledError:
@@ -335,8 +374,11 @@ class LinkPlaySpeaker:
         # 2) Determine local IP that can reach speaker, for callback URL
         local_ip = self._get_local_ip_for_peer(self._host)
 
+        if self._session is None:
+            raise RuntimeError("speaker aiohttp session not initialized")
+
         # 3) Start notify server + event handler
-        requester = self._make_upnp_requester()
+        requester = _LocalAiohttpRequester(self._session)
 
         notify_server = None
         try:
@@ -347,16 +389,20 @@ class LinkPlaySpeaker:
                 public_ip=local_ip,
             )
         except TypeError:
+            # Older signature variant
             notify_server = AiohttpNotifyServer(requester, 0, local_ip)
 
         self._notify_server = notify_server
         await self._notify_server.async_start_server()
+
+        callback_url = getattr(self._notify_server, "callback_url", None)
 
         self._event_handler = UpnpEventHandler(self._notify_server)
 
         factory = UpnpFactory(requester)
         upnp_device = await factory.async_create_device(location)
         dmr = DmrDevice(upnp_device, self._event_handler)
+        dmr.on_event = self._on_event  # IMPORTANT: enables push updates
 
         # 5) Subscribe (auto-renew)
         await dmr.async_subscribe_services(auto_resubscribe=True)
@@ -372,34 +418,6 @@ class LinkPlaySpeaker:
             self._refresh_from_device(dmr)
 
         logger.info("[speaker] subscribed via UPnP callback=%s location=%s", callback_url, location)
-
-    def _make_upnp_requester(self):
-        """
-        async-upnp-client requester creation varies by version.
-
-        Newer versions expect a requester bound to an aiohttp ClientSession.
-        If we give it no session, some request paths raise NotImplementedError().
-        """
-        if self._session is None:
-            raise RuntimeError("speaker aiohttp session not initialized")
-
-        # Try the common variants across 0.4x
-        try:
-            from async_upnp_client.aiohttp import AiohttpSessionRequester  # type: ignore
-            return AiohttpSessionRequester(self._session)
-        except Exception:
-            pass
-
-        try:
-            from async_upnp_client.aiohttp import AiohttpRequester  # type: ignore
-            # Most recent builds take a session in the constructor
-            try:
-                return AiohttpRequester(self._session)
-            except TypeError:
-                # Some older builds use keyword
-                return AiohttpRequester(session=self._session)
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError(f"Unable to construct async_upnp_client requester: {exc}") from exc
 
     async def _disconnect_upnp(self) -> None:
         d, self._device = self._device, None
@@ -420,7 +438,6 @@ class LinkPlaySpeaker:
                 await ns.async_stop_server()
 
     async def _mark_unreachable_maybe(self, err: Exception) -> None:
-        # Conservative: on UPnP errors, drop reachability and let reconnect loop fix it.
         if isinstance(err, UpnpError):
             self._state.reachable = False
             self._state.subscribed = False
@@ -429,10 +446,8 @@ class LinkPlaySpeaker:
     # -------------------- UPnP event callback + state extraction --------------------
 
     def _on_event(self, service: Any, state_variables: Any) -> None:
-        # Called from async_upnp_client when NOTIFY updates arrive.
         self._state.last_event_ts = time.time()
 
-        # Best-effort: refresh cached state from the profile object (cheap).
         d = self._device
         if d is None:
             return
@@ -442,7 +457,6 @@ class LinkPlaySpeaker:
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"on_event refresh: {err!r}"
 
-        # Additionally, try to pick up source hints if service exposes them directly.
         try:
             for sv in (state_variables or []):
                 name = getattr(sv, "name", None)
@@ -456,11 +470,9 @@ class LinkPlaySpeaker:
         except Exception:
             pass
 
-        # Recompute inferred source
         self._state.source = self._infer_source()
 
     def _refresh_from_device(self, d: DmrDevice) -> None:
-        # transport
         ts = d.transport_state
         if ts in (TransportState.PLAYING, TransportState.TRANSITIONING):
             self._state.transport = "playing"
@@ -473,13 +485,11 @@ class LinkPlaySpeaker:
         else:
             self._state.transport = str(ts).lower()
 
-        # volume/mute
         if d.volume_level is not None:
             self._state.volume = float(d.volume_level)
         if d.is_volume_muted is not None:
             self._state.muted = bool(d.is_volume_muted)
 
-        # metadata-ish
         uri = getattr(d, "current_track_uri", None)
         if isinstance(uri, str) and uri.strip():
             self._state.track_uri = uri
@@ -497,11 +507,9 @@ class LinkPlaySpeaker:
         if isinstance(album, str) and album.strip():
             self._state.album = album
 
-        # source inference
         self._state.source = self._infer_source()
 
     def _infer_source(self) -> str | None:
-        # Prefer PlaybackStorageMedium if present
         m = (self._playback_storage_medium or "").strip().upper()
         if m:
             if m in _STORAGE_MEDIUM_TO_SOURCE:
@@ -509,7 +517,6 @@ class LinkPlaySpeaker:
             if m.endswith("-NETWORK") or any(m.startswith(p) for p in _NETWORK_PREFIXES):
                 return "wifi"
 
-        # Fall back to URIs/tokens
         for u in (self._current_track_uri, self._avtransport_uri, self._state.track_uri):
             s = (u or "").strip()
             if not s:
@@ -545,11 +552,6 @@ class LinkPlaySpeaker:
     # -------------------- SSDP helper (static host -> LOCATION) --------------------
 
     async def _ssdp_find_location_for_host(self, host: str) -> str | None:
-        """
-        Send M-SEARCH and return the first LOCATION header whose sender IP matches `host`.
-
-        We query MediaRenderer:1..3 because different firmwares respond differently.
-        """
         st_list = [
             "urn:schemas-upnp-org:device:MediaRenderer:1",
             "urn:schemas-upnp-org:device:MediaRenderer:2",
@@ -561,7 +563,6 @@ class LinkPlaySpeaker:
             if loc:
                 return loc
 
-        # Fall back to "ssdp:all"
         return await self._ssdp_msearch_once(host, st="ssdp:all", mx=2, timeout=2.5)
 
     async def _ssdp_msearch_once(self, host: str, *, st: str, mx: int, timeout: float) -> str | None:
@@ -581,14 +582,11 @@ class LinkPlaySpeaker:
         with contextlib.suppress(Exception):
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
 
-        # Bind to an ephemeral port so we can receive responses.
         sock.bind(("0.0.0.0", 0))
 
         try:
-            # send
             await loop.sock_sendto(sock, msg, (SSDP_IP_V4, SSDP_PORT))
 
-            # recv loop until timeout
             end = loop.time() + timeout
             while loop.time() < end:
                 remaining = end - loop.time()
@@ -618,7 +616,6 @@ class LinkPlaySpeaker:
         except Exception:
             return {}
         lines = [ln.strip() for ln in text.split("\r\n") if ln.strip()]
-        # Skip status line, parse headers
         out: dict[str, str] = {}
         for ln in lines[1:]:
             if ":" not in ln:
@@ -629,9 +626,6 @@ class LinkPlaySpeaker:
 
     @staticmethod
     def _get_local_ip_for_peer(peer_ip: str) -> str:
-        """
-        Determine the local interface IP used to reach `peer_ip`.
-        """
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             s.connect((peer_ip, 80))
