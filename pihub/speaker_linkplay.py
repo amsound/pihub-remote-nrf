@@ -171,7 +171,9 @@ class _LocalAiohttpRequester:
             hdict = {}
 
         # Force the “known good” bits (matching your curl)
-        hdict.setdefault("Host", f"{host}:{port}")
+        # Prefer explicit "Host" header and remove "HOST" if present to avoid duplicates
+        hdict["Host"] = f"{host}:{port}"
+        hdict.pop("HOST", None)
         hdict.setdefault("User-Agent", "HomeAssistant/async_upnp_client")
         hdict["TIMEOUT"] = "Second-1800"
         hdict.setdefault("Connection", "close")
@@ -243,7 +245,8 @@ class _LocalAiohttpRequester:
                 if ":" not in ln:
                     continue
                 k, v = ln.split(":", 1)
-                resp_headers[k.strip()] = v.strip()
+                # Normalize to lowercase keys for async-upnp-client lookups
+                resp_headers[k.strip().lower()] = v.strip()
 
             try:
                 return HttpResponse(status_code=status_code, headers=resp_headers, body="")  # type: ignore
