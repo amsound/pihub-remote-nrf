@@ -388,9 +388,7 @@ class LinkPlaySpeaker:
         # 3) Start notify server + event handler
         requester = _LocalAiohttpRequester(self._session)
 
-        # IMPORTANT: your async_upnp_client build expects an internal "_source" that is
-        # subscriptable (tuple). Passing listen_host/listen_port in your build caused
-        # _source to become an int -> TypeError in async_start_server(). Force tuple form.
+        # Notify server: force tuple source form for your build
         notify_server = None
         try:
             notify_server = AiohttpNotifyServer(requester, source=(local_ip, 0))
@@ -398,23 +396,22 @@ class LinkPlaySpeaker:
             try:
                 notify_server = AiohttpNotifyServer(requester, (local_ip, 0))
             except TypeError:
-                try:
-                    notify_server = AiohttpNotifyServer(requester, listen=(local_ip, 0))
-                except TypeError as exc:
-                    raise RuntimeError(f"Unable to construct AiohttpNotifyServer: {exc!r}") from exc
+                notify_server = AiohttpNotifyServer(requester, listen=(local_ip, 0))
 
         self._notify_server = notify_server
         await self._notify_server.async_start_server()
-
         callback_url = getattr(self._notify_server, "callback_url", None)
 
-        self._event_handler = UpnpEventHandler(self._notify_server)
+        # Event handler: your version requires requester
+        try:
+            self._event_handler = UpnpEventHandler(self._notify_server, requester)
+        except TypeError:
+            self._event_handler = UpnpEventHandler(self._notify_server, requester=requester)
 
-        # 4) Build DMR device wrapper
         factory = UpnpFactory(requester)
         upnp_device = await factory.async_create_device(location)
         dmr = DmrDevice(upnp_device, self._event_handler)
-        dmr.on_event = self._on_event  # ensure push updates
+        dmr.on_event = self._on_event
 
         # 5) Subscribe (auto-renew)
         await dmr.async_subscribe_services(auto_resubscribe=True)
