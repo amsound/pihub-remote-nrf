@@ -57,67 +57,67 @@ class TvController:
         if sess:
             await sess.close()
 
-async def poll(self) -> None:
-    """
-    Periodic poll: update dmr status and connect/disconnect ws accordingly.
+    async def poll(self) -> None:
+        """
+        Periodic poll: update dmr status and connect/disconnect ws accordingly.
 
-    Important: while power_on() is running, do NOT close the websocket on DMR-down,
-    otherwise we flap connect/close and KEY_POWER never lands reliably.
-    """
-    if not self._session:
-        return
+        Important: while power_on() is running, do NOT close the websocket on DMR-down,
+        otherwise we flap connect/close and KEY_POWER never lands reliably.
+        """
+        if not self._session:
+            return
 
-    # ---- DMR sample ----
-    sample = await dmr_up(self._session, self.tv_ip)  # bool
+        # ---- DMR sample ----
+        sample = await dmr_up(self._session, self.tv_ip)  # bool
 
-    # ---- Debounce: require N consecutive samples before committing a change ----
-    prev_committed = self._dmr_cached  # None | bool
+        # ---- Debounce: require N consecutive samples before committing a change ----
+        prev_committed = self._dmr_cached  # None | bool
 
-    if prev_committed is None:
-        # First observation: commit immediately so we get a boot log.
-        self._dmr_cached = sample
-        self._dmr_pending = None
-        self._dmr_pending_count = 0
-    else:
-        if sample == prev_committed:
-            # Stable, clear any pending transition
+        if prev_committed is None:
+            # First observation: commit immediately so we get a boot log.
+            self._dmr_cached = sample
             self._dmr_pending = None
             self._dmr_pending_count = 0
         else:
-            # Candidate transition
-            if self._dmr_pending != sample:
-                self._dmr_pending = sample
-                self._dmr_pending_count = 1
-            else:
-                self._dmr_pending_count += 1
-
-            # Commit only after N consecutive samples
-            if self._dmr_pending_count >= self._dmr_debounce_n:
-                self._dmr_cached = sample
+            if sample == prev_committed:
+                # Stable, clear any pending transition
                 self._dmr_pending = None
                 self._dmr_pending_count = 0
+            else:
+                # Candidate transition
+                if self._dmr_pending != sample:
+                    self._dmr_pending = sample
+                    self._dmr_pending_count = 1
+                else:
+                    self._dmr_pending_count += 1
 
-    up = bool(self._dmr_cached)
+                # Commit only after N consecutive samples
+                if self._dmr_pending_count >= self._dmr_debounce_n:
+                    self._dmr_cached = sample
+                    self._dmr_pending = None
+                    self._dmr_pending_count = 0
 
-    # ---- Log once on boot, then only on committed transitions ----
-    if prev_committed is None or self._dmr_cached != prev_committed:
-        logger.info("tv %s (dmr %s)", "on" if up else "off", "up" if up else "down")
+        up = bool(self._dmr_cached)
 
-    now = asyncio.get_running_loop().time()
+        # ---- Log once on boot, then only on committed transitions ----
+        if prev_committed is None or self._dmr_cached != prev_committed:
+            logger.info("tv %s (dmr %s)", "on" if up else "off", "up" if up else "down")
 
-    if up:
-        # ensure websocket is up for instant keys (throttled)
-        if not self.ws.state.connected and (now - self._last_ws_connect_attempt) > 3.0:
-            self._last_ws_connect_attempt = now
-            await self.ws.connect(self._session)
-        return
+        now = asyncio.get_running_loop().time()
 
-    # DMR down: only close ws if we're NOT trying to power on
-    if self._power_on_active:
-        return
+        if up:
+            # ensure websocket is up for instant keys (throttled)
+            if not self.ws.state.connected and (now - self._last_ws_connect_attempt) > 3.0:
+                self._last_ws_connect_attempt = now
+                await self.ws.connect(self._session)
+            return
 
-    if self.ws.state.connected:
-        await self.ws.close()
+        # DMR down: only close ws if we're NOT trying to power on
+        if self._power_on_active:
+            return
+
+        if self.ws.state.connected:
+            await self.ws.close()
 
     def snapshot(self) -> TvSnapshot:
         st = self.ws.state
