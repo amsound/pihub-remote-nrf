@@ -59,7 +59,7 @@ class TvWsClient:
         token_present = bool(tok)
         if self._logged_token_present is None or token_present != self._logged_token_present:
             self._logged_token_present = token_present
-            logger.info(
+            logger.debug(
                 "initialised tv websocket tv_ip=%s token_present=%s",
                 self._tv_ip,
                 "true" if token_present else "false",

@@ -572,8 +572,27 @@ class LinkPlaySpeaker:
             try:
                 await self._connect_and_subscribe()
                 backoff = 1.0
+                # Periodic refresh so Health has volume/mute/transport even if
+                # the device doesn't emit (or async_upnp_client doesn't map) all
+                # state via NOTIFY/LastChange.
+                poll_every_s = 3.0
+                next_poll = time.time() + poll_every_s
                 while not self._stop.is_set() and self._device is not None:
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(0.25)
+                    now = time.time()
+                    if now < next_poll:
+                        continue
+                    next_poll = now + poll_every_s
+
+                    d = self._device
+                    if d is None:
+                        continue
+                    try:
+                        await d.async_update()
+                        self._refresh_from_device(d)
+                    except Exception as err:  # noqa: BLE001
+                        self._state.last_error = f"poll: {err!r}"
+                        await self._mark_unreachable_maybe(err)
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # noqa: BLE001
@@ -669,9 +688,11 @@ class LinkPlaySpeaker:
         self._state.last_error = None
 
         # Prime state once
-        with contextlib.suppress(Exception):
+        try:
             await dmr.async_update()
             self._refresh_from_device(dmr)
+        except Exception as err:  # noqa: BLE001
+            self._state.last_error = f"prime_update: {err!r}"
 
         logger.info("subscribed via UPnP callback=%s location=%s", callback_url, location)
 
