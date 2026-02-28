@@ -38,11 +38,12 @@ class Dispatcher:
       - { "do": "noop" }  # explicit no-op action
     """
 
-    def __init__(self, cfg: Any, send_cmd: Callable[..., Awaitable[bool]], bt_le: Any, tv: Any = None) -> None:
+    def __init__(self, cfg: Any, send_cmd: Callable[..., Awaitable[bool]], bt_le: Any, tv: Any = None, speaker: Any = None) -> None:
         self._cfg = cfg
         self._send_cmd = send_cmd
         self._bt = bt_le
         self._tv = tv
+        self._speaker = speaker
         self._last_cmd_fail_log = 0.0
 
         # Load full keymap document, then split into parts we use
@@ -229,7 +230,7 @@ class Dispatcher:
         with suppress(Exception):
             self._bt.release_all()
 
-    # ---- Repeat helpers (WS and TV) ----
+    # ---- Repeat helpers (WS, TV and Speaker) ----
     async def _start_repeat(self, rem_key: str, text: str, extras: dict) -> None:
         if rem_key in self._repeat_tasks:
             return
@@ -243,6 +244,18 @@ class Dispatcher:
                         key = extras.get("_tv_key")
                         if isinstance(key, str) and self._tv is not None:
                             await self._tv.ws.send_key(key)
+                    elif text == "__speaker__":
+                        act = extras.get("_speaker_action")
+                        sp = getattr(self, "_speaker", None)
+                        if sp is not None and isinstance(act, str):
+                            # Hard drop if unreachable
+                            st = getattr(sp, "state", None)
+                            if st is not None and not getattr(st, "reachable", False):
+                                return
+                            if act == "volume_up":
+                                await sp.volume_up()
+                            elif act == "volume_down":
+                                await sp.volume_down()
                     else:
                         # Default path: HA emit repeat
                         await self._send_with_log(text=text, **extras)
@@ -353,6 +366,10 @@ class Dispatcher:
         if kind == "tv":
             await self._handle_tv_action(a, edge, rem_key=rem_key, action_index=action_index)
             return
+        
+        if kind == "speaker":
+            await self._handle_speaker_action(a, edge, rem_key=rem_key, action_index=action_index)
+            return
 
         # Unknown action -> ignore
         return
@@ -377,6 +394,87 @@ class Dispatcher:
             self._bt.key_down(usage=usage, code=code)
         elif edge == "up":
             self._bt.key_up(usage=usage, code=code)
+
+    async def _handle_speaker_action(
+        self,
+        a: dict,
+        edge: str,
+        *,
+        rem_key: str | None,
+        action_index: int = 0,
+    ) -> None:
+        # Only act on down edge
+        if edge != "down":
+            return
+
+        sp = getattr(self, "_speaker", None)
+        if sp is None:
+            return
+
+        # Hard drop if speaker not reachable (per your preference)
+        try:
+            st = getattr(sp, "state", None)
+            if st is not None and not getattr(st, "reachable", False):
+                return
+        except Exception:
+            return
+
+        want_repeat = bool(a.get("repeat"))
+
+        action = a.get("action")
+        if not isinstance(action, str) or not action:
+            return
+
+        # One-shot actions
+        if action == "toggle_play":
+            await sp.toggle_play()
+            return
+
+        if action == "play":
+            await sp.play()
+            return
+
+        if action == "pause":
+            await sp.pause()
+            return
+
+        if action == "stop":
+            await sp.stop_playback()
+            return
+
+        if action == "next":
+            await sp.next_track()
+            return
+
+        if action == "previous":
+            await sp.previous_track()
+            return
+
+        if action == "mute_toggle":
+            await sp.mute_toggle()
+            return
+
+        if action == "play_url":
+            url = a.get("url")
+            if isinstance(url, str) and url:
+                await sp.play_url(url)
+            return
+
+        # Repeatable actions (volume)
+        if action == "volume_up":
+            await sp.volume_up()
+            if want_repeat and rem_key:
+                await self._start_repeat(rem_key, text="__speaker__", extras={"_speaker_action": "volume_up"})
+            return
+
+        if action == "volume_down":
+            await sp.volume_down()
+            if want_repeat and rem_key:
+                await self._start_repeat(rem_key, text="__speaker__", extras={"_speaker_action": "volume_down"})
+            return
+
+        # Unknown -> ignore
+        return
 
     async def _handle_tv_action(
         self,
@@ -570,5 +668,5 @@ class Dispatcher:
                     if not isinstance(action, dict):
                         raise ValueError(f"action {activity}.{rem_key}[{idx}] must be a dict")
                     kind = action.get("do")
-                    if kind not in {"emit", "ble", "noop", "tv"}:
+                    if kind not in {"emit", "ble", "noop", "tv", "speaker"}:
                         raise ValueError(f"action {activity}.{rem_key}[{idx}] has unknown do={kind!r}")

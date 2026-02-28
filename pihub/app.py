@@ -24,6 +24,7 @@ from .macros import MACROS
 from .health import HealthServer
 from .validation import DEFAULT_MS_WHITELIST, parse_ms_whitelist
 from .tv import TvController, pair_tv
+from .speaker_linkplay import LinkPlaySpeaker
 
 
 def _debug_enabled() -> bool:
@@ -177,6 +178,17 @@ async def main() -> None:
         tv_task = asyncio.create_task(_tv_poller(), name="tv_poller")
         started.append(("tv", tv.stop))
 
+    # --- Speaker (LinkPlay/WiiM) ---
+    speaker: LinkPlaySpeaker | None = None
+    if cfg.speaker_host:
+        speaker = LinkPlaySpeaker(
+            host=cfg.speaker_host,
+            http_scheme=cfg.speaker_http_scheme,   # default https
+            volume_step_pct=cfg.speaker_volume_step_pct,
+        )
+        await speaker.start()
+        started.append(("speaker", speaker.stop))
+
     # --- BLE ---
     bt = BleDongleLink(
         serial_port=cfg.ble_serial_device,
@@ -200,7 +212,7 @@ async def main() -> None:
     async def _send_cmd(text: str, **extra) -> bool:
         return await ws.send_cmd(text, **extra)
 
-    DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt, tv=tv)
+    DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt, tv=tv, speaker=speaker)
 
     reader = UnifyingReader(
         scancode_map=DispatcherRef.scancode_map,
@@ -215,6 +227,7 @@ async def main() -> None:
         bt=bt,
         reader=reader,
         tv=tv,
+        speaker=speaker,
     )
 
     stop = asyncio.Event()

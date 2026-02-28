@@ -11,6 +11,7 @@ from .tv import TvController
 from .ha_ws import HAWS
 from .input_ble_dongle import BleDongleLink
 from .input_unifying import UnifyingReader
+from .speaker_linkplay import LinkPlaySpeaker
 
 
 class HealthServer:
@@ -25,6 +26,7 @@ class HealthServer:
         bt: BleDongleLink,
         reader: UnifyingReader,
         tv: Optional[TvController] = None,
+        speaker: Optional[LinkPlaySpeaker] = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -36,6 +38,7 @@ class HealthServer:
         self._site: Optional[web.TCPSite] = None
 
         self._tv = tv
+        self._speaker = speaker
 
     async def start(self) -> None:
         if self._runner is not None:
@@ -110,6 +113,11 @@ class HealthServer:
                 "last_error": s.last_error,
             }
 
+        # ---------------- Speaker -------------
+        speaker_state = None
+        if self._speaker is not None and self._speaker.enabled:
+            speaker_state = self._speaker.snapshot()
+
         # ---------------- BLE ----------------
         ble_raw = self._bt.status
         conn_params = ble_raw.get("conn_params") or {}
@@ -171,5 +179,6 @@ class HealthServer:
             "ws": ws_state,
             "usb": usb_state,
             "tv": tv_state,
+            "speaker": speaker_state,
             "ble": ble_state,
         }
