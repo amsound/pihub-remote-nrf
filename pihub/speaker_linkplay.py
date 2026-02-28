@@ -69,46 +69,97 @@ class SpeakerState:
 
 class _LocalAiohttpRequester:
     """
-    Minimal requester for async-upnp-client.
+    Minimal requester for async-upnp-client across 0.4x APIs.
 
-    Some async-upnp-client aiohttp requester classes vary across versions and can
-    raise NotImplementedError() if not constructed exactly right. This requester
-    is stable and always implements async_http_request().
+    Some versions call:
+      await requester.async_http_request(request_obj)
+
+    Others call:
+      await requester.async_http_request(method, url, headers=..., body=..., timeout=...)
+
+    We support both.
     """
 
     def __init__(self, session: aiohttp.ClientSession) -> None:
         self._session = session
 
-    async def async_http_request(
+    async def async_http_request(self, *args, **kwargs):
+        # Case A: async_http_request(request_obj)
+        if len(args) == 1 and not kwargs:
+            request = args[0]
+            method = getattr(request, "method", None)
+            url = getattr(request, "url", None)
+            headers = getattr(request, "headers", None)
+            body = getattr(request, "body", None)
+            timeout = getattr(request, "timeout", None)
+
+            if not isinstance(method, str) or not isinstance(url, str):
+                raise TypeError(f"Unsupported request object: {request!r}")
+
+            return await self._do_request(
+                method=method,
+                url=url,
+                headers=headers,
+                body=body,
+                timeout=timeout,
+            )
+
+        # Case B: async_http_request(method, url, ...)
+        if len(args) >= 2:
+            method = args[0]
+            url = args[1]
+            headers = kwargs.get("headers", None)
+            body = kwargs.get("body", None)
+            timeout = kwargs.get("timeout", None)
+            return await self._do_request(
+                method=method,
+                url=url,
+                headers=headers,
+                body=body,
+                timeout=timeout,
+                ssl=kwargs.get("ssl", False),
+            )
+
+        raise TypeError(f"Unsupported async_http_request call: args={args!r} kwargs={kwargs!r}")
+
+    async def _do_request(
         self,
+        *,
         method: str,
         url: str,
         headers=None,
         body=None,
-        timeout: float = 10,
-        **kwargs,
+        timeout=None,
+        ssl=False,
     ):
-        # Many LinkPlay devices use self-signed HTTPS endpoints.
-        # Disable verification (LAN-trusted usage).
-        ssl = kwargs.get("ssl", False)
+        # LinkPlay devices often have self-signed HTTPS (and some UPnP URLs can be https-ish).
+        # For LAN usage, disable verification.
+        ssl = False if url.startswith("https://") else ssl
 
         req_headers = dict(headers or {})
         data = body
+
+        # timeout may be None or a timedelta-like; normalize to seconds
+        total = 10.0
+        if timeout is not None:
+            try:
+                total = float(timeout)
+            except Exception:
+                try:
+                    total = float(getattr(timeout, "total_seconds")())
+                except Exception:
+                    total = 10.0
 
         async with self._session.request(
             method=method,
             url=url,
             headers=req_headers,
             data=data,
-            timeout=aiohttp.ClientTimeout(total=float(timeout)),
+            timeout=aiohttp.ClientTimeout(total=total),
             ssl=ssl,
         ) as resp:
             raw = await resp.read()
             hdrs = {k: v for k, v in resp.headers.items()}
-
-            # Return the shape async-upnp-client expects. Different versions accept
-            # either a tuple-like response or a namedtuple/dataclass; the safest
-            # broadly-compatible return is (status_code, headers, body).
             return resp.status, hdrs, raw
 
 
