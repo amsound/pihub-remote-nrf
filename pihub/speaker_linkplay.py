@@ -133,6 +133,15 @@ class _LocalAiohttpRequester:
         if headers is None:
             headers = {}
 
+        # LinkPlay control endpoints are fragile with keepalive.
+        # Force close per-request (in addition to the connector setting).
+        try:
+            if "Connection" not in headers and "connection" not in headers:
+                headers = dict(headers)
+                headers["Connection"] = "close"
+        except Exception:
+            pass
+
         if not isinstance(method, str) or not isinstance(url, str):
             raise TypeError(f"Unsupported request object: {request!r}")
 
@@ -161,15 +170,24 @@ class _LocalAiohttpRequester:
         # ---- Default: aiohttp for everything else ----
         ssl = False if url.startswith("https://") else None
 
-        async with self._session.request(
-            method=method,
-            url=url,
-            headers=headers,
-            data=body,
-            timeout=aiohttp.ClientTimeout(total=total),
-            ssl=ssl,
-        ) as resp:
-            raw = await resp.read()
+        for attempt in (1, 2):
+            try:
+                async with self._session.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    data=body,
+                    timeout=aiohttp.ClientTimeout(total=total),
+                    ssl=ssl,
+                ) as resp:
+                    raw = await resp.read()
+                    hdrs = {k: v for k, v in resp.headers.items()}
+                break
+            except (aiohttp.ClientOSError, aiohttp.ServerDisconnectedError) as err:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.1)
+
             hdrs = {k: v for k, v in resp.headers.items()}
             try:
                 text_body: str = raw.decode("utf-8", errors="ignore")
@@ -367,7 +385,11 @@ class LinkPlaySpeaker:
             return
 
         self._stop.clear()
-        self._session = aiohttp.ClientSession()
+        connector = aiohttp.TCPConnector(
+            force_close=True,            # critical for LinkPlay SOAP endpoints
+            enable_cleanup_closed=True,  # helps avoid noisy warnings on linux
+        )
+        self._session = aiohttp.ClientSession(connector=connector)
         self._task = asyncio.create_task(self._runner(), name="speaker_linkplay")
 
     async def stop(self) -> None:
