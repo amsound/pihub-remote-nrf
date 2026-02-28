@@ -395,7 +395,8 @@ class LinkPlaySpeaker:
             except Exception as err:  # noqa: BLE001
                 logger.exception("[speaker] runner exception")
                 self._state.last_error = f"runner: {err!r}"
-                await self._disconnect_upnp()
+                # TEMP DEBUG: keep notify server up for manual reachability testing
+                # await self._disconnect_upnp()
                 self._state.reachable = False
                 self._state.subscribed = False
                 await asyncio.sleep(backoff)
