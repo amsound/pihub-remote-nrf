@@ -427,16 +427,27 @@ class LinkPlaySpeaker:
 
         requester = _LocalAiohttpRequester(self._session)
 
-        # Notify server: try to force callback host/IP to be routable.
+        # ---- PINNED notify callback port (so VLAN rules can be fixed) ----
+        notify_port_raw = (os.getenv("SPEAKER_NOTIFY_PORT", "") or "19090").strip()
+        try:
+            notify_port = int(notify_port_raw)
+        except ValueError:
+            notify_port = 19090
+
+        # Notify server: force a stable (ip, port) source tuple.
+        # Also try to force the callback host/public IP to be routable.
         notify_server = None
         last_exc: Exception | None = None
+
         for ctor in (
-            lambda: AiohttpNotifyServer(requester, source=(local_ip, 0), public_ip=local_ip),
-            lambda: AiohttpNotifyServer(requester, source=(local_ip, 0), callback_host=local_ip),
-            lambda: AiohttpNotifyServer(requester, source=(local_ip, 0)),
-            lambda: AiohttpNotifyServer(requester, (local_ip, 0), public_ip=local_ip),
-            lambda: AiohttpNotifyServer(requester, (local_ip, 0)),
-            lambda: AiohttpNotifyServer(requester, listen=(local_ip, 0)),
+            # Preferred: explicit source tuple + explicit public/callback host where supported
+            lambda: AiohttpNotifyServer(requester, source=(local_ip, notify_port), public_ip=local_ip),
+            lambda: AiohttpNotifyServer(requester, source=(local_ip, notify_port), callback_host=local_ip),
+            lambda: AiohttpNotifyServer(requester, source=(local_ip, notify_port)),
+            # Older variants: positional tuple / listen tuple
+            lambda: AiohttpNotifyServer(requester, (local_ip, notify_port), public_ip=local_ip),
+            lambda: AiohttpNotifyServer(requester, (local_ip, notify_port)),
+            lambda: AiohttpNotifyServer(requester, listen=(local_ip, notify_port)),
         ):
             try:
                 notify_server = ctor()
@@ -450,8 +461,9 @@ class LinkPlaySpeaker:
 
         self._notify_server = notify_server
         await self._notify_server.async_start_server()
+
         callback_url = getattr(self._notify_server, "callback_url", None)
-        logger.warning("[speaker] notify callback_url=%s", callback_url)
+        logger.warning("[speaker] notify callback_url=%s (pinned port=%s)", callback_url, notify_port)
 
         # Event handler: your version requires requester
         try:
