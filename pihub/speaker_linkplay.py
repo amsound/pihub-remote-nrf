@@ -84,6 +84,8 @@ class _LocalAiohttpRequester:
     async_upnp_client calls:
       await requester.async_http_request(request_obj)
     and expects an HttpResponse-like return with .body/.headers/.status_code.
+
+    Goal: make SUBSCRIBE requests match a known-good curl request.
     """
 
     def __init__(self, session: aiohttp.ClientSession) -> None:
@@ -92,7 +94,7 @@ class _LocalAiohttpRequester:
     async def async_http_request(self, request, **_kwargs):
         method = getattr(request, "method", None)
         url = getattr(request, "url", None)
-        headers = getattr(request, "headers", None)  # keep original type (often MultiDict)
+        headers = getattr(request, "headers", None)
         body = getattr(request, "body", None)
         timeout = getattr(request, "timeout", None)
 
@@ -104,7 +106,7 @@ class _LocalAiohttpRequester:
 
         m_upper = method.upper()
 
-        # Normalize timeout to seconds
+        # Normalize timeout for aiohttp request() itself (not the UPnP TIMEOUT header)
         total = 10.0
         if timeout is not None:
             try:
@@ -115,38 +117,30 @@ class _LocalAiohttpRequester:
                 except Exception:
                     total = 10.0
 
-        # For LAN + some self-signed HTTPS URLs, disable verification when https.
         ssl = False if url.startswith("https://") else None
 
-        # SUBSCRIBE/UNSUBSCRIBE are fragile on some LinkPlay stacks.
+        # Make SUBSCRIBE/UNSUBSCRIBE match curl behavior that succeeded
         if m_upper in {"SUBSCRIBE", "UNSUBSCRIBE"}:
-            # Add Connection: close without destroying header structure
+            # Preserve header structure if possible, but ensure required headers exist.
             try:
                 if hasattr(headers, "add"):
+                    headers.add("User-Agent", "HomeAssistant/async_upnp_client")
+                    headers.add("TIMEOUT", "Second-1800")
                     headers.add("Connection", "close")
                 elif isinstance(headers, dict):
+                    headers.setdefault("User-Agent", "HomeAssistant/async_upnp_client")
+                    headers["TIMEOUT"] = "Second-1800"
                     headers.setdefault("Connection", "close")
                 else:
-                    headers = {**dict(headers), "Connection": "close"}
+                    tmp = dict(headers)
+                    tmp.setdefault("User-Agent", "HomeAssistant/async_upnp_client")
+                    tmp["TIMEOUT"] = "Second-1800"
+                    tmp.setdefault("Connection", "close")
+                    headers = tmp
             except Exception:
                 pass
 
-            # LinkPlay quirk: some firmwares only accept "Callback" not "CALLBACK"
-            if m_upper == "SUBSCRIBE":
-                try:
-                    if isinstance(headers, dict):
-                        if "CALLBACK" in headers and "Callback" not in headers:
-                            headers["Callback"] = headers.pop("CALLBACK")
-                    elif hasattr(headers, "getall") and hasattr(headers, "add"):
-                        vals = headers.getall("CALLBACK", [])
-                        # If CALLBACK exists but Callback doesn't, mirror it
-                        if vals and not headers.getall("Callback", []):
-                            for v in vals:
-                                headers.add("Callback", v)
-                except Exception:
-                    pass
-
-            # Debug: show what we're about to send (best-effort)
+            # Debug view
             try:
                 logger.warning("[speaker] %s url=%s headers=%s", m_upper, url, dict(headers))
             except Exception:
@@ -155,7 +149,7 @@ class _LocalAiohttpRequester:
         async with self._session.request(
             method=method,
             url=url,
-            headers=headers,  # IMPORTANT: don't coerce to dict; preserve casing/structure
+            headers=headers,   # IMPORTANT: don't coerce to dict
             data=body,
             timeout=aiohttp.ClientTimeout(total=total),
             ssl=ssl,
@@ -163,7 +157,6 @@ class _LocalAiohttpRequester:
             raw = await resp.read()
             hdrs = {k: v for k, v in resp.headers.items()}
 
-            # async-upnp-client expects .body to be text for XML parsing/strip
             try:
                 text_body: str = raw.decode("utf-8", errors="ignore")
             except Exception:
