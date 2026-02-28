@@ -610,32 +610,33 @@ class LinkPlaySpeaker:
             try:
                 await self._connect_and_subscribe()
                 backoff = 1.0
-                # Periodic refresh so Health has volume/mute/transport even if
-                # the device doesn't emit (or async_upnp_client doesn't map) all
-                # state via NOTIFY/LastChange.
-                poll_every_s = 3.0
-                next_poll = time.time() + poll_every_s
-                poll_failures = 0
-                while not self._stop.is_set() and self._device is not None:
-                    await asyncio.sleep(0.25)
-                    now = time.time()
-                    if now < next_poll:
-                        continue
-                    next_poll = now + poll_every_s
 
-                    d = self._device
-                    if d is None:
-                        continue
-                try:
-                    await d.async_update()
-                    self._refresh_from_device(d)
-                    self._state.last_error = None
-                    poll_failures = 0
-                except Exception as err:  # noqa: BLE001
-                    self._state.last_error = f"poll: {err!r}"
-                    poll_failures += 1
-                    if poll_failures >= 3:
-                        await self._mark_unreachable_maybe(err)
+                stale_after_s = 90.0
+                grace_after_connect_s = 15.0
+                connected_at = time.time()
+
+                while not self._stop.is_set() and self._device is not None:
+                    await asyncio.sleep(1.0)
+
+                    last_evt = self._state.last_event_ts
+                    now = time.time()
+
+                    if last_evt is None:
+                        if now - connected_at < grace_after_connect_s:
+                            continue
+                        self._state.last_error = "watchdog: no events received after subscribe"
+                        await self._disconnect_upnp()
+                        self._state.reachable = False
+                        self._state.subscribed = False
+                        break
+
+                    if now - float(last_evt) > stale_after_s:
+                        self._state.last_error = f"watchdog: events stale ({now - float(last_evt):.1f}s)"
+                        await self._disconnect_upnp()
+                        self._state.reachable = False
+                        self._state.subscribed = False
+                        break
+
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # noqa: BLE001
