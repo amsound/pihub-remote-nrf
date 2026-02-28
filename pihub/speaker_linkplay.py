@@ -835,9 +835,17 @@ class LinkPlaySpeaker:
                     continue
 
                 # LastChange payloads: this is the important bit
-                if name == "LastChange" and isinstance(val, str) and val.strip():
-                    raw = val
-                    # HA note: don't over-unescape; one pass is usually right
+                if name == "LastChange" and val:
+                    # async_upnp_client can give us str or bytes depending on platform/version.
+                    if isinstance(val, bytes):
+                        raw = val.decode("utf-8", errors="ignore")
+                    else:
+                        raw = str(val)
+
+                    if not raw.strip():
+                        continue
+
+                    # Don't over-unescape; one pass is usually right
                     unescaped = html.unescape(raw)
 
                     try:
@@ -859,7 +867,6 @@ class LinkPlaySpeaker:
                                 self._current_track_uri = self._norm_lastchange(v2)
                             elif ln == "TransportState":
                                 if v2 is not None:
-                                    # normalize to our health strings
                                     t = str(v2).strip().lower()
                                     if t in ("playing", "transitioning"):
                                         self._state.transport = "playing"
@@ -877,7 +884,6 @@ class LinkPlaySpeaker:
                             if ln not in ("Volume", "Mute"):
                                 continue
 
-                            # Prefer Master channel when present
                             channel = (el.attrib.get("channel") or el.attrib.get("Channel") or "").lower()
                             if channel and channel != "master":
                                 continue
