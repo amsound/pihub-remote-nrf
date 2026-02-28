@@ -142,8 +142,12 @@ class _LocalAiohttpRequester:
         except Exception:
             pass
 
-        if not isinstance(method, str) or not isinstance(url, str):
+        # Accept yarl.URL, bytes, etc. Normalize early.
+        if method is None or url is None:
             raise TypeError(f"Unsupported request object: {request!r}")
+
+        method = str(method)
+        url = str(url)
 
         m_upper = method.upper()
 
@@ -170,34 +174,46 @@ class _LocalAiohttpRequester:
         # ---- Default: aiohttp for everything else ----
         ssl = False if url.startswith("https://") else None
 
+        # LinkPlay endpoints are fragile with keepalive
+        try:
+            hdict = dict(headers)
+        except Exception:
+            hdict = {}
+        hdict.setdefault("Connection", "close")
+
+        last_err: Exception | None = None
         for attempt in (1, 2):
             try:
                 async with self._session.request(
                     method=method,
                     url=url,
-                    headers=headers,
+                    headers=hdict,
                     data=body,
                     timeout=aiohttp.ClientTimeout(total=total),
                     ssl=ssl,
                 ) as resp:
                     raw = await resp.read()
                     hdrs = {k: v for k, v in resp.headers.items()}
-                break
+
+                try:
+                    text_body: str = raw.decode("utf-8", errors="ignore")
+                except Exception:
+                    text_body = ""
+
+                try:
+                    return HttpResponse(status_code=resp.status, headers=hdrs, body=text_body)  # type: ignore
+                except TypeError:
+                    return HttpResponse(resp.status, hdrs, text_body)  # type: ignore
+
             except (aiohttp.ClientOSError, aiohttp.ServerDisconnectedError) as err:
-                if attempt == 2:
-                    raise
-                await asyncio.sleep(0.1)
+                last_err = err
+                if attempt == 1:
+                    await asyncio.sleep(0.1)
+                    continue
+                raise
 
-            hdrs = {k: v for k, v in resp.headers.items()}
-            try:
-                text_body: str = raw.decode("utf-8", errors="ignore")
-            except Exception:
-                text_body = ""
-
-            try:
-                return HttpResponse(status_code=resp.status, headers=hdrs, body=text_body)  # type: ignore
-            except TypeError:
-                return HttpResponse(resp.status, hdrs, text_body)  # type: ignore
+        # Defensive (should not happen)
+        raise last_err or RuntimeError("HTTP request failed")
 
     async def _raw_subscribe_like_curl(self, *, method: str, url: str, headers, timeout_s: float):
         """
@@ -599,6 +615,7 @@ class LinkPlaySpeaker:
                 # state via NOTIFY/LastChange.
                 poll_every_s = 3.0
                 next_poll = time.time() + poll_every_s
+                poll_failures = 0
                 while not self._stop.is_set() and self._device is not None:
                     await asyncio.sleep(0.25)
                     now = time.time()
@@ -609,11 +626,15 @@ class LinkPlaySpeaker:
                     d = self._device
                     if d is None:
                         continue
-                    try:
-                        await d.async_update()
-                        self._refresh_from_device(d)
-                    except Exception as err:  # noqa: BLE001
-                        self._state.last_error = f"poll: {err!r}"
+                try:
+                    await d.async_update()
+                    self._refresh_from_device(d)
+                    self._state.last_error = None
+                    poll_failures = 0
+                except Exception as err:  # noqa: BLE001
+                    self._state.last_error = f"poll: {err!r}"
+                    poll_failures += 1
+                    if poll_failures >= 3:
                         await self._mark_unreachable_maybe(err)
             except asyncio.CancelledError:
                 raise
