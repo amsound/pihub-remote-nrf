@@ -336,14 +336,10 @@ class LinkPlaySpeaker:
         local_ip = self._get_local_ip_for_peer(self._host)
 
         # 3) Start notify server + event handler
-        requester = AiohttpRequester()
+        requester = self._make_upnp_requester()
 
-        # AiohttpNotifyServer moved to async_upnp_client.aiohttp and its constructor
-        # signature varies by version. Try the modern keyword signature first,
-        # then fall back.
         notify_server = None
         try:
-            # Common newer signature: (requester, listen_port, listen_host, public_ip, loop)
             notify_server = AiohttpNotifyServer(
                 requester=requester,
                 listen_port=0,
@@ -351,19 +347,13 @@ class LinkPlaySpeaker:
                 public_ip=local_ip,
             )
         except TypeError:
-            # Older signature variant (positional requester, listen_port, listen_host)
             notify_server = AiohttpNotifyServer(requester, 0, local_ip)
 
         self._notify_server = notify_server
         await self._notify_server.async_start_server()
 
-        callback_url = self._notify_server.callback_url
-        if not callback_url:
-            raise RuntimeError("notify server has no callback_url")
-
         self._event_handler = UpnpEventHandler(self._notify_server)
 
-        # 4) Build DMR device wrapper
         factory = UpnpFactory(requester)
         upnp_device = await factory.async_create_device(location)
         dmr = DmrDevice(upnp_device, self._event_handler)
@@ -382,6 +372,34 @@ class LinkPlaySpeaker:
             self._refresh_from_device(dmr)
 
         logger.info("[speaker] subscribed via UPnP callback=%s location=%s", callback_url, location)
+
+    def _make_upnp_requester(self):
+        """
+        async-upnp-client requester creation varies by version.
+
+        Newer versions expect a requester bound to an aiohttp ClientSession.
+        If we give it no session, some request paths raise NotImplementedError().
+        """
+        if self._session is None:
+            raise RuntimeError("speaker aiohttp session not initialized")
+
+        # Try the common variants across 0.4x
+        try:
+            from async_upnp_client.aiohttp import AiohttpSessionRequester  # type: ignore
+            return AiohttpSessionRequester(self._session)
+        except Exception:
+            pass
+
+        try:
+            from async_upnp_client.aiohttp import AiohttpRequester  # type: ignore
+            # Most recent builds take a session in the constructor
+            try:
+                return AiohttpRequester(self._session)
+            except TypeError:
+                # Some older builds use keyword
+                return AiohttpRequester(session=self._session)
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(f"Unable to construct async_upnp_client requester: {exc}") from exc
 
     async def _disconnect_upnp(self) -> None:
         d, self._device = self._device, None
