@@ -15,6 +15,8 @@ import logging
 import socket
 import time
 import os
+import html
+from xml.etree import ElementTree as ET
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -29,6 +31,8 @@ from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.ssdp import SSDP_IP_V4, SSDP_PORT
 
 logger = logging.getLogger(__name__)
+
+logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
 _HTTPAPI_PATH = "/httpapi.asp"
 _HTTP_TIMEOUT_S = 10
@@ -89,6 +93,35 @@ class _LocalAiohttpRequester:
 
     def __init__(self, session: aiohttp.ClientSession) -> None:
         self._session = session
+
+    @staticmethod
+    def _localname(tag: str) -> str:
+        return tag.split("}", 1)[-1] if "}" in tag else tag
+
+    @staticmethod
+    def _norm_lastchange(v: Any) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        if s.upper() in {"NONE", "UNKNOWN"}:
+            return None
+        return s
+
+    @staticmethod
+    def _coerce_volume_to_0_1(v: Any) -> float | None:
+        try:
+            f = float(v)
+        except Exception:
+            return None
+        # Many LinkPlay devices report 0..100.
+        if f > 1.0:
+            if f <= 100.0:
+                f = f / 100.0
+            else:
+                f = 1.0
+        return max(0.0, min(1.0, f))
 
     async def async_http_request(self, request, **_kwargs):
         method = getattr(request, "method", None)
@@ -183,7 +216,7 @@ class _LocalAiohttpRequester:
             hdict["CALLBACK"] = hdict.pop("Callback")
 
         # Debug
-        logger.warning("[speaker] %s(raw) %s headers=%s", method, url, hdict)
+        logger.debug("%s(raw) %s headers=%s", method, url, hdict)
 
         # Compose raw HTTP request (CRLF line endings)
         lines = [f"{method} {path} HTTP/1.1"]
@@ -491,6 +524,46 @@ class LinkPlaySpeaker:
             self._state.last_error = f"play_url: {err!r}"
             self._state.reachable = False
 
+    async def preset(self, n: int) -> None:
+        if self._session is None or not self._state.reachable:
+            return
+        try:
+            n_int = int(n)
+        except Exception:
+            return
+        if not (1 <= n_int <= 10):
+            return
+
+        # LinkPlay: MCUKeyShortClick:<n>
+        endpoint = f"{self._http_scheme}://{self._host}{_HTTPAPI_PATH}?command=MCUKeyShortClick:{n_int}"
+        try:
+            timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
+            async with self._session.get(endpoint, timeout=timeout, ssl=False) as resp:
+                await resp.read()
+        except Exception as err:  # noqa: BLE001
+            self._state.last_error = f"preset: {err!r}"
+            self._state.reachable = False
+
+
+    async def set_source(self, source: str) -> None:
+        if self._session is None or not self._state.reachable:
+            return
+        if not isinstance(source, str) or not source.strip():
+            return
+        src = source.strip()
+
+        # LinkPlay: setPlayerCmd:switchmode:<mode>
+        cmd = f"setPlayerCmd:switchmode:{src}"
+        cmd_q = quote(cmd, safe=":/?&=%")
+        endpoint = f"{self._http_scheme}://{self._host}{_HTTPAPI_PATH}?command={cmd_q}"
+        try:
+            timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
+            async with self._session.get(endpoint, timeout=timeout, ssl=False) as resp:
+                await resp.read()
+        except Exception as err:  # noqa: BLE001
+            self._state.last_error = f"set_source: {err!r}"
+            self._state.reachable = False
+
     # -------------------- Internal runner --------------------
 
     async def _runner(self) -> None:
@@ -504,10 +577,9 @@ class LinkPlaySpeaker:
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # noqa: BLE001
-                logger.exception("[speaker] runner exception")
+                logger.exception("runner exception")
                 self._state.last_error = f"runner: {err!r}"
-                # TEMP DEBUG: keep notify server up for manual reachability testing
-                # await self._disconnect_upnp()
+                await self._disconnect_upnp()
                 self._state.reachable = False
                 self._state.subscribed = False
                 await asyncio.sleep(backoff)
@@ -517,7 +589,7 @@ class LinkPlaySpeaker:
         await self._disconnect_upnp()
 
         # 1) Location: prefer explicit URL (no discovery), else try SSDP
-        location = (os.getenv("SPEAKER_LOCATION", "") or "").strip()
+        location = (self._location_override or "").strip()
         if not location:
             location = await self._ssdp_find_location_for_host(self._host)
 
@@ -575,7 +647,7 @@ class LinkPlaySpeaker:
         await self._notify_server.async_start_server()
 
         callback_url = getattr(self._notify_server, "callback_url", None)
-        logger.warning("[speaker] notify callback_url=%s (pinned port=%s)", callback_url, notify_port)
+        logger.debug("notify callback_url=%s (pinned port=%s)", callback_url, notify_port)
 
         # Event handler: your version requires requester
         try:
@@ -601,7 +673,7 @@ class LinkPlaySpeaker:
             await dmr.async_update()
             self._refresh_from_device(dmr)
 
-        logger.info("[speaker] subscribed via UPnP callback=%s location=%s", callback_url, location)
+        logger.info("subscribed via UPnP callback=%s location=%s", callback_url, location)
 
     async def _disconnect_upnp(self) -> None:
         d, self._device = self._device, None
@@ -632,28 +704,115 @@ class LinkPlaySpeaker:
     def _on_event(self, service: Any, state_variables: Any) -> None:
         self._state.last_event_ts = time.time()
 
+        # Service identifiers (best-effort)
+        svc_type = (getattr(service, "service_type", "") or "")
+        svc_id = (getattr(service, "service_id", "") or "")
+
+        # 1) First, try the cheap refresh from the profile object
         d = self._device
-        if d is None:
-            return
+        if d is not None:
+            try:
+                self._refresh_from_device(d)
+            except Exception as err:  # noqa: BLE001
+                self._state.last_error = f"on_event refresh: {err!r}"
 
-        try:
-            self._refresh_from_device(d)
-        except Exception as err:  # noqa: BLE001
-            self._state.last_error = f"on_event refresh: {err!r}"
-
+        # 2) Now parse state vars + LastChange for LinkPlay/WiiM quirks
         try:
             for sv in (state_variables or []):
                 name = getattr(sv, "name", None)
                 val = getattr(sv, "value", None)
-                if name == "PlaybackStorageMedium":
-                    self._playback_storage_medium = self._norm(val)
-                elif name == "AVTransportURI":
-                    self._avtransport_uri = self._norm(val)
-                elif name == "CurrentTrackURI":
-                    self._current_track_uri = self._norm(val)
-        except Exception:
-            pass
 
+                # Direct surfaced fields (some firmwares)
+                if name == "PlaybackStorageMedium":
+                    self._playback_storage_medium = self._norm_lastchange(val)
+                    continue
+                if name == "AVTransportURI":
+                    self._avtransport_uri = self._norm_lastchange(val)
+                    continue
+                if name == "CurrentTrackURI":
+                    self._current_track_uri = self._norm_lastchange(val)
+                    continue
+                if name == "TransportState":
+                    # Prefer explicit transport state if present
+                    self._state.transport = str(val).lower() if val is not None else self._state.transport
+                    continue
+                if name == "Mute":
+                    # Sometimes comes directly
+                    try:
+                        self._state.muted = bool(int(val))
+                    except Exception:
+                        pass
+                    continue
+                if name == "Volume":
+                    if (vv := self._coerce_volume_to_0_1(val)) is not None:
+                        self._state.volume = vv
+                    continue
+
+                # LastChange payloads: this is the important bit
+                if name == "LastChange" and isinstance(val, str) and val.strip():
+                    raw = val
+                    # HA note: don't over-unescape; one pass is usually right
+                    unescaped = html.unescape(raw)
+
+                    try:
+                        root = ET.fromstring(unescaped)
+                    except Exception:
+                        continue
+
+                    # AVTransport LastChange (source/URI/transport/meta)
+                    if "AVTransport" in svc_type or "AVTransport" in svc_id:
+                        for el in root.iter():
+                            ln = self._localname(el.tag)
+                            v2 = el.attrib.get("val") or el.text
+
+                            if ln == "PlaybackStorageMedium":
+                                self._playback_storage_medium = self._norm_lastchange(v2)
+                            elif ln == "AVTransportURI":
+                                self._avtransport_uri = self._norm_lastchange(v2)
+                            elif ln == "CurrentTrackURI":
+                                self._current_track_uri = self._norm_lastchange(v2)
+                            elif ln == "TransportState":
+                                if v2 is not None:
+                                    # normalize to our health strings
+                                    t = str(v2).strip().lower()
+                                    if t in ("playing", "transitioning"):
+                                        self._state.transport = "playing"
+                                    elif "pause" in t:
+                                        self._state.transport = "paused"
+                                    elif t == "stopped":
+                                        self._state.transport = "stopped"
+                                    else:
+                                        self._state.transport = t
+
+                    # RenderingControl LastChange (volume/mute often only here)
+                    if "RenderingControl" in svc_type or "RenderingControl" in svc_id:
+                        for el in root.iter():
+                            ln = self._localname(el.tag)
+                            if ln not in ("Volume", "Mute"):
+                                continue
+
+                            # Prefer Master channel when present
+                            channel = (el.attrib.get("channel") or el.attrib.get("Channel") or "").lower()
+                            if channel and channel != "master":
+                                continue
+
+                            v2 = el.attrib.get("val")
+                            if v2 is None:
+                                continue
+
+                            if ln == "Mute":
+                                try:
+                                    self._state.muted = bool(int(v2))
+                                except Exception:
+                                    pass
+                            elif ln == "Volume":
+                                if (vv := self._coerce_volume_to_0_1(v2)) is not None:
+                                    self._state.volume = vv
+
+        except Exception as err:  # noqa: BLE001
+            self._state.last_error = f"on_event parse: {err!r}"
+
+        # Recompute inferred source based on the raw fields we maintain
         self._state.source = self._infer_source()
 
     def _refresh_from_device(self, d: DmrDevice) -> None:

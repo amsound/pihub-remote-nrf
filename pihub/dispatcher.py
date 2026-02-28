@@ -459,6 +459,23 @@ class Dispatcher:
             if isinstance(url, str) and url:
                 await sp.play_url(url)
             return
+        if action == "preset":
+            n = a.get("n")
+            if isinstance(n, int):
+                await sp.preset(n)
+            else:
+                # allow strings too
+                try:
+                    await sp.preset(int(n))
+                except Exception:
+                    pass
+            return
+
+        if action == "set_source":
+            src = a.get("source")
+            if isinstance(src, str) and src:
+                await sp.set_source(src)
+            return
 
         # Repeatable actions (volume)
         if action == "volume_up":
