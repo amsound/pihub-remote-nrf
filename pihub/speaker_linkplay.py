@@ -387,16 +387,22 @@ class LinkPlaySpeaker:
         requester = _LocalAiohttpRequester(self._session)
 
         notify_server = None
+
+        # Many versions store a "source" tuple internally (host, port). Your error
+        # shows _source is currently an int, so we must force tuple form.
         try:
-            notify_server = AiohttpNotifyServer(
-                requester=requester,
-                listen_port=0,
-                listen_host=local_ip,
-                public_ip=local_ip,
-            )
+            # Newer-ish: explicit source kw
+            notify_server = AiohttpNotifyServer(requester, source=(local_ip, 0))
         except TypeError:
-            # Older signature variant
-            notify_server = AiohttpNotifyServer(requester, 0, local_ip)
+            try:
+                # Positional tuple
+                notify_server = AiohttpNotifyServer(requester, (local_ip, 0))
+            except TypeError:
+                try:
+                    # Older keyword names (some builds use listen instead of source)
+                    notify_server = AiohttpNotifyServer(requester, listen=(local_ip, 0))
+                except TypeError as exc:
+                    raise RuntimeError(f"Unable to construct AiohttpNotifyServer: {exc!r}") from exc
 
         self._notify_server = notify_server
         await self._notify_server.async_start_server()
