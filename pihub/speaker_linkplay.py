@@ -619,7 +619,7 @@ class LinkPlaySpeaker:
                 await self._connect_and_subscribe()
                 backoff = 1.0
 
-                stale_after_s = 90.0
+                stale_after_s = 15 * 60.0   # 15 minutes
                 grace_after_connect_s = 15.0
                 connected_at = time.time()
 
@@ -633,6 +633,7 @@ class LinkPlaySpeaker:
                         if now - connected_at < grace_after_connect_s:
                             continue
                         self._state.last_error = "watchdog: no events received after subscribe"
+                        logger.info("speaker watchdog reconnect: %s", self._state.last_error)
                         await self._disconnect_upnp()
                         self._state.reachable = False
                         self._state.subscribed = False
@@ -640,6 +641,7 @@ class LinkPlaySpeaker:
 
                     if now - float(last_evt) > stale_after_s:
                         self._state.last_error = f"watchdog: events stale ({now - float(last_evt):.1f}s)"
+                        logger.info("speaker watchdog reconnect: %s", self._state.last_error)
                         await self._disconnect_upnp()
                         self._state.reachable = False
                         self._state.subscribed = False
@@ -754,9 +756,6 @@ class LinkPlaySpeaker:
             logger.debug(msg, callback_url, location)
 
     async def _disconnect_upnp(self) -> None:
-        # Allow the next successful subscribe to log at INFO again.
-        self._logged_first_subscribe = False
-
         d, self._device = self._device, None
         if d is not None:
             with contextlib.suppress(Exception):
