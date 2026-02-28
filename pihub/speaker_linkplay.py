@@ -367,7 +367,9 @@ class LinkPlaySpeaker:
         await self._disconnect_upnp()
 
         # 1) Location: prefer explicit URL (no discovery), else try SSDP
-        location = self._location_override
+        # If you haven't added _location_override yet, keep your env read here.
+        import os
+        location = (os.getenv("SPEAKER_LOCATION", "") or "").strip()
         if not location:
             location = await self._ssdp_find_location_for_host(self._host)
 
@@ -386,20 +388,17 @@ class LinkPlaySpeaker:
         # 3) Start notify server + event handler
         requester = _LocalAiohttpRequester(self._session)
 
+        # IMPORTANT: your async_upnp_client build expects an internal "_source" that is
+        # subscriptable (tuple). Passing listen_host/listen_port in your build caused
+        # _source to become an int -> TypeError in async_start_server(). Force tuple form.
         notify_server = None
-
-        # Many versions store a "source" tuple internally (host, port). Your error
-        # shows _source is currently an int, so we must force tuple form.
         try:
-            # Newer-ish: explicit source kw
             notify_server = AiohttpNotifyServer(requester, source=(local_ip, 0))
         except TypeError:
             try:
-                # Positional tuple
                 notify_server = AiohttpNotifyServer(requester, (local_ip, 0))
             except TypeError:
                 try:
-                    # Older keyword names (some builds use listen instead of source)
                     notify_server = AiohttpNotifyServer(requester, listen=(local_ip, 0))
                 except TypeError as exc:
                     raise RuntimeError(f"Unable to construct AiohttpNotifyServer: {exc!r}") from exc
@@ -411,10 +410,11 @@ class LinkPlaySpeaker:
 
         self._event_handler = UpnpEventHandler(self._notify_server)
 
+        # 4) Build DMR device wrapper
         factory = UpnpFactory(requester)
         upnp_device = await factory.async_create_device(location)
         dmr = DmrDevice(upnp_device, self._event_handler)
-        dmr.on_event = self._on_event  # IMPORTANT: enables push updates
+        dmr.on_event = self._on_event  # ensure push updates
 
         # 5) Subscribe (auto-renew)
         await dmr.async_subscribe_services(auto_resubscribe=True)
