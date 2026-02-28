@@ -94,35 +94,6 @@ class _LocalAiohttpRequester:
     def __init__(self, session: aiohttp.ClientSession) -> None:
         self._session = session
 
-    @staticmethod
-    def _localname(tag: str) -> str:
-        return tag.split("}", 1)[-1] if "}" in tag else tag
-
-    @staticmethod
-    def _norm_lastchange(v: Any) -> str | None:
-        if v is None:
-            return None
-        s = str(v).strip()
-        if not s:
-            return None
-        if s.upper() in {"NONE", "UNKNOWN"}:
-            return None
-        return s
-
-    @staticmethod
-    def _coerce_volume_to_0_1(v: Any) -> float | None:
-        try:
-            f = float(v)
-        except Exception:
-            return None
-        # Many LinkPlay devices report 0..100.
-        if f > 1.0:
-            if f <= 100.0:
-                f = f / 100.0
-            else:
-                f = 1.0
-        return max(0.0, min(1.0, f))
-
     async def async_http_request(self, request, **_kwargs):
         method = getattr(request, "method", None)
         url = getattr(request, "url", None)
@@ -370,6 +341,35 @@ class LinkPlaySpeaker:
     @property
     def state(self) -> SpeakerState:
         return self._state
+    
+    @staticmethod
+    def _localname(tag: str) -> str:
+        return tag.split("}", 1)[-1] if "}" in tag else tag
+
+    @staticmethod
+    def _norm_lastchange(v: Any) -> str | None:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        if s.upper() in {"NONE", "UNKNOWN"}:
+            return None
+        return s
+
+    @staticmethod
+    def _coerce_volume_to_0_1(v: Any) -> float | None:
+        try:
+            f = float(v)
+        except Exception:
+            return None
+        # Many LinkPlay devices report 0..100.
+        if f > 1.0:
+            if f <= 100.0:
+                f = f / 100.0
+            else:
+                f = 1.0
+        return max(0.0, min(1.0, f))
 
     def snapshot(self) -> dict[str, Any]:
         s = self._state
