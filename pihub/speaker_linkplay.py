@@ -1,20 +1,20 @@
 """
 LinkPlay/WiiM speaker controller.
-
-Option B:
-- UPnP (GENA NOTIFY / LastChange) for state updates (push)
-- UPnP actions for transport + volume/mute
-- LinkPlay HTTPS httpapi.asp only for "play URL" (self-signed cert => ssl=False)
 """
+from async_upnp_client.aiohttp import AiohttpRequester
+from async_upnp_client.client_factory import UpnpFactory
+from async_upnp_client.event_handler import UpnpEventHandler
+from async_upnp_client.exceptions import UpnpError
+from async_upnp_client.profiles.dlna import DmrDevice, TransportState
+from async_upnp_client.ssdp import SSDP_IP_V4, SSDP_PORT
 
-from __future__ import annotations
-
-import asyncio
-import contextlib
-import logging
-import socket
-import time
-from dataclasses import dataclass
+# async_upnp_client moved AiohttpNotifyServer between versions.
+try:
+    # Newer/most common location
+    from async_upnp_client.aiohttp import AiohttpNotifyServer  # type: ignore
+except Exception:  # pragma: no cover
+    # Older fallback
+    from async_upnp_client.event_handler import AiohttpNotifyServer  # type: ignore
 from typing import Any, Optional
 from urllib.parse import quote
 
