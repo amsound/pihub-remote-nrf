@@ -353,6 +353,7 @@ class LinkPlaySpeaker:
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # noqa: BLE001
+                logger.exception("[speaker] runner exception")  # <-- prints full traceback
                 self._state.last_error = f"runner: {err!r}"
                 await self._disconnect_upnp()
                 self._state.reachable = False
