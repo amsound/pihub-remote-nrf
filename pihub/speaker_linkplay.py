@@ -67,60 +67,80 @@ class SpeakerState:
     last_event_ts: float | None = None
 
 
+import aiohttp
+
+try:
+    # async-upnp-client provides this in recent versions
+    from async_upnp_client.const import HttpResponse  # type: ignore
+except Exception:
+    # fallback for older builds
+    class HttpResponse:  # type: ignore
+        def __init__(self, status_code: int, headers: dict[str, str], body: str | bytes | None):
+            self.status_code = status_code
+            self.headers = headers
+            self.body = body
+
+
 class _LocalAiohttpRequester:
     """
-    Minimal requester for async-upnp-client across 0.4x APIs.
+    Requester compatible with async-upnp-client 0.4x.
 
-    Some versions call:
+    async_upnp_client calls:
       await requester.async_http_request(request_obj)
-
-    Others call:
-      await requester.async_http_request(method, url, headers=..., body=..., timeout=...)
-
-    We support both.
+    and expects an HttpResponse-like return with .body/.headers/.status_code.
     """
 
     def __init__(self, session: aiohttp.ClientSession) -> None:
         self._session = session
 
-    async def async_http_request(self, *args, **kwargs):
-        # Case A: async_http_request(request_obj)
-        if len(args) == 1 and not kwargs:
-            request = args[0]
-            method = getattr(request, "method", None)
-            url = getattr(request, "url", None)
-            headers = getattr(request, "headers", None)
-            body = getattr(request, "body", None)
-            timeout = getattr(request, "timeout", None)
+    async def async_http_request(self, request, **_kwargs):
+        method = getattr(request, "method", None)
+        url = getattr(request, "url", None)
+        headers = getattr(request, "headers", None) or {}
+        body = getattr(request, "body", None)
+        timeout = getattr(request, "timeout", None)
 
-            if not isinstance(method, str) or not isinstance(url, str):
-                raise TypeError(f"Unsupported request object: {request!r}")
+        if not isinstance(method, str) or not isinstance(url, str):
+            raise TypeError(f"Unsupported request object: {request!r}")
 
-            return await self._do_request(
-                method=method,
-                url=url,
-                headers=headers,
-                body=body,
-                timeout=timeout,
-            )
+        # Timeout can be float seconds or timedelta-like depending on version
+        total = 10.0
+        if timeout is not None:
+            try:
+                total = float(timeout)
+            except Exception:
+                try:
+                    total = float(timeout.total_seconds())
+                except Exception:
+                    total = 10.0
 
-        # Case B: async_http_request(method, url, ...)
-        if len(args) >= 2:
-            method = args[0]
-            url = args[1]
-            headers = kwargs.get("headers", None)
-            body = kwargs.get("body", None)
-            timeout = kwargs.get("timeout", None)
-            return await self._do_request(
-                method=method,
-                url=url,
-                headers=headers,
-                body=body,
-                timeout=timeout,
-                ssl=kwargs.get("ssl", False),
-            )
+        # For LAN + some self-signed HTTPS URLs, disable verification when https.
+        ssl = False if url.startswith("https://") else None
 
-        raise TypeError(f"Unsupported async_http_request call: args={args!r} kwargs={kwargs!r}")
+        async with self._session.request(
+            method=method,
+            url=url,
+            headers=dict(headers),
+            data=body,
+            timeout=aiohttp.ClientTimeout(total=total),
+            ssl=ssl,
+        ) as resp:
+            raw = await resp.read()
+            hdrs = {k: v for k, v in resp.headers.items()}
+
+            # Most async-upnp-client paths treat .body as *text*
+            # (e.g. rstrip on strings). Decode as utf-8 best-effort.
+            try:
+                text_body: str = raw.decode("utf-8", errors="ignore")
+            except Exception:
+                text_body = ""
+
+            # Construct expected response object
+            try:
+                return HttpResponse(status_code=resp.status, headers=hdrs, body=text_body)  # type: ignore
+            except TypeError:
+                # Some versions use positional ctor
+                return HttpResponse(resp.status, hdrs, text_body)  # type: ignore
 
     async def _do_request(
         self,
