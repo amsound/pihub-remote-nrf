@@ -81,11 +81,10 @@ class _LocalAiohttpRequester:
     """
     Requester compatible with async-upnp-client 0.4x.
 
-    async_upnp_client calls:
-      await requester.async_http_request(request_obj)
-    and expects an HttpResponse-like return with .body/.headers/.status_code.
-
-    Goal: make SUBSCRIBE requests match a known-good curl request.
+    For normal HTTP (GET/POST etc) we use aiohttp.
+    For SUBSCRIBE/UNSUBSCRIBE we send a raw HTTP/1.1 request because some
+    LinkPlay/WiiM stacks disconnect on aiohttp’s wire format even when the
+    same headers work with curl.
     """
 
     def __init__(self, session: aiohttp.ClientSession) -> None:
@@ -106,7 +105,7 @@ class _LocalAiohttpRequester:
 
         m_upper = method.upper()
 
-        # Normalize timeout for aiohttp request() itself (not the UPnP TIMEOUT header)
+        # Normalize timeout for client request itself
         total = 10.0
         if timeout is not None:
             try:
@@ -117,46 +116,28 @@ class _LocalAiohttpRequester:
                 except Exception:
                     total = 10.0
 
-        ssl = False if url.startswith("https://") else None
-
-        # Make SUBSCRIBE/UNSUBSCRIBE match curl behavior that succeeded
+        # ---- SPECIAL CASE: SUBSCRIBE/UNSUBSCRIBE via raw socket (curl-style) ----
         if m_upper in {"SUBSCRIBE", "UNSUBSCRIBE"}:
-            # Preserve header structure if possible, but ensure required headers exist.
-            try:
-                if hasattr(headers, "add"):
-                    headers.add("User-Agent", "HomeAssistant/async_upnp_client")
-                    headers.add("TIMEOUT", "Second-1800")
-                    headers.add("Connection", "close")
-                elif isinstance(headers, dict):
-                    headers.setdefault("User-Agent", "HomeAssistant/async_upnp_client")
-                    headers["TIMEOUT"] = "Second-1800"
-                    headers.setdefault("Connection", "close")
-                else:
-                    tmp = dict(headers)
-                    tmp.setdefault("User-Agent", "HomeAssistant/async_upnp_client")
-                    tmp["TIMEOUT"] = "Second-1800"
-                    tmp.setdefault("Connection", "close")
-                    headers = tmp
-            except Exception:
-                pass
+            return await self._raw_subscribe_like_curl(
+                method=m_upper,
+                url=url,
+                headers=headers,
+                timeout_s=total,
+            )
 
-            # Debug view
-            try:
-                logger.warning("[speaker] %s url=%s headers=%s", m_upper, url, dict(headers))
-            except Exception:
-                logger.warning("[speaker] %s url=%s (headers not dictable)", m_upper, url)
+        # ---- Default: aiohttp for everything else ----
+        ssl = False if url.startswith("https://") else None
 
         async with self._session.request(
             method=method,
             url=url,
-            headers=headers,   # IMPORTANT: don't coerce to dict
+            headers=headers,
             data=body,
             timeout=aiohttp.ClientTimeout(total=total),
             ssl=ssl,
         ) as resp:
             raw = await resp.read()
             hdrs = {k: v for k, v in resp.headers.items()}
-
             try:
                 text_body: str = raw.decode("utf-8", errors="ignore")
             except Exception:
@@ -166,6 +147,115 @@ class _LocalAiohttpRequester:
                 return HttpResponse(status_code=resp.status, headers=hdrs, body=text_body)  # type: ignore
             except TypeError:
                 return HttpResponse(resp.status, hdrs, text_body)  # type: ignore
+
+    async def _raw_subscribe_like_curl(self, *, method: str, url: str, headers, timeout_s: float):
+        """
+        Send SUBSCRIBE/UNSUBSCRIBE exactly like curl:
+          SUBSCRIBE /path HTTP/1.1
+          Host: ip:port
+          ...
+
+        Returns HttpResponse(status_code, headers, body_text).
+        """
+        from urllib.parse import urlsplit
+
+        u = urlsplit(url)
+        host = u.hostname or ""
+        port = u.port or (443 if u.scheme == "https" else 80)
+        path = (u.path or "/") + (("?" + u.query) if u.query else "")
+
+        # Build a plain dict view for manipulation/logging without destroying original structure
+        try:
+            hdict = dict(headers)
+        except Exception:
+            hdict = {}
+
+        # Force the “known good” bits (matching your curl)
+        hdict.setdefault("Host", f"{host}:{port}")
+        hdict.setdefault("User-Agent", "HomeAssistant/async_upnp_client")
+        hdict["TIMEOUT"] = "Second-1800"
+        hdict.setdefault("Connection", "close")
+
+        # IMPORTANT: use CALLBACK uppercase (matching the curl that succeeded)
+        if "Callback" in hdict and "CALLBACK" not in hdict:
+            hdict["CALLBACK"] = hdict.pop("Callback")
+
+        # Debug
+        logger.warning("[speaker] %s(raw) %s headers=%s", method, url, hdict)
+
+        # Compose raw HTTP request (CRLF line endings)
+        lines = [f"{method} {path} HTTP/1.1"]
+        for k, v in hdict.items():
+            # Skip any None values
+            if v is None:
+                continue
+            lines.append(f"{k}: {v}")
+        lines.append("")  # blank line
+        lines.append("")  # end
+        raw_req = "\r\n".join(lines).encode("utf-8")
+
+        reader = writer = None
+        try:
+            # LinkPlay UPnP services are http; but respect scheme just in case
+            if u.scheme == "https":
+                import ssl as _ssl
+                ctx = _ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = _ssl.CERT_NONE
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port, ssl=ctx),
+                    timeout=timeout_s,
+                )
+            else:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port),
+                    timeout=timeout_s,
+                )
+
+            writer.write(raw_req)
+            await writer.drain()
+
+            # Read response headers
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout_s)
+                if not chunk:
+                    break
+                data += chunk
+                if len(data) > 65536:
+                    break
+
+            head, _, _rest = data.partition(b"\r\n\r\n")
+            text = head.decode("iso-8859-1", errors="ignore")
+            lines = text.split("\r\n")
+            status_line = lines[0] if lines else ""
+            # Parse status
+            status_code = 0
+            try:
+                parts = status_line.split()
+                if len(parts) >= 2:
+                    status_code = int(parts[1])
+            except Exception:
+                status_code = 0
+
+            resp_headers: dict[str, str] = {}
+            for ln in lines[1:]:
+                if ":" not in ln:
+                    continue
+                k, v = ln.split(":", 1)
+                resp_headers[k.strip()] = v.strip()
+
+            try:
+                return HttpResponse(status_code=status_code, headers=resp_headers, body="")  # type: ignore
+            except TypeError:
+                return HttpResponse(status_code, resp_headers, "")  # type: ignore
+
+        finally:
+            if writer is not None:
+                with contextlib.suppress(Exception):
+                    writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
 
 
 class LinkPlaySpeaker:
