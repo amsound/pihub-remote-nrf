@@ -439,7 +439,6 @@ class LinkPlaySpeaker:
 
         # 1) Location: prefer explicit URL (no discovery), else try SSDP
         # If you haven't added _location_override yet, keep your env read here.
-        import os
         location = (os.getenv("SPEAKER_LOCATION", "") or "").strip()
         if not location:
             location = await self._ssdp_find_location_for_host(self._host)
@@ -451,7 +450,11 @@ class LinkPlaySpeaker:
             return
 
         # 2) Determine local IP that can reach speaker, for callback URL
-        local_ip = self._get_local_ip_for_peer(self._host)
+        cb_ip = (os.getenv("SPEAKER_CALLBACK_IP", "") or "").strip()
+        if cb_ip:
+            local_ip = cb_ip
+        else:
+            local_ip = self._get_local_ip_for_peer(self._host)
 
         if self._session is None:
             raise RuntimeError("speaker aiohttp session not initialized")
