@@ -16,7 +16,7 @@ import socket
 import time
 import os
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 
 import aiohttp
@@ -67,13 +67,9 @@ class SpeakerState:
     last_event_ts: float | None = None
 
 
-import aiohttp
-
 try:
-    # async-upnp-client provides this in recent versions
     from async_upnp_client.const import HttpResponse  # type: ignore
 except Exception:
-    # fallback for older builds
     class HttpResponse:  # type: ignore
         def __init__(self, status_code: int, headers: dict[str, str], body: str | bytes | None):
             self.status_code = status_code
@@ -103,6 +99,20 @@ class _LocalAiohttpRequester:
         if not isinstance(method, str) or not isinstance(url, str):
             raise TypeError(f"Unsupported request object: {request!r}")
 
+        # SUBSCRIBE can be very fragile on LinkPlay stacks; keep it simple.
+        m_upper = method.upper()
+
+        # Force connection close on SUBSCRIBE/UNSUBSCRIBE (fixes many embedded stacks).
+        if m_upper in {"SUBSCRIBE", "UNSUBSCRIBE"}:
+            headers = dict(headers or {})
+            headers.setdefault("Connection", "close")
+
+            # Debug: show what we're about to send
+            try:
+                logger.warning("[speaker] %s url=%s headers=%s", m_upper, url, headers)
+            except Exception:
+                pass
+
         # Timeout can be float seconds or timedelta-like depending on version
         total = 10.0
         if timeout is not None:
@@ -128,59 +138,16 @@ class _LocalAiohttpRequester:
             raw = await resp.read()
             hdrs = {k: v for k, v in resp.headers.items()}
 
-            # Most async-upnp-client paths treat .body as *text*
-            # (e.g. rstrip on strings). Decode as utf-8 best-effort.
+            # async-upnp-client expects .body to be text for XML parsing/strip
             try:
                 text_body: str = raw.decode("utf-8", errors="ignore")
             except Exception:
                 text_body = ""
 
-            # Construct expected response object
             try:
                 return HttpResponse(status_code=resp.status, headers=hdrs, body=text_body)  # type: ignore
             except TypeError:
-                # Some versions use positional ctor
                 return HttpResponse(resp.status, hdrs, text_body)  # type: ignore
-
-    async def _do_request(
-        self,
-        *,
-        method: str,
-        url: str,
-        headers=None,
-        body=None,
-        timeout=None,
-        ssl=False,
-    ):
-        # LinkPlay devices often have self-signed HTTPS (and some UPnP URLs can be https-ish).
-        # For LAN usage, disable verification.
-        ssl = False if url.startswith("https://") else ssl
-
-        req_headers = dict(headers or {})
-        data = body
-
-        # timeout may be None or a timedelta-like; normalize to seconds
-        total = 10.0
-        if timeout is not None:
-            try:
-                total = float(timeout)
-            except Exception:
-                try:
-                    total = float(getattr(timeout, "total_seconds")())
-                except Exception:
-                    total = 10.0
-
-        async with self._session.request(
-            method=method,
-            url=url,
-            headers=req_headers,
-            data=data,
-            timeout=aiohttp.ClientTimeout(total=total),
-            ssl=ssl,
-        ) as resp:
-            raw = await resp.read()
-            hdrs = {k: v for k, v in resp.headers.items()}
-            return resp.status, hdrs, raw
 
 
 class LinkPlaySpeaker:
@@ -426,7 +393,7 @@ class LinkPlaySpeaker:
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # noqa: BLE001
-                logger.exception("[speaker] runner exception")  # <-- prints full traceback
+                logger.exception("[speaker] runner exception")
                 self._state.last_error = f"runner: {err!r}"
                 await self._disconnect_upnp()
                 self._state.reachable = False
@@ -438,7 +405,6 @@ class LinkPlaySpeaker:
         await self._disconnect_upnp()
 
         # 1) Location: prefer explicit URL (no discovery), else try SSDP
-        # If you haven't added _location_override yet, keep your env read here.
         location = (os.getenv("SPEAKER_LOCATION", "") or "").strip()
         if not location:
             location = await self._ssdp_find_location_for_host(self._host)
@@ -449,7 +415,7 @@ class LinkPlaySpeaker:
             self._state.last_error = "ssdp: no LOCATION response (set SPEAKER_LOCATION to bypass discovery)"
             return
 
-        # 2) Determine local IP that can reach speaker, for callback URL
+        # 2) Determine callback/bind IP (keep your env override)
         cb_ip = (os.getenv("SPEAKER_CALLBACK_IP", "") or "").strip()
         if cb_ip:
             local_ip = cb_ip
@@ -459,22 +425,33 @@ class LinkPlaySpeaker:
         if self._session is None:
             raise RuntimeError("speaker aiohttp session not initialized")
 
-        # 3) Start notify server + event handler
         requester = _LocalAiohttpRequester(self._session)
 
-        # Notify server: force tuple source form for your build
+        # Notify server: try to force callback host/IP to be routable.
         notify_server = None
-        try:
-            notify_server = AiohttpNotifyServer(requester, source=(local_ip, 0))
-        except TypeError:
+        last_exc: Exception | None = None
+        for ctor in (
+            lambda: AiohttpNotifyServer(requester, source=(local_ip, 0), public_ip=local_ip),
+            lambda: AiohttpNotifyServer(requester, source=(local_ip, 0), callback_host=local_ip),
+            lambda: AiohttpNotifyServer(requester, source=(local_ip, 0)),
+            lambda: AiohttpNotifyServer(requester, (local_ip, 0), public_ip=local_ip),
+            lambda: AiohttpNotifyServer(requester, (local_ip, 0)),
+            lambda: AiohttpNotifyServer(requester, listen=(local_ip, 0)),
+        ):
             try:
-                notify_server = AiohttpNotifyServer(requester, (local_ip, 0))
-            except TypeError:
-                notify_server = AiohttpNotifyServer(requester, listen=(local_ip, 0))
+                notify_server = ctor()
+                break
+            except TypeError as exc:
+                last_exc = exc
+                continue
+
+        if notify_server is None:
+            raise RuntimeError(f"Unable to construct AiohttpNotifyServer: {last_exc!r}")
 
         self._notify_server = notify_server
         await self._notify_server.async_start_server()
         callback_url = getattr(self._notify_server, "callback_url", None)
+        logger.warning("[speaker] notify callback_url=%s", callback_url)
 
         # Event handler: your version requires requester
         try:
@@ -487,7 +464,7 @@ class LinkPlaySpeaker:
         dmr = DmrDevice(upnp_device, self._event_handler)
         dmr.on_event = self._on_event
 
-        # 5) Subscribe (auto-renew)
+        # Subscribe (auto-renew)
         await dmr.async_subscribe_services(auto_resubscribe=True)
 
         self._device = dmr
@@ -649,10 +626,6 @@ class LinkPlaySpeaker:
         return await self._ssdp_msearch_once(host, st="ssdp:all", mx=2, timeout=2.5)
 
     async def _ssdp_msearch_once(self, host: str, *, st: str, mx: int, timeout: float) -> str | None:
-        """
-        uvloop does not implement loop.sock_sendto/sock_recvfrom for UDP sockets
-        (raises NotImplementedError). Use create_datagram_endpoint instead.
-        """
         msg = (
             "M-SEARCH * HTTP/1.1\r\n"
             f"HOST: {SSDP_IP_V4}:{SSDP_PORT}\r\n"
@@ -668,11 +641,9 @@ class LinkPlaySpeaker:
 
         class _SSDPProto(asyncio.DatagramProtocol):
             def connection_made(self, transport):
-                # send immediately on bind
                 try:
                     transport.sendto(msg, (SSDP_IP_V4, SSDP_PORT))
                 except Exception:
-                    # ignore send issues; we'll just time out
                     pass
 
             def datagram_received(self, data: bytes, addr):
@@ -690,24 +661,17 @@ class LinkPlaySpeaker:
                     found_location = loc
                     done.set()
 
-            def error_received(self, exc):
-                # ignore and let timeout handle it
-                pass
-
         transport = None
         try:
-            # Bind to ephemeral port; allow broadcast; TTL is handled by stack.
             transport, _proto = await loop.create_datagram_endpoint(
                 lambda: _SSDPProto(),
                 local_addr=("0.0.0.0", 0),
                 allow_broadcast=True,
             )
-
             try:
                 await asyncio.wait_for(done.wait(), timeout=timeout)
             except asyncio.TimeoutError:
                 pass
-
         finally:
             if transport is not None:
                 transport.close()
