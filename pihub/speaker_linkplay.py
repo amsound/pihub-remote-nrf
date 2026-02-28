@@ -14,6 +14,7 @@ import contextlib
 import logging
 import socket
 import time
+import os
 from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import quote
@@ -120,6 +121,7 @@ class LinkPlaySpeaker:
         volume_step_pct: int = 2,
     ) -> None:
         self._host = host.strip()
+        self._location_override = (os.getenv("SPEAKER_LOCATION", "") or "").strip()  # optional full URL
         self._http_scheme = (http_scheme or "https").strip().lower()
         if self._http_scheme not in {"http", "https"}:
             self._http_scheme = "https"
@@ -364,12 +366,15 @@ class LinkPlaySpeaker:
     async def _connect_and_subscribe(self) -> None:
         await self._disconnect_upnp()
 
-        # 1) SSDP: find LOCATION from the specific speaker host
-        location = await self._ssdp_find_location_for_host(self._host)
+        # 1) Location: prefer explicit URL (no discovery), else try SSDP
+        location = self._location_override
+        if not location:
+            location = await self._ssdp_find_location_for_host(self._host)
+
         if not location:
             self._state.reachable = False
             self._state.subscribed = False
-            self._state.last_error = "ssdp: no LOCATION response"
+            self._state.last_error = "ssdp: no LOCATION response (set SPEAKER_LOCATION to bypass discovery)"
             return
 
         # 2) Determine local IP that can reach speaker, for callback URL
