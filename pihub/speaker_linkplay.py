@@ -326,6 +326,23 @@ class LinkPlaySpeaker:
         self._http_scheme = (http_scheme or "https").strip().lower()
         if self._http_scheme not in {"http", "https"}:
             self._http_scheme = "https"
+        # Optional polling (off by default). Enable with SPEAKER_POLL_AVAILABILITY=1/true/yes/on
+        self._poll_enabled = (os.getenv("SPEAKER_POLL_AVAILABILITY", "") or "").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+
+        # Poll interval: default 5s when polling is enabled, override with SPEAKER_POLL_INTERVAL
+        poll_interval_raw = (os.getenv("SPEAKER_POLL_INTERVAL", "") or "").strip()
+        if poll_interval_raw:
+            try:
+                self._poll_interval_s = float(poll_interval_raw)
+            except Exception:
+                self._poll_interval_s = 5.0
+        else:
+            self._poll_interval_s = 5.0
+
+        # Clamp to something sane
+        self._poll_interval_s = max(1.0, self._poll_interval_s)
 
         # MUST be 2%: hard-force.
         self._step = 0.02
@@ -633,21 +650,47 @@ class LinkPlaySpeaker:
                 await self._connect_and_subscribe()
                 backoff = 1.0
 
-                stale_after_s = 15 * 60.0   # 15 minutes
-                grace_after_connect_s = 15.0
                 connected_at = time.time()
+                next_poll = connected_at + self._poll_interval_s
+
+                stale_after_s = 15 * 60.0
+                grace_after_connect_s = 15.0
 
                 while not self._stop.is_set() and self._device is not None:
-                    await asyncio.sleep(1.0)
-
-                    last_evt = self._state.last_event_ts
+                    await asyncio.sleep(0.25)
                     now = time.time()
 
+                    # Optional HA-style poll: keep state fresh even if NOTIFYs don't arrive
+                    if self._poll_enabled and now >= next_poll:
+                        next_poll = now + self._poll_interval_s
+                        d = self._device
+                        if d is not None:
+                            try:
+                                # HA uses async_update(do_ping=...) when poll_availability is enabled  [oai_citation:2‡media_player.py](sediment://file_000000000c9c7243a430a5d2f735f7d6)
+                                try:
+                                    await d.async_update(do_ping=True)  # type: ignore[arg-type]
+                                except TypeError:
+                                    await d.async_update()
+                                self._refresh_from_device(d)
+                                self._state.last_error = None
+                            except Exception as err:  # noqa: BLE001
+                                self._state.last_error = f"poll_update: {err!r}"
+                                # If polling fails consistently, reconnect on next outer loop
+                                await self._disconnect_upnp()
+                                self._state.reachable = False
+                                self._state.subscribed = False
+                                break
+
+                    # If polling is enabled, don’t force reconnect just because events are quiet.
+                    if self._poll_enabled:
+                        continue
+
+                    # Event-driven watchdog (only when polling is disabled)
+                    last_evt = self._state.last_event_ts
                     if last_evt is None:
                         if now - connected_at < grace_after_connect_s:
                             continue
                         self._state.last_error = "watchdog: no events received after subscribe"
-                        logger.info("speaker watchdog reconnect: %s", self._state.last_error)
                         await self._disconnect_upnp()
                         self._state.reachable = False
                         self._state.subscribed = False
@@ -655,7 +698,6 @@ class LinkPlaySpeaker:
 
                     if now - float(last_evt) > stale_after_s:
                         self._state.last_error = f"watchdog: events stale ({now - float(last_evt):.1f}s)"
-                        logger.info("speaker watchdog reconnect: %s", self._state.last_error)
                         await self._disconnect_upnp()
                         self._state.reachable = False
                         self._state.subscribed = False
