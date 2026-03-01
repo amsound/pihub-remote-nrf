@@ -101,7 +101,7 @@ class TvController:
 
         # ---- Log once on boot, then only on committed transitions ----
         if prev_committed is None or self._dmr_cached != prev_committed:
-            logger.info("tv %s (dmr %s)", "on" if up else "off", "up" if up else "down")
+            logger.debug("tv %s (dmr %s)", "on" if up else "off", "up" if up else "down")
 
         now = asyncio.get_running_loop().time()
 

@@ -32,7 +32,7 @@ from async_upnp_client.ssdp import SSDP_IP_V4, SSDP_PORT
 
 logger = logging.getLogger(__name__)
 
-logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+logging.getLogger("aiohttp.access").setLevel(logging.INFO)
 
 _HTTPAPI_PATH = "/httpapi.asp"
 _HTTP_TIMEOUT_S = 10
@@ -216,9 +216,17 @@ class _LocalAiohttpRequester:
         hdict["TIMEOUT"] = "Second-1800"
         hdict.setdefault("Connection", "close")
 
-        # IMPORTANT: use CALLBACK uppercase (matching the curl that succeeded)
-        if "Callback" in hdict and "CALLBACK" not in hdict:
-            hdict["CALLBACK"] = hdict.pop("Callback")
+        # Ensure CALLBACK is in <...> form (GENA requires angle-bracket URL list)
+        cb = hdict.get("CALLBACK")
+        if isinstance(cb, str) and cb:
+            cb_s = cb.strip()
+            if not cb_s.startswith("<"):
+                hdict["CALLBACK"] = f"<{cb_s}>"
+
+        # Ensure initial SUBSCRIBE has NT: upnp:event
+        # (renewals use SID instead; async_upnp_client usually provides the right set, but be defensive)
+        if method.upper() == "SUBSCRIBE" and "sid" not in {k.lower() for k in hdict.keys()}:
+            hdict.setdefault("NT", "upnp:event")
 
         # Debug
         logger.debug("%s(raw) %s headers=%s", method, url, hdict)
@@ -285,6 +293,11 @@ class _LocalAiohttpRequester:
                 k, v = ln.split(":", 1)
                 # Normalize to lowercase keys for async-upnp-client lookups
                 resp_headers[k.strip().lower()] = v.strip()
+
+                logger.info("SUBSCRIBE resp: status=%s sid=%s timeout=%s",
+                            status_code,
+                            resp_headers.get("sid"),
+                            resp_headers.get("timeout"))
 
             try:
                 return HttpResponse(status_code=status_code, headers=resp_headers, body="")  # type: ignore
