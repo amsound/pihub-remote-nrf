@@ -367,6 +367,14 @@ class LinkPlaySpeaker:
 
         self._logged_first_subscribe = False
 
+        logger.info(
+            "speaker polling: enabled=%s interval_s=%s (env SPEAKER_POLL_AVAILABILITY=%r SPEAKER_POLL_INTERVAL=%r)",
+            self._poll_enabled,
+            self._poll_interval_s,
+            os.getenv("SPEAKER_POLL_AVAILABILITY"),
+            os.getenv("SPEAKER_POLL_INTERVAL"),
+        )
+
     @property
     def enabled(self) -> bool:
         return bool(self._host)
