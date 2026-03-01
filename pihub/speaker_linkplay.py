@@ -71,6 +71,8 @@ class SpeakerState:
     last_event_ts: float | None = None
 
 
+    last_poll_ts: float | None = None
+    last_update_ts: float | None = None
 try:
     from async_upnp_client.const import HttpResponse  # type: ignore
 except Exception:
@@ -420,6 +422,11 @@ class LinkPlaySpeaker:
                 return None
             return int(round(max(0.0, min(1.0, v)) * 100.0))
 
+        def _iso(ts: float | None) -> str | None:
+            if not ts:
+                return None
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
+
         return {
             "reachable": s.reachable,
             "subscribed": s.subscribed,
@@ -432,13 +439,21 @@ class LinkPlaySpeaker:
             "title": s.title,
             "artist": s.artist,
             "album": s.album,
+
+            # Push (NOTIFY) freshness
             "last_event_ts": s.last_event_ts,
-            # Human-friendly extras
             "event_age_s": int(time.time() - float(s.last_event_ts)) if s.last_event_ts else None,
-            "last_event_iso": (
-                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(s.last_event_ts)))
-                if s.last_event_ts else None
-            ),
+            "last_event_iso": _iso(s.last_event_ts),
+
+            # Pull (poll/prime) freshness
+            "last_poll_ts": s.last_poll_ts,
+            "poll_age_s": int(time.time() - float(s.last_poll_ts)) if s.last_poll_ts else None,
+            "last_poll_iso": _iso(s.last_poll_ts),
+
+            # Overall "last time we changed our state" (either push or pull)
+            "last_update_ts": s.last_update_ts,
+            "update_age_s": int(time.time() - float(s.last_update_ts)) if s.last_update_ts else None,
+            "last_update_iso": _iso(s.last_update_ts),
         }
 
     async def start(self) -> None:
@@ -681,6 +696,9 @@ class LinkPlaySpeaker:
                                     await d.async_update()
                                 self._refresh_from_device(d)
                                 self._state.last_error = None
+                                now_ts = time.time()
+                                self._state.last_poll_ts = now_ts
+                                self._state.last_update_ts = now_ts
                             except Exception as err:  # noqa: BLE001
                                 self._state.last_error = f"poll_update: {err!r}"
                                 # If polling fails consistently, reconnect on next outer loop
@@ -809,6 +827,9 @@ class LinkPlaySpeaker:
         try:
             await dmr.async_update()
             self._refresh_from_device(dmr)
+            now_ts = time.time()
+            self._state.last_poll_ts = now_ts
+            self._state.last_update_ts = now_ts
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"prime_update: {err!r}"
 
@@ -853,6 +874,7 @@ class LinkPlaySpeaker:
                     len(state_variables or []))
 
         self._state.last_event_ts = time.time()
+        self._state.last_update_ts = self._state.last_event_ts
 
         # Service identifiers (best-effort)
         svc_type = (getattr(service, "service_type", "") or "")
