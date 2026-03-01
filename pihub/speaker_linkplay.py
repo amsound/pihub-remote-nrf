@@ -623,20 +623,38 @@ class LinkPlaySpeaker:
             await self._mark_unreachable_maybe(err)
 
     async def stop_playback(self) -> None:
+        """Stop playback via UPnP AVTransport Stop (SOAP only)."""
         dev = self._device
         if dev is None:
             return
         try:
-            await dev.async_stop()
-            self._state.transport = "stopped"
-            try:
-                self._state.last_update_ts = time.time()
-            except Exception:
-                pass
+            await self._async_avtransport_stop()
+            # Verify/refresh state
+            await asyncio.sleep(0.15)
+            st3 = await self._async_get_transport_state()
+            if st3:
+                if st3 in {"playing", "transitioning"}:
+                    self._state.transport = "playing"
+                elif "pause" in st3:
+                    self._state.transport = "paused"
+                elif st3 == "stopped":
+                    self._state.transport = "stopped"
+                else:
+                    self._state.transport = st3
+            else:
+                try:
+                    await dev.async_update()
+                except TypeError:
+                    await dev.async_update()
+                self._refresh_from_device(dev)
+
+            self._state.last_error = None
+            self._state.last_update_ts = time.time()
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"stop: {err!r}"
             await self._mark_unreachable_maybe(err)
-
+    
+        
     async def next_track(self) -> None:
         dev = self._device
         if dev is None:
@@ -664,40 +682,58 @@ class LinkPlaySpeaker:
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"previous: {err!r}"
             await self._mark_unreachable_maybe(err)
-    
 
     async def play_pause(self) -> None:
-        """Toggle play/pause using UPnP AVTransport (no httpapi)."""
+        """Toggle play/pause using UPnP AVTransport (SOAP only).
+
+        We do not rely on cached profile state; we issue the action, then verify
+        via GetTransportInfo and/or a quick profile refresh.
+        """
         dev = self._device
         if dev is None:
             return
         try:
-            st_s = (self._state.transport or "").lower() if self._state is not None else ""
-            is_playing = st_s in {"playing", "transitioning"}
-    
-            if not st_s:
-                st = getattr(dev, "transport_state", None)
-                is_playing = st in (TransportState.PLAYING, TransportState.TRANSITIONING)
-    
+            # Decide intent from best-known state
+            st = (self._state.transport or "").lower()
+            if not st:
+                st2 = await self._async_get_transport_state()
+                if st2:
+                    st = st2
+
+            is_playing = st in {"playing", "transitioning"}
+
             if is_playing:
-                await dev.async_pause()
-                self._state.transport = "paused"
+                await self._async_avtransport_pause()
             else:
-                await dev.async_play()
-                self._state.transport = "playing"
-    
-            try:
-                self._state.last_update_ts = time.time()
-            except Exception:
-                pass
+                await self._async_avtransport_play()
+
+            # Verify: ask AVTransport for current state
+            await asyncio.sleep(0.15)
+            st3 = await self._async_get_transport_state()
+            if st3:
+                if st3 in {"playing", "transitioning"}:
+                    self._state.transport = "playing"
+                elif "pause" in st3:
+                    self._state.transport = "paused"
+                elif st3 == "stopped":
+                    self._state.transport = "stopped"
+                else:
+                    self._state.transport = st3
+            else:
+                # Fallback: refresh profile fields
+                try:
+                    await dev.async_update()
+                except TypeError:
+                    await dev.async_update()
+                self._refresh_from_device(dev)
+
+            self._state.last_error = None
+            self._state.last_update_ts = time.time()
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"play_pause: {err!r}"
             await self._mark_unreachable_maybe(err)
     
-    async def toggle_play(self) -> None:
-        """Backward-compatible alias for play_pause."""
-        await self.play_pause()
-
+        
     async def play_url(self, url: str) -> None:
         if not url or not isinstance(url, str):
             return
@@ -1319,29 +1355,85 @@ class LinkPlaySpeaker:
 
         return await act.async_call(**kwargs)
 
-    async def _async_avtransport_next_prev(self, action: str) -> None:
-        """Call AVTransport Next/Previous matching the WiiM app.
+    
+    async def _async_get_transport_state(self) -> str | None:
+        """Query AVTransport GetTransportInfo.CurrentTransportState."""
+        service_type = "urn:schemas-upnp-org:service:AVTransport:1"
+        try:
+            res = await self._async_call_action(service_type, "GetTransportInfo", InstanceID=0)
+        except Exception:
+            res = None
+        if not isinstance(res, dict):
+            return None
+        v = res.get("CurrentTransportState") or res.get("TransportState")
+        if v is None:
+            return None
+        return str(v).strip().lower() or None
 
-        Tries with ControlSource=WiiMApp first, then retries without it if the
-        device rejects the argument.
-        """
+    async def _async_avtransport_play(self) -> None:
+        """Call AVTransport Play like WiiM app (best-effort)."""
+        service_type = "urn:schemas-upnp-org:service:AVTransport:1"
+        args_with_cs = {"InstanceID": 0, "Speed": "1", "ControlSource": "WiiMApp"}
+        args_no_cs = {"InstanceID": 0, "Speed": "1"}
+        try:
+            await self._async_call_action(service_type, "Play", **args_with_cs)
+            return
+        except Exception as err:  # noqa: BLE001
+            msg = str(err)
+            if ("ControlSource" not in msg) and ("Unknown argument" not in msg) and ("unexpected" not in msg):
+                raise
+        await self._async_call_action(service_type, "Play", **args_no_cs)
+
+    async def _async_avtransport_pause(self) -> None:
+        """Call AVTransport Pause like WiiM app (best-effort)."""
         service_type = "urn:schemas-upnp-org:service:AVTransport:1"
         args_with_cs = {"InstanceID": 0, "ControlSource": "WiiMApp"}
         args_no_cs = {"InstanceID": 0}
-
         try:
-            res = await self._async_call_action(service_type, action, **args_with_cs)
-            if res is not None:
-                return
+            await self._async_call_action(service_type, "Pause", **args_with_cs)
+            return
         except Exception as err:  # noqa: BLE001
             msg = str(err)
-            if ("ControlSource" in msg) or ("Unknown argument" in msg) or ("unexpected" in msg):
-                await self._async_call_action(service_type, action, **args_no_cs)
-                return
-            raise
+            if ("ControlSource" not in msg) and ("Unknown argument" not in msg) and ("unexpected" not in msg):
+                raise
+        await self._async_call_action(service_type, "Pause", **args_no_cs)
 
-        await self._async_call_action(service_type, action, **args_no_cs)
+    async def _async_avtransport_stop(self) -> None:
+        """Call AVTransport Stop like WiiM app (best-effort)."""
+        service_type = "urn:schemas-upnp-org:service:AVTransport:1"
+        args_with_cs = {"InstanceID": 0, "ControlSource": "WiiMApp"}
+        args_no_cs = {"InstanceID": 0}
+        try:
+            await self._async_call_action(service_type, "Stop", **args_with_cs)
+            return
+        except Exception as err:  # noqa: BLE001
+            msg = str(err)
+            if ("ControlSource" not in msg) and ("Unknown argument" not in msg) and ("unexpected" not in msg):
+                raise
+        await self._async_call_action(service_type, "Stop", **args_no_cs)
 
+    async def _async_avtransport_next_prev(self, action: str) -> None:
+            """Call AVTransport Next/Previous matching the WiiM app.
+
+            Tries with ControlSource=WiiMApp first, then retries without it if the
+            device rejects the argument.
+            """
+            service_type = "urn:schemas-upnp-org:service:AVTransport:1"
+            args_with_cs = {"InstanceID": 0, "ControlSource": "WiiMApp"}
+            args_no_cs = {"InstanceID": 0}
+
+            try:
+                res = await self._async_call_action(service_type, action, **args_with_cs)
+                if res is not None:
+                    return
+            except Exception as err:  # noqa: BLE001
+                msg = str(err)
+                if ("ControlSource" in msg) or ("Unknown argument" in msg) or ("unexpected" in msg):
+                    await self._async_call_action(service_type, action, **args_no_cs)
+                    return
+                raise
+
+            await self._async_call_action(service_type, action, **args_no_cs)
 
     @staticmethod
     def _norm(v: Any) -> str | None:
