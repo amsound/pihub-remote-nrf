@@ -794,6 +794,68 @@ class LinkPlaySpeaker:
             self._state.last_error = f"set_source: {err!r}"
             self._state.reachable = False
 
+    async def turn_off(self) -> None:
+        """
+        Power off / standby via LinkPlay HTTP API.
+
+        LinkPlay expects:
+        /httpapi.asp?command=setShutdown:0
+        """
+        if self._session is None:
+            raise RuntimeError("speaker aiohttp session not initialized")
+
+        url = f"http://{self._host}{_HTTPAPI_PATH}"
+        params = {"command": "setShutdown:0"}
+
+        try:
+            async with self._session.get(
+                url,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S),
+                ssl=False,
+            ) as resp:
+                # Consume body so the connection is cleanly released.
+                _ = await resp.text(errors="ignore")
+
+                if resp.status >= 400:
+                    self._state.last_error = f"turn_off httpapi: HTTP {resp.status}"
+                    raise RuntimeError(f"turn_off failed: HTTP {resp.status}")
+
+            # Success: record that we issued the command, but don't assume state changed.
+            self._state.last_error = None
+            self._state.last_update_ts = time.time()
+
+        except Exception as err:  # noqa: BLE001
+            self._state.last_error = f"turn_off httpapi: {err!r}"
+            raise
+
+    async def clear_playlist(self) -> None:
+        """
+        Clear the active queue/playlist via vendor PlayQueue UPnP service.
+
+        service_type = urn:schemas-wiimu-com:service:PlayQueue:1
+        action       = DeleteQueue
+        args         = QueueName="CurrentQueue"
+        """
+        service_type = "urn:schemas-wiimu-com:service:PlayQueue:1"
+
+        # If the device doesn't expose the vendor service, just ignore.
+        res = await self._async_call_action(service_type, "DeleteQueue", QueueName="CurrentQueue")
+        if res is None:
+            return
+
+        # Refresh state after clearing, same idea as HA.
+        d = self._device
+        if d is not None:
+            try:
+                await d.async_update()
+                self._refresh_from_device(d)
+                self._state.last_error = None
+                self._state.last_update_ts = time.time()
+            except Exception:
+                # Not fatal; queue clear already sent.
+                pass
+
     # -------------------- Internal runner --------------------
 
     async def _runner(self) -> None:

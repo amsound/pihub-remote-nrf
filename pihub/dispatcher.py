@@ -489,6 +489,14 @@ class Dispatcher:
             if want_repeat and rem_key:
                 await self._start_repeat(rem_key, text="__speaker__", extras={"_speaker_action": "volume_down"})
             return
+        
+        if action == "clear_playlist":
+            await sp.clear_playlist()
+            return
+
+        if action == "turn_off":
+            await sp.turn_off()
+            return
 
         # Unknown -> ignore
         return
