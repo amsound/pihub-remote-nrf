@@ -426,8 +426,8 @@ class Dispatcher:
             return
 
         # One-shot actions
-        if action == "toggle_play":
-            await sp.toggle_play()
+        if action == "play_pause":
+            await sp.play_pause()
             return
 
         if action == "play":

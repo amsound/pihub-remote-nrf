@@ -492,15 +492,32 @@ class LinkPlaySpeaker:
         if dev is None:
             return
         try:
-            current = dev.volume_level
+            current = self._state.volume
             if current is None:
-                await dev.async_update()
-                current = dev.volume_level
+                current = getattr(dev, "volume_level", None)
+    
+            if current is None:
+                try:
+                    await dev.async_update()
+                except Exception:
+                    pass
+                current = getattr(dev, "volume_level", None) or self._state.volume
+                if current is None:
+                    await self._try_update_volume_mute_via_rendering_control(dev)
+                    current = self._state.volume
+    
             if current is None:
                 return
+    
             target = min(1.0, max(0.0, float(current) + self._step))
             await dev.async_set_volume_level(target)
             self._state.volume = target
+            try:
+                self._state.last_update_ts = time.time()
+            except Exception:
+                pass
+    
+            await self._try_update_volume_mute_via_rendering_control(dev)
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"volume_up: {err!r}"
             await self._mark_unreachable_maybe(err)
@@ -510,15 +527,32 @@ class LinkPlaySpeaker:
         if dev is None:
             return
         try:
-            current = dev.volume_level
+            current = self._state.volume
             if current is None:
-                await dev.async_update()
-                current = dev.volume_level
+                current = getattr(dev, "volume_level", None)
+    
+            if current is None:
+                try:
+                    await dev.async_update()
+                except Exception:
+                    pass
+                current = getattr(dev, "volume_level", None) or self._state.volume
+                if current is None:
+                    await self._try_update_volume_mute_via_rendering_control(dev)
+                    current = self._state.volume
+    
             if current is None:
                 return
+    
             target = min(1.0, max(0.0, float(current) - self._step))
             await dev.async_set_volume_level(target)
             self._state.volume = target
+            try:
+                self._state.last_update_ts = time.time()
+            except Exception:
+                pass
+    
+            await self._try_update_volume_mute_via_rendering_control(dev)
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"volume_down: {err!r}"
             await self._mark_unreachable_maybe(err)
@@ -528,16 +562,34 @@ class LinkPlaySpeaker:
         if dev is None:
             return
         try:
-            muted = dev.is_volume_muted
+            muted = self._state.muted
             if muted is None:
-                await dev.async_update()
-                muted = dev.is_volume_muted
+                muted = getattr(dev, "is_volume_muted", None)
+    
+            if muted is None:
+                try:
+                    await dev.async_update()
+                except Exception:
+                    pass
+                muted = getattr(dev, "is_volume_muted", None) or self._state.muted
+    
+            if muted is None:
+                await self._try_update_volume_mute_via_rendering_control(dev)
+                muted = self._state.muted
+    
             if muted is None:
                 return
+    
             await dev.async_mute_volume(not bool(muted))
             self._state.muted = (not bool(muted))
+            try:
+                self._state.last_update_ts = time.time()
+            except Exception:
+                pass
+    
+            await self._try_update_volume_mute_via_rendering_control(dev)
         except Exception as err:  # noqa: BLE001
-            self._state.last_error = f"mute_toggle: {err!r}"
+            self._state.last_error = f"mute_toggle: {{err!r}}"
             await self._mark_unreachable_maybe(err)
 
     async def play(self) -> None:
@@ -546,6 +598,11 @@ class LinkPlaySpeaker:
             return
         try:
             await dev.async_play()
+            self._state.transport = "playing"
+            try:
+                self._state.last_update_ts = time.time()
+            except Exception:
+                pass
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"play: {err!r}"
             await self._mark_unreachable_maybe(err)
@@ -556,6 +613,11 @@ class LinkPlaySpeaker:
             return
         try:
             await dev.async_pause()
+            self._state.transport = "paused"
+            try:
+                self._state.last_update_ts = time.time()
+            except Exception:
+                pass
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"pause: {err!r}"
             await self._mark_unreachable_maybe(err)
@@ -566,6 +628,11 @@ class LinkPlaySpeaker:
             return
         try:
             await dev.async_stop()
+            self._state.transport = "stopped"
+            try:
+                self._state.last_update_ts = time.time()
+            except Exception:
+                pass
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"stop: {err!r}"
             await self._mark_unreachable_maybe(err)
@@ -575,7 +642,11 @@ class LinkPlaySpeaker:
         if dev is None:
             return
         try:
-            await dev.async_next_track()
+            await self._async_avtransport_next_prev("Next")
+            try:
+                self._state.last_update_ts = time.time()
+            except Exception:
+                pass
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"next: {err!r}"
             await self._mark_unreachable_maybe(err)
@@ -585,24 +656,47 @@ class LinkPlaySpeaker:
         if dev is None:
             return
         try:
-            await dev.async_previous_track()
+            await self._async_avtransport_next_prev("Previous")
+            try:
+                self._state.last_update_ts = time.time()
+            except Exception:
+                pass
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"previous: {err!r}"
             await self._mark_unreachable_maybe(err)
+    
 
-    async def toggle_play(self) -> None:
+    async def play_pause(self) -> None:
+        """Toggle play/pause using UPnP AVTransport (no httpapi)."""
         dev = self._device
         if dev is None:
             return
         try:
-            st = dev.transport_state
-            if st in (TransportState.PLAYING, TransportState.TRANSITIONING):
+            st_s = (self._state.transport or "").lower() if self._state is not None else ""
+            is_playing = st_s in {"playing", "transitioning"}
+    
+            if not st_s:
+                st = getattr(dev, "transport_state", None)
+                is_playing = st in (TransportState.PLAYING, TransportState.TRANSITIONING)
+    
+            if is_playing:
                 await dev.async_pause()
+                self._state.transport = "paused"
             else:
                 await dev.async_play()
+                self._state.transport = "playing"
+    
+            try:
+                self._state.last_update_ts = time.time()
+            except Exception:
+                pass
         except Exception as err:  # noqa: BLE001
-            self._state.last_error = f"toggle_play: {err!r}"
+            self._state.last_error = f"play_pause: {err!r}"
             await self._mark_unreachable_maybe(err)
+    
+    async def toggle_play(self) -> None:
+        """Backward-compatible alias for play_pause."""
+        await self.play_pause()
 
     async def play_url(self, url: str) -> None:
         if not url or not isinstance(url, str):
@@ -1176,6 +1270,77 @@ class LinkPlaySpeaker:
                     self._state.muted = bool(int(cm))
                 except Exception:
                     pass
+
+
+
+    async def _async_call_action(self, service_type: str, action_name: str, **kwargs: Any) -> dict[str, Any] | None:
+        """Best-effort call an UPnP action on the current device."""
+        dev = self._device
+        if dev is None:
+            return None
+        upnp_dev = (
+            getattr(dev, "device", None)
+            or getattr(dev, "_device", None)
+            or getattr(dev, "_upnp_device", None)
+            or getattr(dev, "upnp_device", None)
+        )
+        if upnp_dev is None:
+            return None
+
+        svc = None
+        try:
+            if hasattr(upnp_dev, "service"):
+                svc = upnp_dev.service(service_type)
+        except Exception:
+            svc = None
+
+        if svc is None:
+            services = getattr(upnp_dev, "services", None) or []
+            for s in services:
+                st = (getattr(s, "service_type", "") or "")
+                if st == service_type or service_type in st:
+                    svc = s
+                    break
+        if svc is None:
+            return None
+
+        act = None
+        try:
+            if hasattr(svc, "action"):
+                act = svc.action(action_name)
+        except Exception:
+            act = None
+        if act is None:
+            acts = getattr(svc, "actions", None)
+            if isinstance(acts, dict):
+                act = acts.get(action_name)
+        if act is None or not hasattr(act, "async_call"):
+            return None
+
+        return await act.async_call(**kwargs)
+
+    async def _async_avtransport_next_prev(self, action: str) -> None:
+        """Call AVTransport Next/Previous matching the WiiM app.
+
+        Tries with ControlSource=WiiMApp first, then retries without it if the
+        device rejects the argument.
+        """
+        service_type = "urn:schemas-upnp-org:service:AVTransport:1"
+        args_with_cs = {"InstanceID": 0, "ControlSource": "WiiMApp"}
+        args_no_cs = {"InstanceID": 0}
+
+        try:
+            res = await self._async_call_action(service_type, action, **args_with_cs)
+            if res is not None:
+                return
+        except Exception as err:  # noqa: BLE001
+            msg = str(err)
+            if ("ControlSource" in msg) or ("Unknown argument" in msg) or ("unexpected" in msg):
+                await self._async_call_action(service_type, action, **args_no_cs)
+                return
+            raise
+
+        await self._async_call_action(service_type, action, **args_no_cs)
 
 
     @staticmethod
