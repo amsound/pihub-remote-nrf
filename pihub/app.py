@@ -20,10 +20,8 @@ from .ha_ws import HAWS
 from .dispatcher import Dispatcher
 from .input_unifying import UnifyingReader
 from .input_ble_dongle import BleDongleLink
-from .macros import MACROS
 from .health import HealthServer
-from .validation import DEFAULT_MS_WHITELIST, parse_ms_whitelist
-from .tv import TvController, pair_tv
+from .tv import TvController
 from .speaker_linkplay import LinkPlaySpeaker
 
 
@@ -40,108 +38,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _make_on_cmd(bt: BleDongleLink, tv: TvController | None):
-    async def _on_cmd(data: dict) -> None:
-        """
-        Accept exactly two message shapes (HA → PiHub):
-
-          1) Single BLE key (tap):
-             {
-               "dest": "pihub",
-               "text": "ble_key",
-               "usage": "keyboard" | "consumer",
-               "code": "<symbolic_code>",
-               "hold_ms": 40               # optional, default 40ms (whitelist)
-             }
-
-          2) BLE Unpair command:
-             {
-               "dest": "pihub",
-               "text": "unpair",
-             }
-
-          3) Macro by name (timed sequence, local to Pi):
-             {
-               "dest": "pihub",
-               "text": "macro",
-               "name": "<macro_name>",     # must exist in MACROS
-               "tap_ms": 40,               # optional per-key hold, default 40ms (whitelist)
-               "inter_delay_ms": 400       # optional gap, default 400ms (whitelist)
-             }
-        """
-        text = (data or {}).get("text")
-
-        if text == "ble_key":
-            usage = data.get("usage")
-            code = data.get("code")
-            hold_ms = parse_ms_whitelist(data.get("hold_ms"), default=40, context="cmd.hold_ms")
-            if isinstance(usage, str) and isinstance(code, str) and hold_ms is not None:
-                # single-shot via HIDClient (macros use run_macro below)
-                await bt.send_key(usage=usage, code=code, hold_ms=hold_ms)
-            return
-        
-        if text == "unpair":
-            bt.release_all()
-            await bt.unpair()
-            return
-
-        if text == "macro":
-            name = str(data.get("name") or "")
-
-            if tv is not None and name in {"tv_pair", "tv_power_on", "tv_power_off"}:
-                if name == "tv_pair":
-                    await pair_tv(tv_ip=tv.tv_ip, token_file=tv.token_file, name=tv.name)
-                elif name == "tv_power_on":
-                    await tv.power_on()
-                elif name == "tv_power_off":
-                    await tv.power_off(wait=False)
-                return
-
-            steps = MACROS.get(name, [])
-            if steps:
-                tap = parse_ms_whitelist(data.get("tap_ms"), default=40, context="cmd.tap_ms")
-                inter = parse_ms_whitelist(
-                    data.get("inter_delay_ms"),
-                    allowed=(*DEFAULT_MS_WHITELIST, 400),
-                    default=400,
-                    context="cmd.inter_delay_ms",
-                )
-                await bt.run_macro(steps, default_hold_ms=tap, inter_delay_ms=inter)
-            return
-        
-        if text == "tv" and tv is not None:
-            action = str(data.get("action") or "")
-            if action == "pair":
-                res = await pair_tv(tv_ip=tv.tv_ip, token_file=tv.token_file, name=tv.name)
-                if res.get("ok"):
-                    logger.info("[tv] pair command ok: %s", res)
-                else:
-                    logger.warning("[tv] pair command failed: %s", res)
-                return
-            if action == "power_on":
-                await tv.power_on()
-                return
-            if action == "power_off":
-                await tv.power_off(wait=False)
-                return
-            if action == "volume_up":
-                await tv.volume_up()
-                return
-            if action == "volume_down":
-                await tv.volume_down()
-                return
-            if action == "mute_toggle":
-                await tv.mute_toggle()
-                return
-            # Fallback: treat unknown action as raw KEY_* string
-            if action.startswith("KEY_"):
-                await tv.ws.send_key(action)
-            return
-
-    return _on_cmd
-
 
 async def main() -> None:
     """Run the PiHub control loop until interrupted."""
@@ -189,30 +85,35 @@ async def main() -> None:
         await speaker.start()
         started.append(("speaker", speaker.stop))
 
-    # --- BLE ---
-    bt = BleDongleLink(
-        serial_port=cfg.ble_serial_device,
-        baud=cfg.ble_serial_baud,
-    )
+        # --- BLE ---
+        bt = BleDongleLink(
+            serial_port=cfg.ble_serial_device,
+            baud=cfg.ble_serial_baud,
+        )
 
-    async def _on_activity(activity: str | None) -> None:
-        await DispatcherRef.on_activity(activity)  # set below
+        # Create websocket first (we'll attach it to dispatcher after)
+        ws: HAWS | None = None
 
-    _on_cmd = _make_on_cmd(bt, tv)
+        async def _send_cmd(text: str, **extra) -> bool:
+            # Dispatcher uses this to send HA bus commands (do="ha")
+            assert ws is not None
+            return await ws.send_cmd(text, **extra)
 
-    ws = HAWS(
-        url=cfg.ha_ws_url,
-        token=token,
-        activity_entity=cfg.ha_activity,
-        event_name=cfg.ha_cmd_event,
-        on_activity=_on_activity,
-        on_cmd=_on_cmd,
-    )
+        # Create Dispatcher BEFORE HAWS so HAWS can call Dispatcher.on_cmd directly.
+        DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt, tv=tv, speaker=speaker)
 
-    async def _send_cmd(text: str, **extra) -> bool:
-        return await ws.send_cmd(text, **extra)
+        async def _on_activity(activity: str | None) -> None:
+            await DispatcherRef.on_activity(activity)
 
-    DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt, tv=tv, speaker=speaker)
+        # HA WebSocket: breaking schema; all incoming commands go to Dispatcher.on_cmd
+        ws = HAWS(
+            url=cfg.ha_ws_url,
+            token=token,
+            activity_entity=cfg.ha_activity,
+            event_name=cfg.ha_cmd_event,
+            on_activity=_on_activity,
+            on_cmd=DispatcherRef.on_cmd,
+        )
 
     reader = UnifyingReader(
         scancode_map=DispatcherRef.scancode_map,

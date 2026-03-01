@@ -11,6 +11,8 @@ import re
 from contextlib import suppress
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from .input_ble_dongle import CompiledBleFrames
+from .macros import MACROS
+from .validation import DEFAULT_MS_WHITELIST, parse_ms_whitelist
 
 try:
     from importlib import resources as importlib_resources
@@ -167,25 +169,49 @@ class Dispatcher:
             return
 
         if domain == "macro":
-            # Keep macro visibility elsewhere; dispatcher intentionally does not implement macros by default.
-            logger.debug("cmd macro %s", action)
+            name = action
+            steps = MACROS.get(name, [])
+            if not steps:
+                logger.debug("cmd macro missing: %s", name)
+                return
+
+            tap = parse_ms_whitelist(args.get("tap_ms"), default=40, context="cmd.tap_ms")
+            inter = parse_ms_whitelist(
+                args.get("inter_delay_ms"),
+                allowed=(*DEFAULT_MS_WHITELIST, 400),
+                default=400,
+                context="cmd.inter_delay_ms",
+            )
+            await self._bt.run_macro(steps, default_hold_ms=tap, inter_delay_ms=inter)
             return
 
         if domain == "ble":
-            usage = args.get("usage")
-            code = args.get("code")
-            hold_ms = args.get("hold_ms", 40)
-            try:
-                hold_ms = int(hold_ms)
-            except Exception:
-                hold_ms = 40
-            hold_ms = max(0, min(5000, hold_ms))
-            if not (isinstance(usage, str) and isinstance(code, str)):
+            if action == "unpair":
+                self._bt.release_all()
+                await self._bt.unpair()
                 return
-            # Send a single press+release (never repeats)
-            self._bt.key_down(usage=usage, code=code)
-            await asyncio.sleep(hold_ms / 1000.0)
-            self._bt.key_up(usage=usage, code=code)
+
+            if action == "press":
+                usage = args.get("usage")
+                code = args.get("code")
+                hold_ms = args.get("hold_ms", 40)
+                try:
+                    hold_ms = int(hold_ms)
+                except Exception:
+                    hold_ms = 40
+                hold_ms = max(0, min(5000, hold_ms))
+
+                if not (isinstance(usage, str) and isinstance(code, str)):
+                    return
+
+                # Use your existing helper if you prefer:
+                # await self._bt.send_key(usage=usage, code=code, hold_ms=hold_ms)
+                # Or do down/sleep/up:
+                self._bt.key_down(usage=usage, code=code)
+                await asyncio.sleep(hold_ms / 1000.0)
+                self._bt.key_up(usage=usage, code=code)
+                return
+
             return
 
         if domain == "tv":
