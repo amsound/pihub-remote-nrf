@@ -183,7 +183,7 @@ Volume
 
 ```yaml
 dest: ha
-do: emit
+domain: emit
 text: volume_up
 repeat: true
 ```

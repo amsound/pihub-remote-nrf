@@ -40,13 +40,13 @@ logger = logging.getLogger(__name__)
 class Dispatcher:
     """
     Routes remote key edges to actions defined per-activity in keymap.json:
-      - { "do": "ha", "text": "<pihub.cmd text>", ...extras,
+      - { "domain": "ha", "text": "<pihub.cmd text>", ...extras,
           "when"?: "down"|"up" (default "down"),
           "repeat"?: true,
           "min_hold_ms"?: <int>   # keymap ms values are permissive (bounded)
         }
-      - { "do": "ble",  "usage": "keyboard"|"consumer", "code": "<hid-name>" }
-      - { "do": "noop" }  # explicit no-op action
+      - { "domain": "ble",  "usage": "keyboard"|"consumer", "code": "<hid-name>" }
+      - { "domain": "noop" }  # explicit no-op action
     """
 
     def __init__(self, cfg: Any, send_cmd: Callable[..., Awaitable[bool]], bt_le: Any, tv: Any = None, speaker: Any = None) -> None:
@@ -108,7 +108,7 @@ class Dispatcher:
             for k, v in a.items()
             if k
             not in {
-                "do",
+                "domain",
                 "action",
                 "repeat",
                 "when",
@@ -148,7 +148,7 @@ class Dispatcher:
         - "ble": sends a single HID press (usage+code) with optional hold_ms
         - "tv": tries method call; if not found, treats action as raw KEY_* string and sends via ws
         - "speaker": method call on speaker
-        - "macro": reserved hook point (no-op here by default)
+        - "macro": tv or bla macro from macros.py
         """
         if not isinstance(data, dict):
             return
@@ -278,7 +278,7 @@ class Dispatcher:
                 if not isinstance(actions, list):
                     continue
                 for a in actions:
-                    if not isinstance(a, dict) or a.get("do") != "ha":
+                    if not isinstance(a, dict) or a.get("domain") != "ha":
                         continue
 
                     # Precompute once. Store under private keys to avoid changing keymap schema.
@@ -300,7 +300,7 @@ class Dispatcher:
                     a["_extras"] = {
                         k: v
                         for k, v in a.items()
-                        if k not in {"do", "when", "text", "repeat", "min_hold_ms", "_when", "_want_repeat", "_min_hold_ms", "_extras"}
+                        if k not in {"domain", "when", "text", "repeat", "min_hold_ms", "_when", "_want_repeat", "_min_hold_ms", "_extras"}
                     }
 
     # Activity comes from HA (ha_ws)
@@ -491,29 +491,29 @@ class Dispatcher:
         rem_key: Optional[str] = None,
         action_index: int = 0,
     ) -> None:
-        kind = a.get("do")
+        domain = a.get("domain")
 
-        if kind == "noop":
+        if domain == "noop":
             return
 
         # Optional edge filter for non-BLE actions (defaults to 'down' in this build)
         when = a.get("when", "down")
-        if kind != "ble" and edge != when:
+        if domain != "ble" and edge != when:
             return
 
-        if kind == "ble":
+        if domain == "ble":
             await self._handle_ble_action(a, edge)
             return
 
-        if kind == "ha":
+        if domain == "ha":
             await self._handle_ha_action(a, edge, rem_key=rem_key, action_index=action_index)
             return
         
-        if kind == "tv":
+        if domain == "tv":
             await self._handle_tv_action(a, edge, rem_key=rem_key, action_index=action_index)
             return
         
-        if kind == "speaker":
+        if domain == "speaker":
             await self._handle_speaker_action(a, edge, rem_key=rem_key, action_index=action_index)
             return
 
@@ -650,7 +650,7 @@ class Dispatcher:
         extras = a.get("_extras")
         if not isinstance(extras, dict):
             # Fallback if action wasn't precompiled for any reason
-            extras = {k: v for k, v in a.items() if k not in {"do", "when", "text", "repeat", "min_hold_ms"}}
+            extras = {k: v for k, v in a.items() if k not in {"domain", "when", "text", "repeat", "min_hold_ms"}}
 
         want_repeat = a.get("_want_repeat")
         if not isinstance(want_repeat, bool):
@@ -763,6 +763,6 @@ class Dispatcher:
                 for idx, action in enumerate(actions):
                     if not isinstance(action, dict):
                         raise ValueError(f"action {activity}.{rem_key}[{idx}] must be a dict")
-                    kind = action.get("do")
-                    if kind not in {"ha", "ble", "noop", "tv", "speaker"}:
-                        raise ValueError(f"action {activity}.{rem_key}[{idx}] has unknown do={kind!r}")
+                    domain = action.get("domain")
+                    if domain not in {"ha", "ble", "noop", "tv", "speaker"}:
+                        raise ValueError(f"action {activity}.{rem_key}[{idx}] has unknown do={domain!r}")
