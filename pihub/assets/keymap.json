@@ -59,8 +59,8 @@
       "rem_activity_2":   [ { "domain": "ha", "action": "watch" } ],
       "rem_activity_3":   [ { "domain": "noop" } ],
 
-      "rem_vol_up":       [ { "domain": "tv", "action": "volume_up", "repeat": true } ],
-      "rem_vol_down":     [ { "domain": "tv", "action": "volume_down", "repeat": true } ],
+      "rem_vol_up":       [ { "domain": "tv", "action": "volume_up" } ],
+      "rem_vol_down":     [ { "domain": "tv", "action": "volume_down" } ],
       "rem_mute":         [ { "domain": "tv", "action": "mute_toggle" } ],
       
       "rem_rewind":       [ { "domain": "ble", "usage": "consumer", "code": "rewind"       } ],
@@ -110,8 +110,8 @@
       "rem_activity_2":   [ { "domain": "ha", "action": "watch" } ],
       "rem_activity_3":   [ { "domain": "noop" }],
 
-      "rem_vol_up":       [ { "domain": "speaker", "action": "volume_up", "repeat": true } ],
-      "rem_vol_down":     [ { "domain": "speaker", "action": "volume_down", "repeat": true } ],   
+      "rem_vol_up":       [ { "domain": "speaker", "action": "volume_up" } ],
+      "rem_vol_down":     [ { "domain": "speaker", "action": "volume_down" } ],   
       "rem_mute":         [ { "domain": "speaker", "action": "mute_toggle" }],
 
       "rem_rewind":       [ { "domain": "speaker", "action": "previous" } ],
