@@ -110,33 +110,33 @@
       "rem_activity_2":   [ { "do": "emit", "text": "watch" } ],
       "rem_activity_3":   [ { "do": "noop" }],
 
-      "rem_vol_up":       [ { "do": "emit", "text": "volume_up", "repeat": true } ],
-      "rem_vol_down":     [ { "do": "emit", "text": "volume_down", "repeat": true } ],   
-      "rem_mute":         [ { "do": "emit", "text": "mute_toggle" }],
+      "rem_vol_up":       [ { "do": "speaker", "action": "volume_up", "repeat": true } ],
+      "rem_vol_down":     [ { "do": "speaker", "action": "volume_down", "repeat": true } ],   
+      "rem_mute":         [ { "do": "speaker", "action": "mute_toggle" }],
 
-      "rem_rewind":       [ { "do": "emit", "text": "media_prev" } ],
-      "rem_play":         [ { "do": "emit", "text": "media_play_pause" } ],
-      "rem_pause":        [ { "do": "emit", "text": "media_play_pause" } ],
-      "rem_fast_forward": [ { "do": "emit", "text": "media_next" } ],
-      "rem_stop":         [ { "do": "emit", "text": "media_stop" } ],
+      "rem_rewind":       [ { "do": "speaker", "action": "previous" } ],
+      "rem_play":         [ { "do": "speaker", "action": "toggle_play" } ],
+      "rem_pause":        [ { "do": "speaker", "action": "toggle_play" } ],
+      "rem_fast_forward": [ { "do": "speaker", "action": "next" } ],
+      "rem_stop":         [ { "do": "speaker", "action": "stop" } ],
 
-      "rem_dir_left":     [ { "do": "emit", "text": "media_prev" } ],
-      "rem_dir_right":    [ { "do": "emit", "text": "media_next" } ],
-      "rem_ok":           [ { "do": "emit", "text": "media_play_pause" } ],
+      "rem_dir_left":     [ { "do": "speaker", "action": "previous" } ],
+      "rem_dir_right":    [ { "do": "speaker", "action": "next" } ],
+      "rem_ok":           [ { "do": "speaker", "action": "toggle_play" } ],
 
       "rem_ch_up":        [ { "do": "noop" } ],
       "rem_ch_down":      [ { "do": "noop" } ],
 
-      "rem_1":            [ { "do": "emit", "text": "1" } ],
-      "rem_2":            [ { "do": "emit", "text": "2" } ],
-      "rem_3":            [ { "do": "emit", "text": "3" } ],
-      "rem_4":            [ { "do": "emit", "text": "4" } ],
-      "rem_5":            [ { "do": "emit", "text": "5" } ],
-      "rem_6":            [ { "do": "emit", "text": "6" } ],
-      "rem_7":            [ { "do": "emit", "text": "7" } ],
-      "rem_8":            [ { "do": "emit", "text": "8" } ],
-      "rem_9":            [ { "do": "emit", "text": "9" } ],
-      "rem_0":            [ { "do": "emit", "text": "0" } ]
+      "rem_1":            [ { "do": "speaker", "action": "preset", "n": 1 } ],
+      "rem_2":            [ { "do": "speaker", "action": "preset", "n": 2 } ],
+      "rem_3":            [ { "do": "speaker", "action": "preset", "n": 3 } ],
+      "rem_4":            [ { "do": "speaker", "action": "preset", "n": 4 } ],
+      "rem_5":            [ { "do": "speaker", "action": "preset", "n": 5 } ],
+      "rem_6":            [ { "do": "speaker", "action": "preset", "n": 6 } ],
+      "rem_7":            [ { "do": "speaker", "action": "preset", "n": 7 } ],
+      "rem_8":            [ { "do": "speaker", "action": "preset", "n": 8 } ],
+      "rem_9":            [ { "do": "speaker", "action": "preset", "n": 9 } ],
+      "rem_0":            [ { "do": "speaker", "action": "preset", "n": 0 } ]
     }
   }
 }
