@@ -266,7 +266,7 @@ class BleDongleLink:
 
         for _rem_key, actions in (bindings or {}).items():
             for a in actions or []:
-                if (a or {}).get("do") != "ble":
+                if (a or {}).get("domain") != "ble":
                     continue
                 usage = a.get("usage")
                 code = a.get("code")
