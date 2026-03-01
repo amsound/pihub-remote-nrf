@@ -32,7 +32,7 @@ from async_upnp_client.ssdp import SSDP_IP_V4, SSDP_PORT
 
 logger = logging.getLogger(__name__)
 
-logging.getLogger("aiohttp.access").setLevel(logging.INFO)
+logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
 _HTTPAPI_PATH = "/httpapi.asp"
 _HTTP_TIMEOUT_S = 10
@@ -295,7 +295,7 @@ class _LocalAiohttpRequester:
                 k, v = ln.split(":", 1)
                 resp_headers[k.strip().lower()] = v.strip()
 
-            logger.info(
+            logger.debug(
                 "SUBSCRIBE resp: status=%s sid=%s timeout=%s",
                 status_code,
                 resp_headers.get("sid"),
@@ -369,7 +369,7 @@ class LinkPlaySpeaker:
 
         self._logged_first_subscribe = False
 
-        logger.info(
+        logger.debug(
             "speaker polling: enabled=%s interval_s=%s (env SPEAKER_POLL_AVAILABILITY=%r SPEAKER_POLL_INTERVAL=%r)",
             self._poll_enabled,
             self._poll_interval_s,
@@ -870,7 +870,7 @@ class LinkPlaySpeaker:
 
     def _on_event(self, service: Any, state_variables: Any) -> None:
 
-        logger.info("NOTIFY received: svc_type=%s svc_id=%s vars=%s",
+        logger.debug("NOTIFY received: svc_type=%s svc_id=%s vars=%s",
                     getattr(service, "service_type", None),
                     getattr(service, "service_id", None),
                     len(state_variables or []))
