@@ -804,9 +804,24 @@ class LinkPlaySpeaker:
 
         # 2) Now parse state vars + LastChange for LinkPlay/WiiM quirks
         try:
-            for sv in (state_variables or []):
+
+            # Normalize async_upnp_client callback shapes:
+            # - sometimes Sequence[UpnpStateVariable]
+            # - sometimes dict[name -> UpnpStateVariable]
+            # - sometimes iterable of (name, value)
+            svs = state_variables or []
+
+            if isinstance(svs, dict):
+                sv_iter = svs.values()
+            else:
+                sv_iter = svs
+
+            for sv in sv_iter:
                 name = getattr(sv, "name", None)
                 val = getattr(sv, "value", None)
+
+                if name is None and isinstance(sv, tuple) and len(sv) == 2:
+                    name, val = sv
 
                 # Direct surfaced fields (some firmwares)
                 if name == "PlaybackStorageMedium":
@@ -823,14 +838,20 @@ class LinkPlaySpeaker:
                     self._state.transport = str(val).lower() if val is not None else self._state.transport
                     continue
                 if name == "Mute":
-                    # Sometimes comes directly
+                    v = val
+                    if isinstance(v, dict):
+                        v = v.get("Master") or v.get("master") or next(iter(v.values()), None)
                     try:
-                        self._state.muted = bool(int(val))
+                        self._state.muted = bool(int(v))
                     except Exception:
                         pass
                     continue
+
                 if name == "Volume":
-                    if (vv := self._coerce_volume_to_0_1(val)) is not None:
+                    v = val
+                    if isinstance(v, dict):
+                        v = v.get("Master") or v.get("master") or next(iter(v.values()), None)
+                    if (vv := self._coerce_volume_to_0_1(v)) is not None:
                         self._state.volume = vv
                     continue
 
