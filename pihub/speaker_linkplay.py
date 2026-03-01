@@ -291,13 +291,14 @@ class _LocalAiohttpRequester:
                 if ":" not in ln:
                     continue
                 k, v = ln.split(":", 1)
-                # Normalize to lowercase keys for async-upnp-client lookups
                 resp_headers[k.strip().lower()] = v.strip()
 
-                logger.info("SUBSCRIBE resp: status=%s sid=%s timeout=%s",
-                            status_code,
-                            resp_headers.get("sid"),
-                            resp_headers.get("timeout"))
+            logger.info(
+                "SUBSCRIBE resp: status=%s sid=%s timeout=%s",
+                status_code,
+                resp_headers.get("sid"),
+                resp_headers.get("timeout"),
+            )
 
             try:
                 return HttpResponse(status_code=status_code, headers=resp_headers, body="")  # type: ignore
