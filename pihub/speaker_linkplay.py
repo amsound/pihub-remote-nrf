@@ -695,6 +695,7 @@ class LinkPlaySpeaker:
                                 except TypeError:
                                     await d.async_update()
                                 self._refresh_from_device(d)
+                                await self._try_update_volume_mute_via_rendering_control(d)
                                 self._state.last_error = None
                                 now_ts = time.time()
                                 self._state.last_poll_ts = now_ts
@@ -827,6 +828,7 @@ class LinkPlaySpeaker:
         try:
             await dmr.async_update()
             self._refresh_from_device(dmr)
+            await self._try_update_volume_mute_via_rendering_control(dmr)
             now_ts = time.time()
             self._state.last_poll_ts = now_ts
             self._state.last_update_ts = now_ts
@@ -1013,6 +1015,7 @@ class LinkPlaySpeaker:
 
         # Recompute inferred source based on the raw fields we maintain
         self._state.source = self._infer_source()
+        self._apply_source_cleanup()
 
     def _refresh_from_device(self, d: DmrDevice) -> None:
         ts = d.transport_state
@@ -1050,6 +1053,7 @@ class LinkPlaySpeaker:
             self._state.album = album
 
         self._state.source = self._infer_source()
+        self._apply_source_cleanup()
 
     def _infer_source(self) -> str | None:
         m = (self._playback_storage_medium or "").strip().upper()
@@ -1079,6 +1083,100 @@ class LinkPlaySpeaker:
                 return "wifi"
 
         return None
+
+
+    def _apply_source_cleanup(self) -> None:
+        """Clear/normalize fields that should not linger on local inputs."""
+        src = self._state.source
+        if src in {"hdmi", "optical", "line-in"}:
+            # Local inputs should not show stale network track metadata.
+            self._state.title = None
+            self._state.artist = None
+            self._state.album = None
+
+            # Normalize track_uri to a stable token for local inputs.
+            if src == "line-in":
+                self._state.track_uri = "LINE-IN"
+            else:
+                self._state.track_uri = src.upper()
+
+    async def _try_update_volume_mute_via_rendering_control(self, d: DmrDevice) -> None:
+        """Best-effort volume/mute refresh using RenderingControl actions.
+
+        Some LinkPlay firmwares do not surface volume/mute reliably via profile fields
+        on async_update(), even though the values are available via GetVolume/GetMute.
+        """
+        upnp_dev = (
+            getattr(d, "device", None)
+            or getattr(d, "_device", None)
+            or getattr(d, "_upnp_device", None)
+            or getattr(d, "upnp_device", None)
+        )
+        if upnp_dev is None:
+            return
+
+        svc = None
+        # Try common lookup helpers first
+        try:
+            if hasattr(upnp_dev, "service"):
+                svc = upnp_dev.service("urn:schemas-upnp-org:service:RenderingControl:1")
+        except Exception:
+            svc = None
+
+        if svc is None:
+            # Fall back: scan services
+            services = getattr(upnp_dev, "services", None) or []
+            for s in services:
+                st = (getattr(s, "service_type", "") or "")
+                if "RenderingControl" in st:
+                    svc = s
+                    break
+
+        if svc is None:
+            return
+
+        def _get_action(service: Any, name: str) -> Any | None:
+            try:
+                if hasattr(service, "action"):
+                    return service.action(name)
+            except Exception:
+                pass
+            acts = getattr(service, "actions", None)
+            if isinstance(acts, dict):
+                return acts.get(name)
+            return None
+
+        async def _call_action(act: Any, **kwargs: Any) -> dict[str, Any] | None:
+            if act is None:
+                return None
+            try:
+                if hasattr(act, "async_call"):
+                    return await act.async_call(**kwargs)
+            except Exception:
+                return None
+            return None
+
+        # GetVolume
+        vol_act = _get_action(svc, "GetVolume")
+        res = await _call_action(vol_act, InstanceID=0, Channel="Master")
+        if isinstance(res, dict):
+            cv = res.get("CurrentVolume") or res.get("current_volume") or res.get("Volume")
+            if cv is not None:
+                vv = self._coerce_volume_to_0_1(cv)
+                if vv is not None:
+                    self._state.volume = vv
+
+        # GetMute
+        mute_act = _get_action(svc, "GetMute")
+        res = await _call_action(mute_act, InstanceID=0, Channel="Master")
+        if isinstance(res, dict):
+            cm = res.get("CurrentMute") or res.get("current_mute") or res.get("Mute")
+            if cm is not None:
+                try:
+                    self._state.muted = bool(int(cm))
+                except Exception:
+                    pass
+
 
     @staticmethod
     def _norm(v: Any) -> str | None:
