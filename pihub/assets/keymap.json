@@ -115,14 +115,14 @@
       "rem_mute":         [ { "do": "speaker", "action": "mute_toggle" }],
 
       "rem_rewind":       [ { "do": "speaker", "action": "previous" } ],
-      "rem_play":         [ { "do": "speaker", "action": "toggle_play" } ],
-      "rem_pause":        [ { "do": "speaker", "action": "toggle_play" } ],
+      "rem_play":         [ { "do": "speaker", "action": "play_pause" } ],
+      "rem_pause":        [ { "do": "speaker", "action": "play_pause" } ],
       "rem_fast_forward": [ { "do": "speaker", "action": "next" } ],
       "rem_stop":         [ { "do": "speaker", "action": "stop" } ],
 
       "rem_dir_left":     [ { "do": "speaker", "action": "previous" } ],
       "rem_dir_right":    [ { "do": "speaker", "action": "next" } ],
-      "rem_ok":           [ { "do": "speaker", "action": "toggle_play" } ],
+      "rem_ok":           [ { "do": "speaker", "action": "play_pause" } ],
 
       "rem_ch_up":        [ { "do": "noop" } ],
       "rem_ch_down":      [ { "do": "noop" } ],
