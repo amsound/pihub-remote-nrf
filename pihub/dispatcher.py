@@ -1,4 +1,4 @@
-"""Route remote key events to BLE or Home Assistant actions."""
+"""Route remote key events to BLE HA, TV or Speaker methods"""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import time
+import inspect
+import re
 from contextlib import suppress
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from .input_ble_dongle import CompiledBleFrames
@@ -21,6 +23,13 @@ from .validation import parse_ms
 REPEAT_INITIAL_MS = 400
 REPEAT_RATE_MS = 300
 
+_METHOD_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
+_DENY_CALLS = {
+    # lifecycle / internal methods that should never be callable from keymap or HA bus
+    "start", "stop", "_runner", "_connect_and_subscribe", "_disconnect_upnp",
+    "snapshot",
+}
+
 EdgeCB = Callable[[str, str], Awaitable[None]] | Callable[[str, str], None]
 
 logger = logging.getLogger(__name__)
@@ -29,7 +38,7 @@ logger = logging.getLogger(__name__)
 class Dispatcher:
     """
     Routes remote key edges to actions defined per-activity in keymap.json:
-      - { "do": "emit", "text": "<pihub.cmd text>", ...extras,
+      - { "do": "ha", "text": "<pihub.cmd text>", ...extras,
           "when"?: "down"|"up" (default "down"),
           "repeat"?: true,
           "min_hold_ms"?: <int>   # keymap ms values are permissive (bounded)
@@ -59,7 +68,7 @@ class Dispatcher:
                 "keymap.json schema invalid: expected 'scancode_map' (dict) and 'activities' (dict)."
             ) from exc
 
-        self._precompile_emit_actions()
+        self._precompile_ha_actions()
         self._activity: Optional[str] = None
         self._activity_none_logged = False
         self._active_bindings: Dict[str, List[Dict[str, Any]]] = {}
@@ -88,39 +97,150 @@ class Dispatcher:
     def scancode_map(self) -> Dict[str, str]:
         """Public accessor for the logical rem_* scancode map."""
         return self._scancode_map
-    
-    def _compile_ble_frames_once(self) -> None:
+
+    @staticmethod
+    def _action_kwargs(a: dict) -> dict:
+        """Extract kwargs payload from an action dict without changing keymap schema."""
+        return {
+            k: v
+            for k, v in a.items()
+            if k
+            not in {
+                "do",
+                "action",
+                "repeat",
+                "when",
+                "min_hold_ms",
+                "_when",
+                "_want_repeat",
+                "_min_hold_ms",
+                "_extras",
+            }
+        }
+
+    async def _call_action_method(self, obj: Any, method: str, kwargs: dict) -> None:
+        """Call an async method by name on obj (generic dispatch). Breaking by design."""
+        if not isinstance(method, str) or not method or not _METHOD_RE.match(method):
+            return
+        if method.startswith("_") or method in _DENY_CALLS:
+            return
+        fn = getattr(obj, method, None)
+        if fn is None or not callable(fn) or not inspect.iscoroutinefunction(fn):
+            return
+        await fn(**(kwargs or {}))
+
+    async def on_cmd(self, data: dict) -> None:
         """
-        Precompile BLE actions into binary frames.
+        Handle a pihub.cmd event from Home Assistant (generic, breaking schema).
 
-        New style: compile once per activity using the dongle link's encoder
-        (which loads pihub.assets/hid_keymap.json) and store the resulting
-        CompiledBleFrames keyed by activity.
+        Expected payload (inside HA event data):
+        {
+            "dest": "pihub",
+            "domain": "speaker"|"tv"|"ble"|"ha"|"macro",
+            "action": "<method_name or key>",
+            "args": { ... }   # optional kwargs for method
+        }
 
-        This keeps the hot path to:
-        dict lookup (active frames) + enqueue bytes
+        Notes:
+        - "ha": forwards to Home Assistant bus (same as keymap do="ha")
+        - "ble": sends a single HID press (usage+code) with optional hold_ms
+        - "tv": tries method call; if not found, treats action as raw KEY_* string and sends via ws
+        - "speaker": method call on speaker
+        - "macro": reserved hook point (no-op here by default)
         """
-        compiled: Dict[str, CompiledBleFrames] = {}
-        total = 0
+        if not isinstance(data, dict):
+            return
+        if data.get("dest") != "pihub":
+            return
 
-        for activity, mapping in (self._bindings or {}).items():
-            if not isinstance(mapping, dict):
-                continue
+        domain = data.get("domain")
+        action = data.get("action")
+        args = data.get("args") if isinstance(data.get("args"), dict) else {}
+        if not isinstance(domain, str) or not isinstance(action, str):
+            return
+
+        if domain == "ha":
+            text = args.get("text")
+            extras = args.get("extras") if isinstance(args.get("extras"), dict) else {}
+            if isinstance(text, str):
+                await self._send_with_log(text=text, **extras)
+            return
+
+        if domain == "macro":
+            # Keep macro visibility elsewhere; dispatcher intentionally does not implement macros by default.
+            logger.debug("cmd macro %s", action)
+            return
+
+        if domain == "ble":
+            usage = args.get("usage")
+            code = args.get("code")
+            hold_ms = args.get("hold_ms", 40)
             try:
-                frames = self._bt.compile_ble_frames(mapping)
+                hold_ms = int(hold_ms)
             except Exception:
-                logger.debug("ble compile failed for activity=%s", activity, exc_info=True)
-                continue
-            compiled[activity] = frames
-            total += (len(frames.kb_down) + len(frames.cc_down))
+                hold_ms = 40
+            hold_ms = max(0, min(5000, hold_ms))
+            if not (isinstance(usage, str) and isinstance(code, str)):
+                return
+            # Send a single press+release (never repeats)
+            self._bt.key_down(usage=usage, code=code)
+            await asyncio.sleep(hold_ms / 1000.0)
+            self._bt.key_up(usage=usage, code=code)
+            return
 
-        self._ble_frames_by_activity = compiled
-        logger.info("compiled %d ble HID codes into binary frames", total)
+        if domain == "tv":
+            if self._tv is None:
+                return
+            # Prefer method on tv, else treat as raw TV key
+            await self._call_action_method(self._tv, action, args)
+            fn = getattr(self._tv, action, None)
+            if fn is None:
+                await self._tv.ws.send_key(action)
+            return
+
+        if domain == "speaker":
+            sp = getattr(self, "_speaker", None)
+            if sp is None:
+                return
+            # Hard drop if unreachable
+            st = getattr(sp, "state", None)
+            if st is not None and not getattr(st, "reachable", False):
+                return
+            await self._call_action_method(sp, action, args)
+            return
+
+    def _compile_ble_frames_once(self) -> None:
+            """
+            Precompile BLE actions into binary frames.
+
+            New style: compile once per activity using the dongle link's encoder
+            (which loads pihub.assets/hid_keymap.json) and store the resulting
+            CompiledBleFrames keyed by activity.
+
+            This keeps the hot path to:
+            dict lookup (active frames) + enqueue bytes
+            """
+            compiled: Dict[str, CompiledBleFrames] = {}
+            total = 0
+
+            for activity, mapping in (self._bindings or {}).items():
+                if not isinstance(mapping, dict):
+                    continue
+                try:
+                    frames = self._bt.compile_ble_frames(mapping)
+                except Exception:
+                    logger.debug("ble compile failed for activity=%s", activity, exc_info=True)
+                    continue
+                compiled[activity] = frames
+                total += (len(frames.kb_down) + len(frames.cc_down))
+
+            self._ble_frames_by_activity = compiled
+            logger.info("compiled %d ble HID codes into binary frames", total)
 
 
-    def _precompile_emit_actions(self) -> None:
+    def _precompile_ha_actions(self) -> None:
         """
-        Precompute emit action fields once at startup so the hot path doesn't:
+        Precompute HA action fields once at startup so the hot path doesn't:
         - rebuild extras dict
         - re-parse min_hold_ms
         - re-derive want_repeat/when
@@ -132,7 +252,7 @@ class Dispatcher:
                 if not isinstance(actions, list):
                     continue
                 for a in actions:
-                    if not isinstance(a, dict) or a.get("do") != "emit":
+                    if not isinstance(a, dict) or a.get("do") != "ha":
                         continue
 
                     # Precompute once. Store under private keys to avoid changing keymap schema.
@@ -257,7 +377,7 @@ class Dispatcher:
                             elif act == "volume_down":
                                 await sp.volume_down()
                     else:
-                        # Default path: HA emit repeat
+                        # Default path: HA repeat
                         await self._send_with_log(text=text, **extras)
 
                     await asyncio.sleep(REPEAT_RATE_MS / 1000.0)
@@ -282,8 +402,8 @@ class Dispatcher:
             with suppress(asyncio.CancelledError):
                 await t
 
-    # ---- Hold-trigger helpers (HA emit only) ----
-    async def _schedule_hold_emit(
+    # ---- Hold-trigger helpers (HA bus only) ----
+    async def _schedule_hold_ha(
         self,
         rem_key: str,
         action_index: int,
@@ -293,7 +413,7 @@ class Dispatcher:
         want_repeat: bool,
     ) -> None:
         """
-        Schedule a delayed fire for 'when=down' + min_hold_ms. If key is released
+        Schedule a delayed fire for "when=down" + min_hold_ms. If key is released
         before the delay, the task is cancelled and nothing is sent.
         """
         # avoid duplicates
@@ -359,8 +479,8 @@ class Dispatcher:
             await self._handle_ble_action(a, edge)
             return
 
-        if kind == "emit":
-            await self._handle_emit_action(a, edge, rem_key=rem_key, action_index=action_index)
+        if kind == "ha":
+            await self._handle_ha_action(a, edge, rem_key=rem_key, action_index=action_index)
             return
         
         if kind == "tv":
@@ -403,7 +523,7 @@ class Dispatcher:
         rem_key: str | None,
         action_index: int = 0,
     ) -> None:
-        # Only act on down edge
+        """Handle speaker actions (breaking: generic method dispatch)."""
         if edge != "down":
             return
 
@@ -411,7 +531,7 @@ class Dispatcher:
         if sp is None:
             return
 
-        # Hard drop if speaker not reachable (per your preference)
+        # Hard drop if speaker not reachable (per preference)
         try:
             st = getattr(sp, "state", None)
             if st is not None and not getattr(st, "reachable", False):
@@ -419,65 +539,13 @@ class Dispatcher:
         except Exception:
             return
 
-        want_repeat = bool(a.get("repeat"))
-
         action = a.get("action")
         if not isinstance(action, str) or not action:
             return
 
-        # One-shot actions
-        if action == "play_pause":
-            await sp.play_pause()
-            return
+        want_repeat = bool(a.get("repeat"))
 
-        if action == "play":
-            await sp.play()
-            return
-
-        if action == "pause":
-            await sp.pause()
-            return
-
-        if action == "stop":
-            await sp.stop_playback()
-            return
-
-        if action == "next":
-            await sp.next_track()
-            return
-
-        if action == "previous":
-            await sp.previous_track()
-            return
-
-        if action == "mute_toggle":
-            await sp.mute_toggle()
-            return
-
-        if action == "play_url":
-            url = a.get("url")
-            if isinstance(url, str) and url:
-                await sp.play_url(url)
-            return
-        if action == "preset":
-            n = a.get("n")
-            if isinstance(n, int):
-                await sp.preset(n)
-            else:
-                # allow strings too
-                try:
-                    await sp.preset(int(n))
-                except Exception:
-                    pass
-            return
-
-        if action == "set_source":
-            src = a.get("source")
-            if isinstance(src, str) and src:
-                await sp.set_source(src)
-            return
-
-        # Repeatable actions (volume)
+        # Repeatable actions remain explicit (repeat runner uses these)
         if action == "volume_up":
             await sp.volume_up()
             if want_repeat and rem_key:
@@ -489,16 +557,9 @@ class Dispatcher:
             if want_repeat and rem_key:
                 await self._start_repeat(rem_key, text="__speaker__", extras={"_speaker_action": "volume_down"})
             return
-        
-        if action == "clear_playlist":
-            await sp.clear_playlist()
-            return
 
-        if action == "turn_off":
-            await sp.turn_off()
-            return
-
-        # Unknown -> ignore
+        kwargs = self._action_kwargs(a)
+        await self._call_action_method(sp, action, kwargs)
         return
 
     async def _handle_tv_action(
@@ -509,61 +570,45 @@ class Dispatcher:
         rem_key: str | None,
         action_index: int = 0,
     ) -> None:
-        # Only act on down edge (like emit default)
+        """Handle TV actions (breaking: generic method dispatch + raw-key fallback)."""
         if edge != "down":
             return
-
         if self._tv is None:
             return
 
         want_repeat = bool(a.get("repeat"))
-
-        # --- "Nice" aliases path ---
         action = a.get("action")
+
+        # Repeatable actions remain explicit (repeat runner uses raw TV keys)
+        if action == "volume_up":
+            await self._tv.volume_up()
+            if want_repeat and rem_key:
+                await self._start_repeat(rem_key, text="__tv__", extras={"_tv_key": "KEY_VOLUP"})
+            return
+
+        if action == "volume_down":
+            await self._tv.volume_down()
+            if want_repeat and rem_key:
+                await self._start_repeat(rem_key, text="__tv__", extras={"_tv_key": "KEY_VOLDOWN"})
+            return
+
         if isinstance(action, str) and action:
-            # Non-repeatable actions
-            if action == "pair":
-                await pair_tv(tv_ip=self._tv.tv_ip, token_file=self._tv.token_file, name=self._tv.name)
-                return
-            if action == "power_on":
-                await self._tv.power_on()
-                return
-            if action == "power_off":
-                await self._tv.power_off(wait=False)
-                return
-            if action == "mute_toggle":
-                await self._tv.mute_toggle()
+            kwargs = self._action_kwargs(a)
+            # Prefer method call if present; otherwise treat as raw key string.
+            fn = getattr(self._tv, action, None)
+            if fn is not None and callable(fn) and inspect.iscoroutinefunction(fn):
+                await fn(**kwargs)
                 return
 
-            # Repeatable actions
-            if action == "volume_up":
-                await self._tv.volume_up()
-                if want_repeat and rem_key:
-                    await self._start_repeat(rem_key, text="__tv__", extras={"_tv_key": "KEY_VOLUP"})
-                return
-
-            if action == "volume_down":
-                await self._tv.volume_down()
-                if want_repeat and rem_key:
-                    await self._start_repeat(rem_key, text="__tv__", extras={"_tv_key": "KEY_VOLDOWN"})
-                return
-
-            # Fallback: treat unknown action as a raw TV key string (repeatable if desired)
             await self._tv.ws.send_key(action)
             if want_repeat and rem_key:
                 await self._start_repeat(rem_key, text="__tv__", extras={"_tv_key": action})
             return
 
-        # --- Back-compat raw key path ---
-        key = a.get("key")
-        if not isinstance(key, str) or not key:
-            return
+        # Back-compat "key" path removed (breaking)
+        return
 
-        await self._tv.ws.send_key(key)
-        if want_repeat and rem_key:
-            await self._start_repeat(rem_key, text="__tv__", extras={"_tv_key": key})
-
-    async def _handle_emit_action(
+    async def _handle_ha_action(
         self,
         a: dict,
         edge: str,
@@ -571,7 +616,7 @@ class Dispatcher:
         rem_key: Optional[str],
         action_index: int,
     ) -> None:
-        """Handle Home Assistant emit actions (supports min_hold_ms + repeat)."""
+        """Handle Home Assistant bus actions (supports min_hold_ms + repeat)."""
         text = a.get("text")
         if not isinstance(text, str):
             return
@@ -617,7 +662,7 @@ class Dispatcher:
         # when == "down": fire on press; if min_hold_ms > 0, delay until threshold
         if when == "down" and edge == "down":
             if min_hold_ms > 0 and rem_key is not None:
-                await self._schedule_hold_emit(
+                await self._schedule_hold_ha(
                     rem_key=rem_key,
                     action_index=action_index,
                     min_hold_ms=min_hold_ms,
@@ -693,5 +738,5 @@ class Dispatcher:
                     if not isinstance(action, dict):
                         raise ValueError(f"action {activity}.{rem_key}[{idx}] must be a dict")
                     kind = action.get("do")
-                    if kind not in {"emit", "ble", "noop", "tv", "speaker"}:
+                    if kind not in {"ha", "ble", "noop", "tv", "speaker"}:
                         raise ValueError(f"action {activity}.{rem_key}[{idx}] has unknown do={kind!r}")

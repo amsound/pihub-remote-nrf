@@ -269,31 +269,27 @@ class HAWS:
                             await self._apply_activity(new_state)
                             continue  # already handled
 
-                    # 2) Custom command events
-                    if ev_type == self._event_name:
-                        if edata.get("dest") == "pihub":
-                            t = edata.get("text", "?")
-                            if t == "macro":
-                                logger.debug("cmd macro %s", edata.get("name", "?"))
-                            elif t == "ble_key":
-                                hold_ms = parse_ms_whitelist(
-                                    edata.get("hold_ms"),
-                                    allowed=DEFAULT_MS_WHITELIST,
-                                    default=40,
-                                    context="ha_ws.hold_ms",
-                                )
-                                edata["hold_ms"] = hold_ms
-                                logger.debug(
-                                    "cmd ble_key %s/%s hold=%sms",
-                                    edata.get("usage", "?"),
-                                    edata.get("code", "?"),
-                                    hold_ms,
-                                )
-                            else:
-                                logger.debug("cmd %s", t)
-                            res = self._on_cmd(edata)
-                            if asyncio.iscoroutine(res):
-                                await res
+                    # 2) Custom command events (breaking: generic schema)
+                    if ev_type == self._event_name and edata.get("dest") == "pihub":
+                        domain = edata.get("domain")
+                        action = edata.get("action")
+                        args = edata.get("args")
+
+                        # Optional: normalize ble hold_ms if present
+                        if domain == "ble" and isinstance(args, dict):
+                            hold_ms = parse_ms_whitelist(
+                                args.get("hold_ms"),
+                                allowed=DEFAULT_MS_WHITELIST,
+                                default=40,
+                                context="ha_ws.hold_ms",
+                            )
+                            args["hold_ms"] = hold_ms
+
+                        logger.debug("cmd %s.%s", domain, action)
+
+                        res = self._on_cmd(edata)
+                        if asyncio.iscoroutine(res):
+                            await res
 
             elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                 break  # reconnect

@@ -48,15 +48,15 @@
   "activities": {
 
     "power_off": {
-      "rem_power_off":    [ { "do": "emit", "text": "power_off" } ],
-      "rem_activity_1":   [ { "do": "emit", "text": "listen" } ],
-      "rem_activity_2":   [ { "do": "emit", "text": "watch" } ],
+      "rem_power_off":    [ { "do": "ha", "text": "power_off" } ],
+      "rem_activity_1":   [ { "do": "ha", "text": "listen" } ],
+      "rem_activity_2":   [ { "do": "ha", "text": "watch" } ],
       "rem_activity_3":   [ { "do": "noop" } ] },
 
     "watch": {
-      "rem_power_off":    [ { "do": "emit", "text": "power_off" } ],
-      "rem_activity_1":   [ { "do": "noop" }, { "do": "emit", "min_hold_ms": 1000, "text": "listen" } ],
-      "rem_activity_2":   [ { "do": "emit", "text": "watch" } ],
+      "rem_power_off":    [ { "do": "ha", "text": "power_off" } ],
+      "rem_activity_1":   [ { "do": "noop" }, { "do": "ha", "min_hold_ms": 1000, "text": "listen" } ],
+      "rem_activity_2":   [ { "do": "ha", "text": "watch" } ],
       "rem_activity_3":   [ { "do": "noop" } ],
 
       "rem_vol_up":   [ { "do": "tv", "action":"volume_up", "repeat": true } ],
@@ -105,9 +105,9 @@
     },
 
     "listen": {
-      "rem_power_off":    [ { "do": "emit", "text": "power_off" } ],
-      "rem_activity_1":   [ { "do": "emit", "text": "listen" } ],
-      "rem_activity_2":   [ { "do": "emit", "text": "watch" } ],
+      "rem_power_off":    [ { "do": "ha", "text": "power_off" } ],
+      "rem_activity_1":   [ { "do": "ha", "text": "listen" } ],
+      "rem_activity_2":   [ { "do": "ha", "text": "watch" } ],
       "rem_activity_3":   [ { "do": "noop" }],
 
       "rem_vol_up":       [ { "do": "speaker", "action": "volume_up", "repeat": true } ],
