@@ -47,6 +47,21 @@ class TvController:
         self._dmr_pending_count: int = 0
         self._dmr_debounce_n: int = 2
 
+        # Poll cadence
+        self._poll_idle_s: float = 5.0        # normal cadence (CEC/AirPlay detection)
+        self._poll_fast_s: float = 0.5       # during intent windows
+        self._fast_poll_until: float = 0.0
+        self._fast_poll_reason: str = ""
+
+        # Stability streaks (consecutive committed polls)
+        self._on_dmr_streak: int = 0
+        self._on_ws_streak: int = 0
+        self._off_dmr_streak: int = 0
+        self._off_ws_streak: int = 0
+
+        self._on_stable_needed: int = 4       # 3–4 as you suggested
+        self._off_stable_needed: int = 3
+
     async def start(self) -> None:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
@@ -57,66 +72,101 @@ class TvController:
         if sess:
             await sess.close()
 
-    async def poll(self) -> None:
-        """
-        Periodic poll: update dmr status and connect/disconnect ws accordingly.
+    def enter_fast_poll(self, *, seconds: float, reason: str) -> None:
+        now = asyncio.get_running_loop().time()
+        self._fast_poll_until = max(self._fast_poll_until, now + max(0.0, float(seconds)))
+        self._fast_poll_reason = reason
 
-        Important: while power_on() is running, do NOT close the websocket on DMR-down,
-        otherwise we flap connect/close and KEY_POWER never lands reliably.
-        """
+        # reset streaks so we require consecutive confirmations after the intent
+        self._on_dmr_streak = self._on_ws_streak = 0
+        self._off_dmr_streak = self._off_ws_streak = 0
+
+    def poll_interval_s(self) -> float:
+        now = asyncio.get_running_loop().time()
+        return self._poll_fast_s if now < self._fast_poll_until else self._poll_idle_s
+
+    async def poll(self) -> None:
         if not self._session:
             return
+
+        now = asyncio.get_running_loop().time()
 
         # ---- DMR sample ----
         sample = await dmr_up(self._session, self.tv_ip)  # bool
 
-        # ---- Debounce: require N consecutive samples before committing a change ----
+        # ---- Debounce ----
         prev_committed = self._dmr_cached  # None | bool
 
         if prev_committed is None:
-            # First observation: commit immediately so we get a boot log.
             self._dmr_cached = sample
             self._dmr_pending = None
             self._dmr_pending_count = 0
+            committed_changed = True
         else:
+            committed_changed = False
             if sample == prev_committed:
-                # Stable, clear any pending transition
                 self._dmr_pending = None
                 self._dmr_pending_count = 0
             else:
-                # Candidate transition
                 if self._dmr_pending != sample:
                     self._dmr_pending = sample
                     self._dmr_pending_count = 1
                 else:
                     self._dmr_pending_count += 1
 
-                # Commit only after N consecutive samples
                 if self._dmr_pending_count >= self._dmr_debounce_n:
                     self._dmr_cached = sample
                     self._dmr_pending = None
                     self._dmr_pending_count = 0
+                    committed_changed = True
 
         up = bool(self._dmr_cached)
+        ws_up = bool(self.ws.state.connected)
 
-        # ---- Log once on boot, then only on committed transitions ----
-        if prev_committed is None or self._dmr_cached != prev_committed:
+        # External-on transition: DMR committed from off -> on
+        if committed_changed and prev_committed is False and up is True:
+            self.enter_fast_poll(seconds=8.0, reason="external_on")
+
+        # ---- streaks ----
+        if up:
+            self._on_dmr_streak += 1
+            self._off_dmr_streak = 0
+        else:
+            self._off_dmr_streak += 1
+            self._on_dmr_streak = 0
+
+        if ws_up:
+            self._on_ws_streak += 1
+            self._off_ws_streak = 0
+        else:
+            self._off_ws_streak += 1
+            self._on_ws_streak = 0
+
+        # Exit fast polling early when stable
+        if now < self._fast_poll_until:
+            if self._fast_poll_reason in ("power_on", "external_on"):
+                if self._on_dmr_streak >= self._on_stable_needed and self._on_ws_streak >= self._on_stable_needed:
+                    self._fast_poll_until = 0.0
+
+            if self._fast_poll_reason == "power_off":
+                if self._off_dmr_streak >= self._off_stable_needed and self._off_ws_streak >= self._off_stable_needed:
+                    self._fast_poll_until = 0.0
+
+        # ---- log ----
+        if prev_committed is None or committed_changed:
             logger.debug("tv %s (dmr %s)", "on" if up else "off", "up" if up else "down")
 
-        now = asyncio.get_running_loop().time()
-
+        # ---- WS connect/disconnect behavior (your existing logic) ----
         if up:
-            # ensure websocket is up for instant keys (throttled)
-            if not self.ws.state.connected and (now - self._last_ws_connect_attempt) > 3.0:
+            if not ws_up and (now - self._last_ws_connect_attempt) > 3.0:
                 self._last_ws_connect_attempt = now
                 await self.ws.connect(self._session)
             return
 
-        # DMR down: only close ws if we're NOT trying to power on
         if self._power_on_active:
             return
 
-        if self.ws.state.connected:
+        if ws_up:
             await self.ws.close()
 
     def snapshot(self) -> TvSnapshot:
@@ -131,6 +181,9 @@ class TvController:
     async def power_off(self, *, wait: bool = True, timeout_s: float = 25.0) -> bool:
         if not self._session:
             return False
+        
+        self.enter_fast_poll(seconds=20.0, reason="power_off")
+
         if self._dmr_cached is False:
             return True  # already off
 
@@ -155,6 +208,9 @@ class TvController:
     async def power_on(self, *, timeout_s: float = 60.0) -> bool:
         if not self._session:
             return False
+        
+        self.enter_fast_poll(seconds=20.0, reason="power_on")
+
         if self._dmr_cached is True:
             return True  # already on
 

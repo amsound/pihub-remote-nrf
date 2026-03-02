@@ -69,7 +69,7 @@ async def main() -> None:
         async def _tv_poller():
             while True:
                 await tv.poll()
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(tv.poll_interval_s())
 
         tv_task = asyncio.create_task(_tv_poller(), name="tv_poller")
         started.append(("tv", tv.stop))
