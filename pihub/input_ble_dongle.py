@@ -204,6 +204,7 @@ class BleDongleLink:
             await self._write_line("STATUS")
 
     async def unpair(self) -> None:
+        self.release_all()
         if self.is_open:
             await self._write_line("UNPAIR")
 
@@ -239,6 +240,15 @@ class BleDongleLink:
         await asyncio.sleep(max(0, int(key_hold_ms)) / 1000.0)
         self.key_up(usage=usage, code=code)
 
+    async def press(self, *, usage: Usage, code: str, key_hold_ms: int = 40) -> None:
+        # keep the clamp behaviour you had in dispatcher
+        try:
+            ms = int(key_hold_ms)
+        except Exception:
+            ms = 40
+        ms = max(0, min(5000, ms))
+        await self.send_key(usage=usage, code=code, key_hold_ms=ms)
+
     async def run_macro(
         self,
         steps: list[dict],
@@ -248,13 +258,58 @@ class BleDongleLink:
     ) -> None:
         gap_s = max(0, int(inter_delay_ms)) / 1000.0
         for i, step in enumerate(steps):
-            usage = (step or {}).get("usage")
-            code = (step or {}).get("code")
-            key_hold_ms = int((step or {}).get("key_hold_ms", default_key_hold_ms))
+            step = step or {}
+
+            # NEW: explicit wait step
+            wait_ms = step.get("wait_ms")
+            if wait_ms is not None:
+                try:
+                    await asyncio.sleep(max(0, int(wait_ms)) / 1000.0)
+                except Exception:
+                    pass
+                continue
+
+            usage = step.get("usage")
+            code = step.get("code")
+            key_hold_ms = step.get("key_hold_ms", default_key_hold_ms)
+            try:
+                key_hold_ms = int(key_hold_ms)
+            except Exception:
+                key_hold_ms = int(default_key_hold_ms)
+
             if isinstance(usage, str) and isinstance(code, str):
                 await self.send_key(usage=usage, code=code, key_hold_ms=key_hold_ms)
                 if i != len(steps) - 1:
                     await asyncio.sleep(gap_s)
+
+    async def power_on(self) -> None:
+        steps = [
+            {"usage": "consumer", "code": "power", "key_hold_ms": 40},
+            {"wait_ms": 3000},
+            {"usage": "consumer", "code": "menu", "key_hold_ms": 40},
+        ]
+        await self.run_macro(steps)
+
+    async def power_off(self) -> None:
+        steps = [
+            {"usage": "consumer", "code": "stop", "key_hold_ms": 40},
+            {"usage": "consumer", "code": "ac_home", "key_hold_ms": 40},
+            {"usage": "consumer", "code": "ac_home", "key_hold_ms": 40},
+            {"usage": "consumer", "code": "menu", "key_hold_ms": 40},
+            {"usage": "consumer", "code": "menu", "key_hold_ms": 40},
+            {"usage": "consumer", "code": "power", "key_hold_ms": 2000},
+        ]
+        await self.run_macro(steps)
+
+    async def return_home(self) -> None:
+        steps = [
+            {"usage": "consumer", "code": "stop", "key_hold_ms": 40},
+            {"usage": "consumer", "code": "ac_home", "key_hold_ms": 40},
+            {"usage": "consumer", "code": "ac_home", "key_hold_ms": 40},
+            {"usage": "consumer", "code": "menu", "key_hold_ms": 40},
+            {"usage": "consumer", "code": "menu", "key_hold_ms": 40},
+        ]
+        await self.run_macro(steps)
 
     # ---------- compilation (hot path) ----------
 

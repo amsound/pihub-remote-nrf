@@ -12,8 +12,7 @@ from contextlib import suppress
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .input_ble_dongle import CompiledBleFrames
-from .macros import MACROS
-from .validation import DEFAULT_MS_WHITELIST, parse_ms, parse_ms_whitelist
+from .validation import parse_ms
 
 try:
     from importlib import resources as importlib_resources
@@ -152,22 +151,15 @@ class Dispatcher:
 
     async def on_cmd(self, data: dict) -> None:
         """
-        Handle a pihub.cmd event from Home Assistant (generic, breaking schema).
+        Handle a received event from Home Assistant on the designated bus, default is pihub.cmd
 
         Expected payload (inside HA event data):
         {
             "dest": "pihub",
-            "domain": "speaker"|"tv"|"ble"|"ha"|"macro",
+            "domain": "speaker"|"tv"|"ble",
             "action": "<method_name or key>",
             "args": { ... }   # optional kwargs for method
         }
-
-        Notes:
-        - "ha": forwards to Home Assistant bus
-        - "ble": sends a single HID press (usage+code) with optional key_hold_ms (default 40)
-        - "tv": tries method call; if not found, treats action as raw KEY_* string and sends via ws
-        - "speaker": method call on speaker
-        - "macro": named macro from macros.py (uses key_hold_ms default for step holds)
         """
         if not isinstance(data, dict):
             return
@@ -187,57 +179,16 @@ class Dispatcher:
         #        await self._send_with_log(action=action, **ha_args)
         #    return
 
-        if domain == "macro":
-            name = action
-            steps = MACROS.get(name, [])
-            if not steps:
-                logger.debug("cmd macro missing: %s", name)
-                return
-
-            key_hold_ms = parse_ms_whitelist(args.get("key_hold_ms"), default=40, context="cmd.key_hold_ms")
-            inter = parse_ms_whitelist(
-                args.get("inter_delay_ms"),
-                allowed=(*DEFAULT_MS_WHITELIST, 400),
-                default=400,
-                context="cmd.inter_delay_ms",
-            )
-            await self._bt.run_macro(steps, default_key_hold_ms=key_hold_ms, inter_delay_ms=inter)
-            return
-
         if domain == "ble":
-            if action == "unpair":
-                self._bt.release_all()
-                await self._bt.unpair()
+            if self._bt is None:
                 return
-
-            if action == "press":
-                usage = args.get("usage")
-                code = args.get("code")
-                key_hold_ms = args.get("key_hold_ms", 40)
-                try:
-                    key_hold_ms = int(key_hold_ms)
-                except Exception:
-                    key_hold_ms = 40
-                key_hold_ms = max(0, min(5000, key_hold_ms))
-
-                if not (isinstance(usage, str) and isinstance(code, str)):
-                    return
-
-                self._bt.key_down(usage=usage, code=code)
-                await asyncio.sleep(key_hold_ms / 1000.0)
-                self._bt.key_up(usage=usage, code=code)
-                return
-
+            await self._call_action_method(self._bt, action, args)
             return
 
         if domain == "tv":
             if self._tv is None:
                 return
-            # Prefer method on tv, else treat as raw TV key
             await self._call_action_method(self._tv, action, args)
-            fn = getattr(self._tv, action, None)
-            if fn is None:
-                await self._tv.ws.send_key(action)
             return
 
         if domain == "speaker":

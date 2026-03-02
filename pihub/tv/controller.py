@@ -241,3 +241,12 @@ class TvController:
         if not self.ws.state.connected:
             await self.ws.connect(self._session)
         return await self.ws.send_key("KEY_MUTE")
+    
+    async def send_key(self, *, key: str) -> None:
+        if not isinstance(key, str) or not key:
+            return
+        await self.ws.send_key(key)
+
+    async def press(self, *, key: str) -> None:
+        # same as send_key
+        await self.send_key(key=key)
