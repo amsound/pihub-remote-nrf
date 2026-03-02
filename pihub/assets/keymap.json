@@ -114,14 +114,14 @@
       "rem_vol_down":     [ { "domain": "speaker", "action": "volume_down" } ],   
       "rem_mute":         [ { "domain": "speaker", "action": "mute_toggle" }],
 
-      "rem_rewind":       [ { "domain": "speaker", "action": "previous" } ],
+      "rem_rewind":       [ { "domain": "speaker", "action": "previous_track" } ],
       "rem_play":         [ { "domain": "speaker", "action": "play_pause" } ],
       "rem_pause":        [ { "domain": "speaker", "action": "play_pause" } ],
-      "rem_fast_forward": [ { "domain": "speaker", "action": "next" } ],
-      "rem_stop":         [ { "domain": "speaker", "action": "stop" } ],
+      "rem_fast_forward": [ { "domain": "speaker", "action": "next_track" } ],
+      "rem_stop":         [ { "domain": "speaker", "action": "stop_playback" } ],
 
-      "rem_dir_left":     [ { "domain": "speaker", "action": "previous" } ],
-      "rem_dir_right":    [ { "domain": "speaker", "action": "next" } ],
+      "rem_dir_left":     [ { "domain": "speaker", "action": "previous_track" } ],
+      "rem_dir_right":    [ { "domain": "speaker", "action": "next_track" } ],
       "rem_ok":           [ { "domain": "speaker", "action": "play_pause" } ],
 
       "rem_ch_up":        [ { "domain": "noop" } ],
