@@ -234,25 +234,25 @@ class BleDongleLink:
         if payload:
             self._enqueue_nowait(payload)
 
-    async def send_key(self, *, usage: Usage, code: str, hold_ms: int = 40) -> None:
+    async def send_key(self, *, usage: Usage, code: str, key_hold_ms: int = 40) -> None:
         self.key_down(usage=usage, code=code)
-        await asyncio.sleep(max(0, int(hold_ms)) / 1000.0)
+        await asyncio.sleep(max(0, int(key_hold_ms)) / 1000.0)
         self.key_up(usage=usage, code=code)
 
     async def run_macro(
         self,
         steps: list[dict],
         *,
-        default_hold_ms: int = 40,
+        default_key_hold_ms: int = 40,
         inter_delay_ms: int = 400,
     ) -> None:
         gap_s = max(0, int(inter_delay_ms)) / 1000.0
         for i, step in enumerate(steps):
             usage = (step or {}).get("usage")
             code = (step or {}).get("code")
-            hold_ms = int((step or {}).get("hold_ms", default_hold_ms))
+            key_hold_ms = int((step or {}).get("key_hold_ms", default_key_hold_ms))
             if isinstance(usage, str) and isinstance(code, str):
-                await self.send_key(usage=usage, code=code, hold_ms=hold_ms)
+                await self.send_key(usage=usage, code=code, key_hold_ms=key_hold_ms)
                 if i != len(steps) - 1:
                     await asyncio.sleep(gap_s)
 

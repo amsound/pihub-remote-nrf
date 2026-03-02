@@ -103,7 +103,7 @@ class HAWS:
         await self._close_ws()
         await self._close_session()
 
-    async def send_cmd(self, text: str, **extra: Any) -> bool:
+    async def send_cmd(self, action: str, **args: Any) -> bool:
         """
         Fire an event to HA (dest:'ha'). No acks, no buffering.
         """
@@ -115,7 +115,7 @@ class HAWS:
                 "id": self._next_id(),
                 "type": "fire_event",
                 "event_type": self._event_name,
-                "event_data": {"dest": "ha", "text": text, **extra},
+                "event_data": {"dest": "ha", "action": action, "args": args},
             })
             return True
         except Exception:
@@ -275,15 +275,15 @@ class HAWS:
                         action = edata.get("action")
                         args = edata.get("args")
 
-                        # Optional: normalize ble hold_ms if present
+                        # Optional: normalize ble key_hold_ms if present
                         if domain == "ble" and isinstance(args, dict):
-                            hold_ms = parse_ms_whitelist(
-                                args.get("hold_ms"),
+                            key_hold_ms = parse_ms_whitelist(
+                                args.get("key_hold_ms"),
                                 allowed=DEFAULT_MS_WHITELIST,
                                 default=40,
-                                context="ha_ws.hold_ms",
+                                context="ha_ws.key_hold_ms",
                             )
-                            args["hold_ms"] = hold_ms
+                            args["key_hold_ms"] = key_hold_ms
 
                         logger.debug("cmd %s.%s", domain, action)
 

@@ -180,12 +180,12 @@ class Dispatcher:
         if not isinstance(domain, str) or not isinstance(action, str):
             return
 
-        if domain == "ha":
-            text = args.get("text")
-            extras = args.get("extras") if isinstance(args.get("extras"), dict) else {}
-            if isinstance(text, str):
-                await self._send_with_log(text=text, **extras)
-            return
+        # if domain == "ha":
+        #    action = args.get("action")
+        #    ha_args = args.get("args") if isinstance(args.get("args"), dict) else {}
+        #    if isinstance(action, str):
+        #        await self._send_with_log(action=action, **ha_args)
+        #    return
 
         if domain == "macro":
             name = action
@@ -201,7 +201,7 @@ class Dispatcher:
                 default=400,
                 context="cmd.inter_delay_ms",
             )
-            await self._bt.run_macro(steps, default_hold_ms=key_hold_ms, inter_delay_ms=inter)
+            await self._bt.run_macro(steps, default_key_hold_ms=key_hold_ms, inter_delay_ms=inter)
             return
 
         if domain == "ble":
@@ -213,18 +213,18 @@ class Dispatcher:
             if action == "press":
                 usage = args.get("usage")
                 code = args.get("code")
-                hold_ms = args.get("key_hold_ms", 40)
+                key_hold_ms = args.get("key_hold_ms", 40)
                 try:
-                    hold_ms = int(hold_ms)
+                    key_hold_ms = int(key_hold_ms)
                 except Exception:
-                    hold_ms = 40
-                hold_ms = max(0, min(5000, hold_ms))
+                    key_hold_ms = 40
+                key_hold_ms = max(0, min(5000, key_hold_ms))
 
                 if not (isinstance(usage, str) and isinstance(code, str)):
                     return
 
                 self._bt.key_down(usage=usage, code=code)
-                await asyncio.sleep(hold_ms / 1000.0)
+                await asyncio.sleep(key_hold_ms / 1000.0)
                 self._bt.key_up(usage=usage, code=code)
                 return
 
@@ -444,7 +444,7 @@ class Dispatcher:
         rem_key: str,
         action_index: int,
         min_hold_ms: int,
-        text: str,
+        action: str,
         extras: dict,
     ) -> None:
         """
@@ -459,7 +459,7 @@ class Dispatcher:
             try:
                 await asyncio.sleep(max(0, min_hold_ms) / 1000.0)
                 if rem_key in self._pressed_at:
-                    await self._send_cmd(text=text, **extras)
+                    await self._send_cmd(action=action, **extras)
             except asyncio.CancelledError:
                 pass
             finally:
@@ -644,7 +644,7 @@ class Dispatcher:
                 elapsed_ms = int((loop.time() - t0) * 1000.0)
                 if elapsed_ms < min_hold_ms:
                     return
-            await self._send_with_log(text=cmd, **extras)
+            await self._send_with_log(action=cmd, **extras)
             return
 
         # when == "down": fire on press; if min_hold_ms > 0, delay until threshold
@@ -654,11 +654,11 @@ class Dispatcher:
                     rem_key=rem_key,
                     action_index=action_index,
                     min_hold_ms=min_hold_ms,
-                    text=cmd,
+                    action=cmd,
                     extras=extras,
                 )
                 return
-            await self._send_with_log(text=cmd, **extras)
+            await self._send_with_log(action=cmd, **extras)
             return
 
     # ---- Keymap loader ----
@@ -683,8 +683,8 @@ class Dispatcher:
 
         return doc
 
-    async def _send_with_log(self, text: str, **extras: Any) -> None:
-        success = await self._send_cmd(text=text, **extras)
+    async def _send_with_log(self, action: str, **extras: Any) -> None:
+        success = await self._send_cmd(action=action, **extras)
         if success:
             return
         if not logger.isEnabledFor(logging.DEBUG):
@@ -693,7 +693,7 @@ class Dispatcher:
         if now - self._last_cmd_fail_log < 5.0:
             return
         self._last_cmd_fail_log = now
-        logger.warning("HA command send failed: %s", text)
+        logger.warning("HA command send failed: %s", action)
 
     @staticmethod
     def _validate_keymap(doc: dict) -> None:
