@@ -72,6 +72,45 @@ class TvController:
         if sess:
             await sess.close()
 
+    def notify_ssdp(self, *, nts: str, nt: str, usn: str, location: str | None) -> bool:
+        """
+        SSDP NOTIFY handler. Returns True if this was a DMR-related event we acted on.
+        We treat DMR SSDP alive/byebye as the logical power truth.
+        """
+        is_dmr = False
+        if location and "/dmr" in location:
+            is_dmr = True
+        if "MediaRenderer" in (nt or ""):
+            is_dmr = True
+        if not is_dmr:
+            return False
+
+        if nts == "ssdp:alive":
+            self._dmr_cached = True
+            self._dmr_pending = None
+            self._dmr_pending_count = 0
+            self.enter_fast_poll(seconds=8.0, reason="external_on")
+            return True
+
+        if nts == "ssdp:byebye":
+            self._dmr_cached = False
+            self._dmr_pending = None
+            self._dmr_pending_count = 0
+            self.enter_fast_poll(seconds=6.0, reason="external_off")
+            return True
+
+        return False
+    
+    async def ensure_ws_connected(self) -> None:
+        if self._session:
+            await self.ws.connect(self._session)
+
+    def set_power_state(self, on: bool, *, reason: str) -> None:
+        self._dmr_cached = bool(on)
+        self._dmr_pending = None
+        self._dmr_pending_count = 0
+        self.enter_fast_poll(seconds=8.0 if on else 6.0, reason=reason)
+
     def enter_fast_poll(self, *, seconds: float, reason: str) -> None:
         now = asyncio.get_running_loop().time()
         self._fast_poll_until = max(self._fast_poll_until, now + max(0.0, float(seconds)))

@@ -8,6 +8,7 @@ import logging
 import os
 import signal
 import sys
+import socket
 
 try:
     import uvloop as _uvloop  # type: ignore
@@ -23,6 +24,7 @@ from .input_ble_dongle import BleDongleLink
 from .health import HealthServer
 from .tv import TvController
 from .speaker_linkplay import LinkPlaySpeaker
+from .tv.dmr import dmr_up
 
 
 def _debug_enabled() -> bool:
@@ -38,6 +40,82 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+async def _tv_ssdp_listener(tv):
+    MCAST_GRP = "239.255.255.250"
+    MCAST_PORT = 1900
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("", MCAST_PORT))
+    mreq = socket.inet_aton(MCAST_GRP) + socket.inet_aton("0.0.0.0")
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    sock.setblocking(False)
+
+    loop = asyncio.get_running_loop()
+
+    while True:
+        data, addr = await loop.sock_recvfrom(sock, 65535)
+        src_ip = addr[0]
+        if src_ip != tv.tv_ip:
+            continue
+
+        txt = data.decode("utf-8", errors="ignore")
+        if "NOTIFY * HTTP/1.1" not in txt:
+            continue
+
+        hdr = {}
+        for line in txt.split("\r\n"):
+            if ":" in line:
+                k, v = line.split(":", 1)
+                hdr[k.strip().upper()] = v.strip()
+
+        nts = hdr.get("NTS", "")
+        nt = hdr.get("NT", "")
+        usn = hdr.get("USN", "")
+        loc = hdr.get("LOCATION")
+
+        acted = tv.notify_ssdp(nts=nts, nt=nt, usn=usn, location=loc)
+        if not acted:
+            continue
+
+        # Your requirement: on positive SSDP (alive), attempt WS connect immediately
+        if nts == "ssdp:alive":
+            try:
+                await tv.ensure_ws_connected()
+            except Exception:
+                pass
+
+async def _tv_dmr_fallback_poller(tv, *, interval_s: float = 60.0):
+    while True:
+        await asyncio.sleep(interval_s)
+        if not tv._session:
+            continue
+        try:
+            sample = await dmr_up(tv._session, tv.tv_ip)  # True/False
+        except Exception:
+            continue
+
+        cached = tv._dmr_cached
+        if cached is None:
+            tv.set_power_state(bool(sample), reason="fallback_init")
+            if sample:
+                try:
+                    await tv.ensure_ws_connected()
+                except Exception:
+                    pass
+            continue
+
+        # If mismatch, reconcile logical power state.
+        if bool(sample) != bool(cached):
+            tv.set_power_state(bool(sample), reason="fallback_reconcile")
+            if sample:
+                # if TV is actually on, try to get WS back quickly
+                try:
+                    await tv.ensure_ws_connected()
+                except Exception:
+                    pass
+
 
 async def main() -> None:
     """Run the PiHub control loop until interrupted."""
@@ -64,14 +142,10 @@ async def main() -> None:
             name=cfg.tv_name,
         )
         await tv.start()
-        await tv.poll()
 
-        async def _tv_poller():
-            while True:
-                await tv.poll()
-                await asyncio.sleep(tv.poll_interval_s())
+        asyncio.create_task(_tv_ssdp_listener(tv), name="tv:ssdp")
+        asyncio.create_task(_tv_dmr_fallback_poller(tv, interval_s=60.0), name="tv:dmr_fallback")
 
-        tv_task = asyncio.create_task(_tv_poller(), name="tv_poller")
         started.append(("tv", tv.stop))
 
     # --- Speaker (LinkPlay/WiiM) ---
