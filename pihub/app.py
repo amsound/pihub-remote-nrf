@@ -94,10 +94,10 @@ async def main() -> None:
         # Create websocket first (we'll attach it to dispatcher after)
         ws: HAWS | None = None
 
-        async def _send_cmd(text: str, **extra) -> bool:
-            # Dispatcher uses this to send HA bus commands (do="ha")
+        async def _send_cmd(action: str, **args) -> bool:
+            # Dispatcher uses this to send HA bus commands (domain="ha")
             assert ws is not None
-            return await ws.send_cmd(text, **extra)
+            return await ws.send_cmd(action, **args)
 
         # Create Dispatcher BEFORE HAWS so HAWS can call Dispatcher.on_cmd directly.
         DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt, tv=tv, speaker=speaker)
