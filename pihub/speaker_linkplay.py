@@ -996,43 +996,52 @@ class LinkPlaySpeaker:
             raise RuntimeError(f"Unable to construct AiohttpNotifyServer: {last_exc!r}")
 
         self._notify_server = notify_server
-        await self._notify_server.async_start_server()
+
+        # IMPORTANT: async_upnp_client versions differ: some expose async_start(), others async_start_server()
+        started = False
+        for start_name in ("async_start", "async_start_server"):
+            start_fn = getattr(self._notify_server, start_name, None)
+            if callable(start_fn):
+                await start_fn()
+                started = True
+                break
+        if not started:
+            raise RuntimeError("Notify server has no async_start/async_start_server method")
 
         callback_url = getattr(self._notify_server, "callback_url", None)
         logger.debug("notify callback_url=%s (pinned port=%s)", callback_url, notify_port)
 
-        # ---- IMPORTANT: Event handler MUST be the one associated with this notify server ----
-        # Your installed async_upnp_client appears to require requester in the ctor.
+        # Event handler: your version requires requester
         try:
             self._event_handler = UpnpEventHandler(self._notify_server, requester)
         except TypeError:
             self._event_handler = UpnpEventHandler(self._notify_server, requester=requester)
 
-        # Some versions require starting the handler; others don't have this method.
-        eh_start = getattr(self._event_handler, "async_start", None)
-        if callable(eh_start):
-            await eh_start()
+        # IMPORTANT: start/attach handler (method name differs by version)
+        for start_name in ("async_start", "async_start_handler"):
+            start_fn = getattr(self._event_handler, start_name, None)
+            if callable(start_fn):
+                await start_fn()
+                break
 
-        # ---- IMPORTANT: Create the factory WITH the event handler (so devices are wired for NOTIFY routing) ----
+        # Create factory with handler (best-effort across signatures)
         factory = None
         for ctor in (
             lambda: UpnpFactory(requester, self._event_handler),
             lambda: UpnpFactory(requester, event_handler=self._event_handler),
-            lambda: UpnpFactory(requester, non_strict=True, event_handler=self._event_handler),
         ):
             try:
                 factory = ctor()
                 break
             except TypeError:
                 continue
-
         if factory is None:
-            # Fallback: factory without handler (shouldn't be needed, but don't crash)
+            # Fallback (shouldn't be needed, but avoid hard crash)
             factory = UpnpFactory(requester)
 
         upnp_device = await factory.async_create_device(location)
 
-        # Construct DMR profile; signature differs across versions
+        # DmrDevice ctor differs by version
         dmr = None
         for ctor in (
             lambda: DmrDevice(upnp_device, self._event_handler),
@@ -1044,7 +1053,6 @@ class LinkPlaySpeaker:
                 break
             except TypeError:
                 continue
-
         if dmr is None:
             raise RuntimeError("Unable to construct DmrDevice with current async_upnp_client signatures")
 
@@ -1066,6 +1074,7 @@ class LinkPlaySpeaker:
             now_ts = time.time()
             self._state.last_poll_ts = now_ts
             self._state.last_update_ts = now_ts
+            # NOTE: Do not touch last_event_ts here; that should only move on real NOTIFY.
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"prime_update: {err!r}"
 
@@ -1078,7 +1087,7 @@ class LinkPlaySpeaker:
 
 
     async def _disconnect_upnp(self) -> None:
-        # Unsubscribe profile/device first
+        # Unsubscribe device first
         d, self._device = self._device, None
         if d is not None:
             with contextlib.suppress(Exception):
@@ -1086,31 +1095,25 @@ class LinkPlaySpeaker:
             with contextlib.suppress(Exception):
                 await d.async_unsubscribe_services()
 
-        # Stop event handler next (if your version supports it)
+        # Stop event handler next (method name differs by version)
         eh, self._event_handler = self._event_handler, None
         if eh is not None:
-            stop = getattr(eh, "async_stop", None)
-            if callable(stop):
-                with contextlib.suppress(Exception):
-                    await stop()
+            for stop_name in ("async_stop", "async_stop_handler"):
+                stop_fn = getattr(eh, stop_name, None)
+                if callable(stop_fn):
+                    with contextlib.suppress(Exception):
+                        await stop_fn()
+                    break
 
-        # Stop notify server last
+        # Stop notify server last (method name differs by version)
         ns, self._notify_server = self._notify_server, None
         if ns is not None:
-            stop_srv = getattr(ns, "async_stop_server", None) or getattr(ns, "async_stop", None)
-            if callable(stop_srv):
-                with contextlib.suppress(Exception):
-                    await stop_srv()
-
-        eh, self._event_handler = self._event_handler, None
-        if eh is not None:
-            with contextlib.suppress(Exception):
-                await eh.async_stop()
-
-        ns, self._notify_server = self._notify_server, None
-        if ns is not None:
-            with contextlib.suppress(Exception):
-                await ns.async_stop_server()
+            for stop_name in ("async_stop", "async_stop_server"):
+                stop_fn = getattr(ns, stop_name, None)
+                if callable(stop_fn):
+                    with contextlib.suppress(Exception):
+                        await stop_fn()
+                    break
 
     async def _mark_unreachable_maybe(self, err: Exception) -> None:
         if isinstance(err, UpnpError):
