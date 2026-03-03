@@ -55,7 +55,7 @@ async def _tv_ssdp_listener(tv):
     loop = asyncio.get_running_loop()
 
     while True:
-        data, addr = await loop.sock_recvfrom(sock, 65535)
+        data, addr = await asyncio.to_thread(sock.recvfrom, 65535)
         src_ip = addr[0]
         if src_ip != tv.tv_ip:
             continue
