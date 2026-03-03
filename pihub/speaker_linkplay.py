@@ -332,7 +332,6 @@ class LinkPlaySpeaker:
         volume_step_pct: int = 2,
     ) -> None:
         self._host = host.strip()
-        self._location_override = (os.getenv("SPEAKER_LOCATION", "") or "").strip()  # optional full URL
         self._http_scheme = (http_scheme or "https").strip().lower()
         if self._http_scheme not in {"http", "https"}:
             self._http_scheme = "https"
@@ -505,6 +504,12 @@ class LinkPlaySpeaker:
             enable_cleanup_closed=True,  # helps avoid noisy warnings on linux
         )
         self._session = aiohttp.ClientSession(connector=connector)
+        logger.info(
+            "speaker linkplay: mode=%s poll_interval_s=%.1f host=%s",
+            ("poll" if self._poll_enabled else "event"),
+            self._poll_interval_s,
+            self._host,
+        )
         self._task = asyncio.create_task(self._runner(), name="speaker_linkplay")
 
     async def stop(self) -> None:
@@ -972,11 +977,8 @@ class LinkPlaySpeaker:
 
     async def _connect_and_subscribe(self) -> None:
         await self._disconnect_upnp()
-
-        # 1) Location: prefer explicit URL (no discovery), else try SSDP
-        location = (self._location_override or "").strip()
-        if not location:
-            location = await self._ssdp_find_location_for_host(self._host)
+        # 1) Location: best-effort SSDP, else fall back to common LinkPlay/WiiM description URL
+        location = await self._ssdp_find_location_for_host(self._host)
 
         if not location:
             # Common LinkPlay/WiiM default device description URL
@@ -985,15 +987,10 @@ class LinkPlaySpeaker:
         if not location:
             self._state.reachable = False
             self._state.subscribed = False
-            self._state.last_error = "ssdp: no LOCATION response (set SPEAKER_LOCATION to bypass discovery)"
+            self._state.last_error = "ssdp: no LOCATION response"
             return
-
-        # 2) Determine callback/bind IP (keep your env override)
-        cb_ip = (os.getenv("SPEAKER_CALLBACK_IP", "") or "").strip()
-        if cb_ip:
-            local_ip = cb_ip
-        else:
-            local_ip = self._get_local_ip_for_peer(self._host)
+        # 2) Determine callback/bind IP (best-effort from routing table)
+        local_ip = self._get_local_ip_for_peer(self._host)
 
         if self._session is None:
             raise RuntimeError("speaker aiohttp session not initialized")
@@ -1121,12 +1118,12 @@ class LinkPlaySpeaker:
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"prime_update: {err!r}"
 
-        msg = "subscribed via UPnP callback=%s location=%s"
+        msg = "speaker linkplay: upnp subscribed callback=%s location=%s mode=%s"
         if not self._logged_first_subscribe:
-            logger.info(msg, callback_url, location)
+            logger.info(msg, callback_url, location, ("poll" if self._poll_enabled else "event"))
             self._logged_first_subscribe = True
         else:
-            logger.debug(msg, callback_url, location)
+            logger.debug(msg, callback_url, location, ("poll" if self._poll_enabled else "event"))
 
 
     async def _disconnect_upnp(self) -> None:
