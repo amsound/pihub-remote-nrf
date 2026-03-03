@@ -989,8 +989,16 @@ class LinkPlaySpeaker:
             self._state.subscribed = False
             self._state.last_error = "ssdp: no LOCATION response"
             return
-        # 2) Determine callback/bind IP (best-effort from routing table)
-        local_ip = self._get_local_ip_for_peer(self._host)
+        
+        # 2) Determine callback/bind IP (optional override for multi-homed/VLAN setups)
+        cb_ip = (os.getenv("SPEAKER_CALLBACK_IP", "") or "").strip()
+        if cb_ip:
+            local_ip = cb_ip
+        else:
+            local_ip = self._get_local_ip_for_peer(self._host)
+
+        if cb_ip:
+            logger.info("speaker callback override: %s", cb_ip)
 
         if self._session is None:
             raise RuntimeError("speaker aiohttp session not initialized")
