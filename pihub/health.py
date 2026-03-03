@@ -175,8 +175,8 @@ class HealthServer:
             "details": {
                 "advertising": ble_advertising,
                 "connected": ble_connected,
-                "conn_params": conn_params or None,
                 "last_disc_reason": ble_raw.get("last_disc_reason"),
+                "conn_params": conn_params or None,
             },
         }
         degraded_reasons.extend(ble_reasons)
