@@ -32,7 +32,7 @@ from async_upnp_client.ssdp import SSDP_IP_V4, SSDP_PORT
 
 logger = logging.getLogger(__name__)
 
-logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+logging.getLogger("aiohttp.access").setLevel(logging.INFO)
 
 _HTTPAPI_PATH = "/httpapi.asp"
 _HTTP_TIMEOUT_S = 10
