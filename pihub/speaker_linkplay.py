@@ -505,7 +505,7 @@ class LinkPlaySpeaker:
         )
         self._session = aiohttp.ClientSession(connector=connector)
         logger.info(
-            "speaker linkplay: mode=%s poll_interval_s=%.1f host=%s",
+            "mode=%s poll_interval_s=%.1f host=%s",
             ("poll" if self._poll_enabled else "event"),
             self._poll_interval_s,
             self._host,
@@ -1118,7 +1118,7 @@ class LinkPlaySpeaker:
         except Exception as err:  # noqa: BLE001
             self._state.last_error = f"prime_update: {err!r}"
 
-        msg = "speaker linkplay: upnp subscribed callback=%s location=%s mode=%s"
+        msg = "upnp subscribed callback=%s location=%s mode=%s"
         if not self._logged_first_subscribe:
             logger.info(msg, callback_url, location, ("poll" if self._poll_enabled else "event"))
             self._logged_first_subscribe = True
