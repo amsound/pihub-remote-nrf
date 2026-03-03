@@ -942,6 +942,10 @@ class LinkPlaySpeaker:
             location = await self._ssdp_find_location_for_host(self._host)
 
         if not location:
+            # Common LinkPlay/WiiM default device description URL
+            location = f"http://{self._host}:49152/description.xml"
+
+        if not location:
             self._state.reachable = False
             self._state.subscribed = False
             self._state.last_error = "ssdp: no LOCATION response (set SPEAKER_LOCATION to bypass discovery)"
@@ -1554,7 +1558,7 @@ class LinkPlaySpeaker:
                 if sender_ip != host:
                     return
 
-                headers = self._parse_ssdp_response(data)
+                headers = LinkPlaySpeaker._parse_ssdp_response(data)
                 loc = headers.get("location")
                 if loc:
                     found_location = loc
