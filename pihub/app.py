@@ -8,7 +8,6 @@ import logging
 import os
 import signal
 import sys
-import socket
 
 try:
     import uvloop as _uvloop  # type: ignore
@@ -24,7 +23,7 @@ from .input_ble_dongle import BleDongleLink
 from .health import HealthServer
 from .tv import TvController
 from .speaker_linkplay import LinkPlaySpeaker
-from .tv.dmr import dmr_up
+from .tv.ssdp import start_discovery_tasks, stop_discovery_tasks
 
 
 def _debug_enabled() -> bool:
@@ -41,90 +40,6 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-async def _tv_ssdp_listener(tv):
-    MCAST_GRP = "239.255.255.250"
-    MCAST_PORT = 1900
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("", MCAST_PORT))
-    mreq = socket.inet_aton(MCAST_GRP) + socket.inet_aton("0.0.0.0")
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-    sock.setblocking(False)
-
-    loop = asyncio.get_running_loop()
-
-    sock.setblocking(True)  # IMPORTANT: blocking socket when using to_thread
-
-    while True:
-        try:
-            data, addr = await asyncio.to_thread(sock.recvfrom, 65535)
-        except Exception:
-            logger.exception("tv:ssdp listener error")
-            await asyncio.sleep(1)
-            continue
-
-        src_ip = addr[0]
-        if src_ip != tv.tv_ip:
-            continue
-
-        txt = data.decode("utf-8", errors="ignore")
-        if "NOTIFY * HTTP/1.1" not in txt:
-            continue
-
-        hdr = {}
-        for line in txt.split("\r\n"):
-            if ":" in line:
-                k, v = line.split(":", 1)
-                hdr[k.strip().upper()] = v.strip()
-
-        nts = hdr.get("NTS", "")
-        nt = hdr.get("NT", "")
-        usn = hdr.get("USN", "")
-        loc = hdr.get("LOCATION")
-
-        acted = tv.notify_ssdp(nts=nts, nt=nt, usn=usn, location=loc)
-        if not acted:
-            continue
-
-        # Your requirement: on positive SSDP (alive), attempt WS connect immediately
-        if nts == "ssdp:alive":
-            try:
-                await tv.ensure_ws_connected()
-            except Exception:
-                pass
-
-async def _tv_dmr_fallback_poller(tv, *, interval_s: float = 60.0):
-    while True:
-        await asyncio.sleep(interval_s)
-        if not tv._session:
-            continue
-        try:
-            sample = await dmr_up(tv._session, tv.tv_ip)  # True/False
-        except Exception:
-            continue
-
-        cached = tv._dmr_cached
-        if cached is None:
-            tv.set_power_state(bool(sample), reason="fallback_init")
-            if sample:
-                try:
-                    await tv.ensure_ws_connected()
-                except Exception:
-                    pass
-            continue
-
-        # If mismatch, reconcile logical power state.
-        if bool(sample) != bool(cached):
-            tv.set_power_state(bool(sample), reason="fallback_reconcile")
-            if sample:
-                # if TV is actually on, try to get WS back quickly
-                try:
-                    await tv.ensure_ws_connected()
-                except Exception:
-                    pass
-
-
 async def main() -> None:
     """Run the PiHub control loop until interrupted."""
     cfg = Config.load()
@@ -140,7 +55,7 @@ async def main() -> None:
 
     # --- TV (create before wiring callbacks that reference it) ---
     tv: TvController | None = None
-    tv_task: asyncio.Task | None = None
+    tv_discovery_tasks: list[asyncio.Task] = []
 
     if cfg.tv_ip and cfg.tv_mac:
         tv = TvController(
@@ -151,9 +66,12 @@ async def main() -> None:
         )
         await tv.start()
 
-        asyncio.create_task(_tv_ssdp_listener(tv), name="tv:ssdp")
-        asyncio.create_task(_tv_dmr_fallback_poller(tv, interval_s=60.0), name="tv:dmr_fallback")
+        tv_discovery_tasks = start_discovery_tasks(tv, interval_s=60.0)
 
+        async def _stop_tv_discovery() -> None:
+            await stop_discovery_tasks(tv_discovery_tasks)
+
+        started.append(("tv_discovery", _stop_tv_discovery))
         started.append(("tv", tv.stop))
 
     # --- Speaker (LinkPlay/WiiM) ---
@@ -167,35 +85,35 @@ async def main() -> None:
         await speaker.start()
         started.append(("speaker", speaker.stop))
 
-        # --- BLE ---
-        bt = BleDongleLink(
-            serial_port=cfg.ble_serial_device,
-            baud=cfg.ble_serial_baud,
-        )
+    # --- BLE ---
+    bt = BleDongleLink(
+        serial_port=cfg.ble_serial_device,
+        baud=cfg.ble_serial_baud,
+    )
 
-        # Create websocket first (we'll attach it to dispatcher after)
-        ws: HAWS | None = None
+    # Create websocket first (we'll attach it to dispatcher after)
+    ws: HAWS | None = None
 
-        async def _send_cmd(action: str, **args) -> bool:
-            # Dispatcher uses this to send HA bus commands (domain="ha")
-            assert ws is not None
-            return await ws.send_cmd(action, **args)
+    async def _send_cmd(action: str, **args) -> bool:
+        # Dispatcher uses this to send HA bus commands (domain="ha")
+        assert ws is not None
+        return await ws.send_cmd(action, **args)
 
-        # Create Dispatcher BEFORE HAWS so HAWS can call Dispatcher.on_cmd directly.
-        DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt, tv=tv, speaker=speaker)
+    # Create Dispatcher BEFORE HAWS so HAWS can call Dispatcher.on_cmd directly.
+    DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt, tv=tv, speaker=speaker)
 
-        async def _on_activity(activity: str | None) -> None:
-            await DispatcherRef.on_activity(activity)
+    async def _on_activity(activity: str | None) -> None:
+        await DispatcherRef.on_activity(activity)
 
-        # HA WebSocket: breaking schema; all incoming commands go to Dispatcher.on_cmd
-        ws = HAWS(
-            url=cfg.ha_ws_url,
-            token=token,
-            activity_entity=cfg.ha_activity,
-            event_name=cfg.ha_cmd_event,
-            on_activity=_on_activity,
-            on_cmd=DispatcherRef.on_cmd,
-        )
+    # HA WebSocket: breaking schema; all incoming commands go to Dispatcher.on_cmd
+    ws = HAWS(
+        url=cfg.ha_ws_url,
+        token=token,
+        activity_entity=cfg.ha_activity,
+        event_name=cfg.ha_cmd_event,
+        on_activity=_on_activity,
+        on_cmd=DispatcherRef.on_cmd,
+    )
 
     reader = UnifyingReader(
         scancode_map=DispatcherRef.scancode_map,
@@ -248,7 +166,6 @@ async def main() -> None:
         await stop.wait()
 
     finally:
-        # Ensure we signal the ws monitor not to re-trigger shutdown while we're already stopping.
         stop.set()
 
         # Stop subsystems in reverse start order.
@@ -259,18 +176,10 @@ async def main() -> None:
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await ws.stop()
 
-        # Always await the websocket task so exceptions get surfaced in logs,
-        # but don't let it hang shutdown.
         with contextlib.suppress(asyncio.CancelledError, Exception):
             if not ws_task.done():
                 ws_task.cancel()
             await ws_task
-
-        if tv_task and not tv_task.done():
-            tv_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await tv_task
-
 
 
 if __name__ == "__main__":
