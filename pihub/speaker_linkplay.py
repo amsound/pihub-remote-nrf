@@ -68,8 +68,11 @@ class SpeakerState:
     artist: str | None = None
     album: str | None = None
 
-    last_event_ts: float | None = None
+    # Raw NOTIFY freshness (any incoming NOTIFY, even if it doesn't change state)
+    last_notify_ts: float | None = None
 
+    # Meaningful state-change freshness (only updates when state changes)
+    last_event_ts: float | None = None
 
     last_poll_ts: float | None = None
     last_update_ts: float | None = None
@@ -390,6 +393,29 @@ class LinkPlaySpeaker:
     def state(self) -> SpeakerState:
         return self._state
     
+
+    def _force_upnp_wiring(self) -> None:
+        """Ensure notify server routes NOTIFYs to the same handler used for SUBSCRIBE.
+
+        Some async_upnp_client versions can end up with the HTTP handler bound to a
+        different UpnpEventHandler instance than the one used to subscribe, which
+        results in NOTIFYs being accepted (200) but never dispatched.
+        """
+        if self._notify_server is None or self._event_handler is None:
+            return
+
+        # Ensure the notify server routes NOTIFYs into *this* event handler instance.
+        for attr in ("event_handler", "_event_handler"):
+            if hasattr(self._notify_server, attr):
+                with contextlib.suppress(Exception):
+                    setattr(self._notify_server, attr, self._event_handler)
+
+        # Belt + suspenders: ensure handler points back at this server.
+        for attr in ("notify_server", "_notify_server"):
+            if hasattr(self._event_handler, attr):
+                with contextlib.suppress(Exception):
+                    setattr(self._event_handler, attr, self._notify_server)
+
     @staticmethod
     def _localname(tag: str) -> str:
         return tag.split("}", 1)[-1] if "}" in tag else tag
@@ -446,6 +472,12 @@ class LinkPlaySpeaker:
             "album": s.album,
 
             # Push (NOTIFY) freshness
+            # - last_notify_*: any NOTIFY received
+            # - last_event_*: last NOTIFY which changed our exposed state
+            "last_notify_ts": s.last_notify_ts,
+            "notify_age_s": int(time.time() - float(s.last_notify_ts)) if s.last_notify_ts else None,
+            "last_notify_iso": _iso(s.last_notify_ts),
+
             "last_event_ts": s.last_event_ts,
             "event_age_s": int(time.time() - float(s.last_event_ts)) if s.last_event_ts else None,
             "last_event_iso": _iso(s.last_event_ts),
@@ -910,7 +942,7 @@ class LinkPlaySpeaker:
                         continue
 
                     # Event-driven watchdog (only when polling is disabled)
-                    last_evt = self._state.last_event_ts
+                    last_evt = self._state.last_notify_ts or self._state.last_event_ts
                     if last_evt is None:
                         if now - connected_at < grace_after_connect_s:
                             continue
@@ -1022,26 +1054,9 @@ class LinkPlaySpeaker:
         except TypeError:
             self._event_handler = UpnpEventHandler(self._notify_server, requester=requester)
 
-        logger.debug("UPnP handler wiring: notify_server id=%s event_handler id=%s",
-             id(self._notify_server), id(self._event_handler))
-
-        # Ensure the notify server routes NOTIFYs into *this* event handler instance.
-        for attr in ("event_handler", "_event_handler"):
-            if hasattr(self._notify_server, attr):
-                try:
-                    setattr(self._notify_server, attr, self._event_handler)
-                except Exception:
-                    pass
-
-        for attr in ("notify_server", "_notify_server"):
-            if hasattr(self._event_handler, attr):
-                try:
-                    setattr(self._event_handler, attr, self._notify_server)
-                except Exception:
-                    pass
-
-        logger.debug("UPnP handler wiring (post-set): notify_server id=%s event_handler id=%s",
-                    id(self._notify_server), id(self._event_handler))
+        logger.debug("UPnP handler wiring: notify_server=%s event_handler=%s",
+                    type(self._notify_server).__name__, type(self._event_handler).__name__)
+        self._force_upnp_wiring()
 
         # IMPORTANT: start/attach handler (method name differs by version)
         for start_name in ("async_start", "async_start_handler"):
@@ -1152,41 +1167,59 @@ class LinkPlaySpeaker:
     # -------------------- UPnP event callback + state extraction --------------------
 
     def _on_event(self, service: Any, state_variables: Any) -> None:
+        """UPnP event callback.
 
-        logger.debug("on_event fired: event_handler id=%s device=%s",
-             id(self._event_handler), "set" if self._device is not None else "none")
+        We track two timestamps:
+        - last_notify_ts: any NOTIFY received
+        - last_event_ts: last NOTIFY which changed our exposed state
+        """
+        now_ts = time.time()
+        self._state.last_notify_ts = now_ts
 
-        logger.debug("NOTIFY received: svc_type=%s svc_id=%s vars=%s",
-                    getattr(service, "service_type", None),
-                    getattr(service, "service_id", None),
-                    len(state_variables or []))
+        logger.debug(
+            "NOTIFY received: svc_type=%s svc_id=%s vars=%s",
+            getattr(service, "service_type", None),
+            getattr(service, "service_id", None),
+            len(state_variables or []),
+        )
 
-        self._state.last_event_ts = time.time()
-        self._state.last_update_ts = self._state.last_event_ts
+        # If the profile isn't fully attached yet, don't try to parse; just mark that events flow.
+        d = self._device
+        if d is None:
+            return
+
+        # Snapshot before applying updates, so we can detect "meaningful change"
+        before = (
+            self._state.transport,
+            self._state.volume,
+            self._state.muted,
+            self._state.source,
+            self._state.track_uri,
+            self._state.title,
+            self._state.artist,
+            self._state.album,
+        )
 
         # Service identifiers (best-effort)
         svc_type = (getattr(service, "service_type", "") or "")
         svc_id = (getattr(service, "service_id", "") or "")
 
         # 1) First, try the cheap refresh from the profile object
-        d = self._device
-        if d is not None:
-            try:
-                self._refresh_from_device(d)
-            except Exception as err:  # noqa: BLE001
-                self._state.last_error = f"on_event refresh: {err!r}"
+        try:
+            self._refresh_from_device(d)
+        except Exception as err:  # noqa: BLE001
+            self._state.last_error = f"on_event refresh: {err!r}"
 
         # 2) Now parse state vars + LastChange for LinkPlay/WiiM quirks
         try:
-
             # Normalize async_upnp_client callback shapes:
             # - sometimes Sequence[UpnpStateVariable]
-            # - sometimes dict[name -> UpnpStateVariable]
+            # - sometimes dict[name -> UpnpStateVariable]  (keep keys!)
             # - sometimes iterable of (name, value)
             svs = state_variables or []
 
             if isinstance(svs, dict):
-                sv_iter = svs.values()
+                sv_iter = svs.items()
             else:
                 sv_iter = svs
 
@@ -1194,6 +1227,7 @@ class LinkPlaySpeaker:
                 name = getattr(sv, "name", None)
                 val = getattr(sv, "value", None)
 
+                # dict items or tuple shapes: (name, value)
                 if name is None and isinstance(sv, tuple) and len(sv) == 2:
                     name, val = sv
 
@@ -1232,11 +1266,7 @@ class LinkPlaySpeaker:
                 # LastChange payloads: this is the important bit
                 if name == "LastChange" and val:
                     # async_upnp_client can give us str or bytes depending on platform/version.
-                    if isinstance(val, bytes):
-                        raw = val.decode("utf-8", errors="ignore")
-                    else:
-                        raw = str(val)
-
+                    raw = val.decode("utf-8", errors="ignore") if isinstance(val, bytes) else str(val)
                     if not raw.strip():
                         continue
 
@@ -1302,6 +1332,34 @@ class LinkPlaySpeaker:
         # Recompute inferred source based on the raw fields we maintain
         self._state.source = self._infer_source()
         self._apply_source_cleanup()
+
+        # Detect "meaningful change" and update freshness timestamps accordingly.
+        after = (
+            self._state.transport,
+            self._state.volume,
+            self._state.muted,
+            self._state.source,
+            self._state.track_uri,
+            self._state.title,
+            self._state.artist,
+            self._state.album,
+        )
+
+        def _eq(a: Any, b: Any) -> bool:
+            if a is None and b is None:
+                return True
+            if isinstance(a, float) or isinstance(b, float):
+                try:
+                    return a is not None and b is not None and abs(float(a) - float(b)) < 0.001
+                except Exception:
+                    return False
+            return a == b
+
+        changed = any(not _eq(a, b) for a, b in zip(before, after))
+        if changed:
+            self._state.last_event_ts = now_ts
+            self._state.last_update_ts = now_ts
+
 
     def _refresh_from_device(self, d: DmrDevice) -> None:
         ts = d.transport_state
