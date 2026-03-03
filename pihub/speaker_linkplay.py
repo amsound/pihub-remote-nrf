@@ -293,13 +293,19 @@ class _LocalAiohttpRequester:
                 if ":" not in ln:
                     continue
                 k, v = ln.split(":", 1)
-                resp_headers[k.strip().lower()] = v.strip()
+                key = k.strip()
+                val = v.strip()
+
+                # Keep original casing AND a lowercase alias.
+                # Some async_upnp_client code paths look up "SID"/"TIMEOUT" with exact case.
+                resp_headers[key] = val
+                resp_headers[key.lower()] = val
 
             logger.debug(
                 "SUBSCRIBE resp: status=%s sid=%s timeout=%s",
                 status_code,
-                resp_headers.get("sid"),
-                resp_headers.get("timeout"),
+                resp_headers.get("SID") or resp_headers.get("sid"),
+                resp_headers.get("TIMEOUT") or resp_headers.get("timeout"),
             )
 
             try:
