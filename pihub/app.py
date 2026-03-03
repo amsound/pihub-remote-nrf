@@ -54,8 +54,16 @@ async def _tv_ssdp_listener(tv):
 
     loop = asyncio.get_running_loop()
 
+    sock.setblocking(True)  # IMPORTANT: blocking socket when using to_thread
+
     while True:
-        data, addr = await asyncio.to_thread(sock.recvfrom, 65535)
+        try:
+            data, addr = await asyncio.to_thread(sock.recvfrom, 65535)
+        except Exception:
+            logger.exception("tv:ssdp listener error")
+            await asyncio.sleep(1)
+            continue
+
         src_ip = addr[0]
         if src_ip != tv.tv_ip:
             continue
