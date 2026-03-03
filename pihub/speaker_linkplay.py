@@ -296,8 +296,7 @@ class _LocalAiohttpRequester:
                 key = k.strip()
                 val = v.strip()
 
-                # Keep original casing AND a lowercase alias.
-                # Some async_upnp_client code paths look up "SID"/"TIMEOUT" with exact case.
+                # Keep original casing AND lowercase alias.
                 resp_headers[key] = val
                 resp_headers[key.lower()] = val
 
@@ -1023,6 +1022,27 @@ class LinkPlaySpeaker:
         except TypeError:
             self._event_handler = UpnpEventHandler(self._notify_server, requester=requester)
 
+        logger.debug("UPnP handler wiring: notify_server id=%s event_handler id=%s",
+             id(self._notify_server), id(self._event_handler))
+
+        # Ensure the notify server routes NOTIFYs into *this* event handler instance.
+        for attr in ("event_handler", "_event_handler"):
+            if hasattr(self._notify_server, attr):
+                try:
+                    setattr(self._notify_server, attr, self._event_handler)
+                except Exception:
+                    pass
+
+        for attr in ("notify_server", "_notify_server"):
+            if hasattr(self._event_handler, attr):
+                try:
+                    setattr(self._event_handler, attr, self._notify_server)
+                except Exception:
+                    pass
+
+        logger.debug("UPnP handler wiring (post-set): notify_server id=%s event_handler id=%s",
+                    id(self._notify_server), id(self._event_handler))
+
         # IMPORTANT: start/attach handler (method name differs by version)
         for start_name in ("async_start", "async_start_handler"):
             start_fn = getattr(self._event_handler, start_name, None)
@@ -1066,6 +1086,8 @@ class LinkPlaySpeaker:
 
         # Subscribe (auto-renew)
         await dmr.async_subscribe_services(auto_resubscribe=True)
+
+        logger.debug("subscribe complete: device=%r handler id=%s", dmr, id(self._event_handler))
 
         self._device = dmr
         self._state.reachable = True
@@ -1130,6 +1152,9 @@ class LinkPlaySpeaker:
     # -------------------- UPnP event callback + state extraction --------------------
 
     def _on_event(self, service: Any, state_variables: Any) -> None:
+
+        logger.debug("on_event fired: event_handler id=%s device=%s",
+             id(self._event_handler), "set" if self._device is not None else "none")
 
         logger.debug("NOTIFY received: svc_type=%s svc_id=%s vars=%s",
                     getattr(service, "service_type", None),
