@@ -66,7 +66,7 @@ async def ssdp_listener(tv: TvController) -> None:
             usn = hdr.get("USN", "")
             loc = hdr.get("LOCATION")
 
-            acted = tv.notify_ssdp(nts=nts, nt=nt, usn=usn, location=loc)
+            acted = tv.notify_ssdp(nts=nts, nt=nt, usn=usn, location=loc, source="ssdp")
             if not acted:
                 continue
 
@@ -101,7 +101,7 @@ async def dmr_fallback_poller(tv: TvController, *, interval_s: float = 60.0) -> 
 
         cached = tv._dmr_cached
         if cached is None:
-            tv.set_power_state(bool(sample), reason="fallback_init")
+            tv.set_power_state(bool(sample), reason="fallback_init", source="fallback")
             if sample:
                 try:
                     await tv.ensure_ws_connected()
@@ -110,7 +110,7 @@ async def dmr_fallback_poller(tv: TvController, *, interval_s: float = 60.0) -> 
             continue
 
         if bool(sample) != bool(cached):
-            tv.set_power_state(bool(sample), reason="fallback_reconcile")
+            tv.set_power_state(bool(sample), reason="fallback_reconcile", source="fallback")
             if sample:
                 try:
                     await tv.ensure_ws_connected()

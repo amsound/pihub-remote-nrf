@@ -196,16 +196,16 @@ class HealthServer:
         else:
             s = self._tv.snapshot()
             tv_enabled = bool(s.token_present)  # token is a must for configured/usable TV
-            tv_link_up = bool(s.dmr_up)
-            tv_link_ready = bool(s.ws_connected and s.dmr_up)
+            tv_link_up = bool(s.logical_on)
+            tv_link_ready = bool(s.ws_connected and s.logical_on)
             tv_error = bool(s.last_error)
 
             tv_reasons: list[str] = []
             if not s.token_present:
                 tv_reasons.append("tv.token_missing")
-            if tv_enabled and not s.dmr_up:
-                tv_reasons.append("tv.dmr_down")
-            if tv_enabled and s.dmr_up and not s.ws_connected:
+            if tv_enabled and not s.logical_on:
+                tv_reasons.append("tv.logical_off")
+            if tv_enabled and s.logical_on and not s.ws_connected:
                 tv_reasons.append("tv.ws_not_connected")
             if tv_error:
                 tv_reasons.append("tv.error")
@@ -218,7 +218,9 @@ class HealthServer:
                 "link_ready": tv_link_ready,
                 "error": tv_error,
                 "details": {
-                    "dmr_up": bool(s.dmr_up),
+                    "logical_on": bool(s.logical_on),
+                    "logical_source": s.logical_source,
+                    "last_change_age_s": s.last_change_age_s,
                     "ws_connected": bool(s.ws_connected),
                     "token_present": bool(s.token_present),
                     "last_error": s.last_error,

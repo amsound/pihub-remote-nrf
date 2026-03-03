@@ -17,7 +17,9 @@ POWER_RETRY_S = 1.5
 
 @dataclass
 class TvSnapshot:
-    dmr_up: bool
+    logical_on: bool
+    logical_source: str
+    last_change_age_s: int | None
     ws_connected: bool
     token_present: bool
     last_error: str
@@ -62,6 +64,9 @@ class TvController:
         self._on_stable_needed: int = 4       # 3–4 as you suggested
         self._off_stable_needed: int = 3
 
+        self._logical_source: str = "unknown"
+        self._logical_last_change_ts: float | None = None
+
     async def start(self) -> None:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
@@ -72,7 +77,7 @@ class TvController:
         if sess:
             await sess.close()
 
-    def notify_ssdp(self, *, nts: str, nt: str, usn: str, location: str | None) -> bool:
+    def notify_ssdp(self, *, nts: str, nt: str, usn: str, location: str | None, source: str = "ssdp") -> bool:
         """
         SSDP NOTIFY handler. Returns True if this was a DMR-related event we acted on.
         We treat DMR SSDP alive/byebye as the logical power truth.
@@ -86,14 +91,26 @@ class TvController:
             return False
 
         if nts == "ssdp:alive":
-            self._dmr_cached = True
-            self._dmr_pending = None
-            self._dmr_pending_count = 0
-            self.enter_fast_poll(seconds=8.0, reason="external_on")
-            return True
+            if self._dmr_cached is not True:
+                self._dmr_cached = True
+
+                now = asyncio.get_running_loop().time()
+                self._logical_source = source
+                self._logical_last_change_ts = now
+
+                self._dmr_pending = None
+                self._dmr_pending_count = 0
+                self.enter_fast_poll(seconds=8.0, reason="external_on")
+                return True
 
         if nts == "ssdp:byebye":
-            self._dmr_cached = False
+            if self._dmr_cached is not False:
+                self._dmr_cached = False
+
+                now = asyncio.get_running_loop().time()
+                self._logical_source = source
+                self._logical_last_change_ts = now
+
             self._dmr_pending = None
             self._dmr_pending_count = 0
             self.enter_fast_poll(seconds=6.0, reason="external_off")
@@ -105,7 +122,10 @@ class TvController:
         if self._session:
             await self.ws.connect(self._session)
 
-    def set_power_state(self, on: bool, *, reason: str) -> None:
+    def set_power_state(self, on: bool, *, reason: str, source: str = "unknown") -> None:
+        now = asyncio.get_running_loop().time()
+        self._logical_source = source
+        self._logical_last_change_ts = now
         self._dmr_cached = bool(on)
         self._dmr_pending = None
         self._dmr_pending_count = 0
@@ -141,6 +161,10 @@ class TvController:
             self._dmr_pending = None
             self._dmr_pending_count = 0
             committed_changed = True
+
+            self._logical_source = "poll"
+            self._logical_last_change_ts = now
+
         else:
             committed_changed = False
             if sample == prev_committed:
@@ -158,6 +182,9 @@ class TvController:
                     self._dmr_pending = None
                     self._dmr_pending_count = 0
                     committed_changed = True
+
+                    self._logical_source = "poll"
+                    self._logical_last_change_ts = now
 
         up = bool(self._dmr_cached)
         ws_up = bool(self.ws.state.connected)
@@ -193,7 +220,12 @@ class TvController:
 
         # ---- log ----
         if prev_committed is None or committed_changed:
-            logger.debug("tv %s (dmr %s)", "on" if up else "off", "up" if up else "down")
+            logger.debug(
+                "tv logical_%s (source=%s, ws=%s)",
+                "on" if up else "off",
+                self._logical_source,
+                "connected" if ws_up else "disconnected",
+            )
 
         # ---- WS connect/disconnect behavior (your existing logic) ----
         if up:
@@ -210,11 +242,17 @@ class TvController:
 
     def snapshot(self) -> TvSnapshot:
         st = self.ws.state
+        logical_source: str = self._logical_source
+        last_change_age_s: int | None = None
+        if self._logical_last_change_ts is not None:
+            last_change_age_s = int(asyncio.get_running_loop().time() - self._logical_last_change_ts)
         return TvSnapshot(
-            dmr_up=self._dmr_cached,
+            logical_on=bool(self._dmr_cached),
             ws_connected=st.connected,
             token_present=st.token_present,
             last_error=st.last_error,
+            logical_source=logical_source,
+            last_change_age_s=last_change_age_s,
         )
 
     async def power_off(self, *, wait: bool = True, timeout_s: float = 25.0) -> bool:
@@ -240,6 +278,9 @@ class TvController:
         while asyncio.get_running_loop().time() < deadline:
             if not await dmr_up(self._session, self.tv_ip):
                 self._dmr_cached = False
+                now = asyncio.get_running_loop().time()
+                self._logical_source = "power_off"
+                self._logical_last_change_ts = now
                 return True
             await asyncio.sleep(0.2)
         return False
@@ -272,7 +313,10 @@ class TvController:
                 # Stop condition
                 if await dmr_up(self._session, self.tv_ip):
                     self._dmr_cached = True
-                    await self.ws.connect(self._session)  # keep ws up for instant keys
+                    now = asyncio.get_running_loop().time()
+                    self._logical_source = "power_on"
+                    self._logical_last_change_ts = now
+                    await self.ws.connect(self._session)
                     return True
 
                 # 1) WOL spam until DMR up
