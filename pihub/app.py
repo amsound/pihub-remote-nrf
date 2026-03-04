@@ -22,7 +22,7 @@ from .input_unifying import UnifyingReader
 from .input_ble_dongle import BleDongleLink
 from .health import HealthServer
 from .tv import TvController
-from .speaker_linkplay import LinkPlaySpeaker
+from .speaker_linkplay_tcp import LinkPlaySpeaker
 from .tv.ssdp import start_discovery_tasks, stop_discovery_tasks
 
 
