@@ -204,7 +204,7 @@ class LinkPlaySpeaker:
 
     def snapshot(self) -> dict[str, Any]:
         """Compact state snapshot for /health.
-        Intentionally minimal: one timestamp ("last_update") + an ISO string for humans.
+           Intentionally minimal: one timestamp ("last_update") + an ISO string for humans.
         """
         s = self._state
         last_ts = s.last_update_ts
@@ -486,7 +486,9 @@ class LinkPlaySpeaker:
                     # url is sometimes empty here; keep if present
                     url = str(data.get("url", "")).strip()
                     if url:
-                        self._state.track_uri = url
+                        # Some firmwares hex-encode url as well
+                        url_dec = _hex_to_text(url)
+                        self._state.track_uri = url_dec
                         changed = True
                 except Exception:
                     pass
@@ -513,6 +515,21 @@ class LinkPlaySpeaker:
         if changed:
             self._state.last_update_ts = _now()
 
+    
+    async def _resync_after_control(self) -> None:
+        """
+        Event-triggered sync after sending a control command.
+        This is NOT periodic polling: we only do it right after user actions,
+        because some firmwares don't push transport/mute changes reliably.
+        """
+        if not self._writer:
+            return
+        # Keep it short: transport + media + mute/vol.
+        for c in ("MCU+PINFGET", "MCU+MEA+GET", "MCU+VOL+GET", "MCU+MUT+GET", "MCU+PLM+GET"):
+            try:
+                await self._send(c)
+            except Exception:
+                return
     async def _prime_state(self) -> None:
         """
         Ask for a full status snapshot so we can avoid polling and still converge quickly
@@ -562,6 +579,7 @@ class LinkPlaySpeaker:
             await asyncio.sleep(0.05)
         new = "000" if self._state.muted else "001"
         await self._send(f"MCU+MUT+{new}")
+        asyncio.create_task(self._resync_after_control())
 
     async def play(self) -> None:
         await self._send("MCU+PLY-PLA")
@@ -584,6 +602,7 @@ class LinkPlaySpeaker:
     async def preset(self, n: int) -> None:
         n = _clamp_int(int(n), 1, 10)
         await self._send(f"MCU+KEY+{n:03d}")
+        asyncio.create_task(self._resync_after_control())
 
     async def set_source(self, source: str) -> None:
         """
