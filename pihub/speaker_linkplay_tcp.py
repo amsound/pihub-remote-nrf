@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime
 import json
 import logging
 import struct
@@ -192,6 +193,11 @@ class LinkPlaySpeaker:
         self._plm: str | None = None
         self._ply: dict[str, Any] | None = None
 
+        # Hint-driven refresh (AXX+PLY+NEW)
+        self._hint_task: asyncio.Task | None = None
+        self._load_follow_task: asyncio.Task | None = None
+        self._hint_armed: bool = False  # set True after hint until first PINFGET processed
+
     # ---------- small public helpers ----------
 
     @property
@@ -203,11 +209,23 @@ class LinkPlaySpeaker:
         return self._state
 
     def snapshot(self) -> dict[str, Any]:
-        # Keep parity with your "health" / status JSON usage.
+        """Compact state snapshot for /health.
+
+        Intentionally minimal: one timestamp ("last_update") + an ISO string for humans.
+        """
         s = self._state
+        last_ts = s.last_update_ts
+        now = time.time()
+        age_s = None if last_ts is None else max(0.0, now - last_ts)
+        last_iso = (
+            None
+            if last_ts is None
+            else datetime.datetime.fromtimestamp(last_ts, tz=datetime.timezone.utc).isoformat()
+        )
+
         return {
             "reachable": bool(s.reachable),
-            "subscribed": bool(s.subscribed),
+            "subscribed": bool(s.subscribed),  # kept for backwards-compat; means "connected" here
             "last_error": s.last_error,
             "transport": s.transport,
             "volume_pct": None if s.volume is None else int(round(s.volume * 100)),
@@ -218,7 +236,9 @@ class LinkPlaySpeaker:
             "title": s.title,
             "artist": s.artist,
             "album": s.album,
-            "last_update_ts": s.last_update_ts,
+            "last_update_ts": last_ts,
+            "last_update_iso": last_iso,
+            "update_age_s": age_s,
         }
 
     # ---------- lifecycle ----------
@@ -513,7 +533,6 @@ class LinkPlaySpeaker:
             self._state.album = None
             self._schedule_hint_refresh()
             changed = True
-    
     
     async def _pinfget(self) -> None:
         """Fetch a single current-status snapshot from the speaker."""
