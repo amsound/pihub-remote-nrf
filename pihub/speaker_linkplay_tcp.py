@@ -13,7 +13,6 @@ volume/mute/transport, preset, play_url) so you can swap it in with minimal chan
 from __future__ import annotations
 
 import asyncio
-import datetime
 import contextlib
 import json
 import logging
@@ -193,11 +192,6 @@ class LinkPlaySpeaker:
         self._plm: str | None = None
         self._ply: dict[str, Any] | None = None
 
-        # Hint-driven refresh (AXX+PLY+NEW)
-        self._hint_task: asyncio.Task | None = None
-        self._load_follow_task: asyncio.Task | None = None
-        self._hint_armed: bool = False  # set True after hint until first PINFGET processed
-
     # ---------- small public helpers ----------
 
     @property
@@ -209,37 +203,25 @@ class LinkPlaySpeaker:
         return self._state
 
     def snapshot(self) -> dict[str, Any]:
-        """Compact state snapshot for /health.
-
-        Intentionally minimal: one timestamp ("last_update") + an ISO string for humans.
-        """
+        # Keep parity with your "health" / status JSON usage.
         s = self._state
-        last_ts = s.last_update_ts
-        now = time.time()
-        age_s = None if last_ts is None else max(0.0, now - last_ts)
-        last_iso = (
-            None
-            if last_ts is None
-            else datetime.datetime.fromtimestamp(last_ts, tz=datetime.timezone.utc).isoformat()
-        )
-
         return {
             "reachable": bool(s.reachable),
-            "subscribed": bool(s.subscribed),  # kept for backwards-compat; means "connected" here
+            "subscribed": bool(s.subscribed),
             "last_error": s.last_error,
             "transport": s.transport,
             "volume_pct": None if s.volume is None else int(round(s.volume * 100)),
             "muted": s.muted,
             "source": s.source,
+            "source_detail": s.source_detail,
             "track_uri": s.track_uri,
             "title": s.title,
             "artist": s.artist,
             "album": s.album,
-            "last_update_ts": last_ts,
-            "last_update_iso": last_iso,
-            "update_age_s": age_s,
+            "last_notify_ts": s.last_notify_ts,
+            "last_event_ts": s.last_event_ts,
+            "last_update_ts": s.last_update_ts,
         }
-
 
     # ---------- lifecycle ----------
 
@@ -385,6 +367,7 @@ class LinkPlaySpeaker:
                     self._on_payload(payload)
 
     def _on_payload(self, payload: str) -> None:
+        self._state.last_notify_ts = _now()
         changed = False
 
         # Examples:
@@ -434,7 +417,6 @@ class LinkPlaySpeaker:
                     self._ply = data
                     # status
                     st = str(data.get("status", "")).lower()
-                    # vendor provides useful source detail
                     vend = str(data.get("vendor", "") or "").strip()
                     if vend:
                         self._state.source_detail = vend
@@ -457,9 +439,15 @@ class LinkPlaySpeaker:
                             changed = True
                         except Exception:
                             pass
-                    # title/artist/album (hex)
+                    # Title/Artist/Album are often hex-encoded.
+                    # Some firmwares put a URL directly in Title when streaming.
                     if "Title" in data:
-                        self._state.title = _hex_to_text(str(data.get("Title", "")))
+                        raw_title = str(data.get("Title", "") or "")
+                        dec_title = _hex_to_text(raw_title)
+                        if dec_title.startswith("http://") or dec_title.startswith("https://"):
+                            self._state.track_uri = dec_title
+                        else:
+                            self._state.title = dec_title
                         changed = True
                     if "Artist" in data:
                         self._state.artist = _hex_to_text(str(data.get("Artist", "")))
@@ -482,28 +470,25 @@ class LinkPlaySpeaker:
             if j.startswith("{") and j.endswith("}"):
                 try:
                     data = json.loads(j)
-                    # hex strings per doc
-                    t = _hex_to_text(str(data.get("title", "")))
-                    a = _hex_to_text(str(data.get("artist", "")))
-                    al = _hex_to_text(str(data.get("album", "")))
-                    if t:
-                        self._state.title = t
-                        changed = True
-                    if a:
-                        self._state.artist = a
-                        changed = True
-                    if al:
-                        self._state.album = al
-                        changed = True
-                    # url is sometimes empty here; keep if present
-                    url = str(data.get("url", "")).strip()
-                    if url:
-                        # Some firmwares hex-encode url as well
-                        url_dec = _hex_to_text(url)
-                        self._state.track_uri = url_dec
+
+                    t = _hex_to_text(str(data.get("title", "") or "")).strip()
+                    a = _hex_to_text(str(data.get("artist", "") or "")).strip()
+                    al = _hex_to_text(str(data.get("album", "") or "")).strip()
+
+                    url_raw = str(data.get("url", "") or "").strip()
+                    url = _hex_to_text(url_raw).strip() if url_raw else ""
+
+                    # Apply atomically only if any meaningful field is present.
+                    if t or a or al or url:
+                        self._state.title = t or None
+                        self._state.artist = a or None
+                        self._state.album = al or None
+                        if url:
+                            self._state.track_uri = url
                         changed = True
                 except Exception:
                     pass
+
 
         elif p.startswith("AXX+SNG+INF"):
             # short progress/status; we only care about status to keep transport fresh
@@ -512,6 +497,10 @@ class LinkPlaySpeaker:
                 try:
                     data = json.loads(j)
                     st = str(data.get("status", "")).lower()
+                    vend = str(data.get("vendor", "") or "").strip()
+                    if vend:
+                        self._state.source_detail = vend
+                        changed = True
                     if st:
                         self._state.transport = _STATUS_TO_TRANSPORT.get(st, st)
                         changed = True
@@ -519,14 +508,13 @@ class LinkPlaySpeaker:
                     pass
 
         elif p.startswith("AXX+PLY+NEW"):
-            # indicates "something changed"; fetch status after short delay (bounded retries)
+            # Something changed (preset/track/source). Clear stale now-playing fields so we do not mix old/new.
+            self._state.track_uri = None
+            self._state.title = None
+            self._state.artist = None
+            self._state.album = None
             self._schedule_hint_refresh()
-
-        # else: ignore
-
-        if changed:
-            self._state.last_update_ts = _now()
-
+            changed = True
     
     
     async def _pinfget(self) -> None:
