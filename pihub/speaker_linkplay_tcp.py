@@ -385,18 +385,64 @@ class LinkPlaySpeaker:
                     self._on_payload(payload)
 
     def _on_payload(self, payload: str) -> None:
-        self._state.last_notify_ts = _now()
+        now = _now()
+        self._state.last_notify_ts = now
         changed = False
 
-        # Examples:
-        #   AXX+VOL+030
-        #   AXX+MUT+001
-        #   AXX+PLM+010
-        #   AXX+MEA+DAT{ ... }&
-        #   AXX+PLY+INF{ ... }&
-        #   AXX+PLY+NEW
-        #   AXX+KEY+003
-        #   AXX+KEY+RDY
+        def _clear_now_playing(clear_source_detail: bool = False) -> None:
+            """Clear fields that commonly go stale across track/source changes."""
+            nonlocal changed
+            if self._state.track_uri is not None:
+                self._state.track_uri = None
+                changed = True
+            if self._state.title is not None:
+                self._state.title = None
+                changed = True
+            if self._state.artist is not None:
+                self._state.artist = None
+                changed = True
+            if self._state.album is not None:
+                self._state.album = None
+                changed = True
+            if clear_source_detail and self._state.source_detail is not None:
+                self._state.source_detail = None
+                changed = True
+
+        def _maybe_decode_text(s: str) -> str:
+            """Some firmwares send hex strings, some send plain text."""
+            s = (s or "").strip()
+            if not s:
+                return ""
+            # Heuristic: if it looks like hex (even length, only hex chars), try decoding.
+            hx = s.replace(" ", "")
+            if len(hx) >= 2 and len(hx) % 2 == 0:
+                ok = True
+                for ch in hx:
+                    if ch not in "0123456789abcdefABCDEF":
+                        ok = False
+                        break
+                if ok:
+                    try:
+                        return _hex_to_text(s).strip()
+                    except Exception:
+                        pass
+            return s
+
+        def _parse_json_after_prefix(prefix: str) -> dict | None:
+            """Robustly parse JSON even if firmware adds extra '+' tokens before '{'."""
+            try:
+                # Strip trailing '&' already handled above.
+                # Find first '{' and parse from there.
+                idx = p.find("{")
+                if idx == -1:
+                    return None
+                j = p[idx:]
+                if not j.endswith("}"):
+                    return None
+                return json.loads(j)
+            except Exception:
+                return None
+
         p = payload.strip()
         if p.endswith("&"):
             p = p[:-1]
@@ -416,140 +462,179 @@ class LinkPlaySpeaker:
                 self._state.muted = (m == "001")
                 changed = True
 
-        elif p.startswith("AXX+PLM+"):
-            mode = p.split("+", 2)[2]
-            self._plm = mode
-            self._state.source = _PLM_TO_SOURCE.get(mode, "unknown")
-            # "idle" also implies not playing
-            if mode == "000" and self._state.transport in (None, "unknown", "playing", "paused"):
-                self._state.transport = "idle"
+        # --- IMPORTANT: put specific AXX+PLY+ handlers BEFORE the generic AXX+PLY+ ---
+        elif p.startswith("AXX+PLY+INF"):
+            data = _parse_json_after_prefix("AXX+PLY+INF")
+            if isinstance(data, dict):
+                self._ply = data
+
+                # status: play/stop/pause are the only ones we treat as authoritative
+                st = str(data.get("status", "")).lower().strip()
+                if st in _STATUS_TO_TRANSPORT:
+                    self._state.transport = _STATUS_TO_TRANSPORT[st]
+                    changed = True
+                    # If the device says stop/idle, blank now-playing to avoid stale display.
+                    if self._state.transport in ("idle", "stopped", "stop"):
+                        _clear_now_playing()
+
+                # vendor/source detail (may be hex or plain)
+                vend = _maybe_decode_text(str(data.get("vendor", "") or ""))
+                if vend:
+                    if self._state.source_detail != vend:
+                        self._state.source_detail = vend
+                        changed = True
+
+                # vol/mute sometimes included here too
+                if "vol" in data:
+                    try:
+                        vi = int(str(data["vol"]))
+                        self._state.volume = _clamp_int(vi, 0, 100) / 100.0
+                        changed = True
+                    except Exception:
+                        pass
+                if "mute" in data:
+                    try:
+                        mi = int(str(data["mute"]))
+                        self._state.muted = (mi != 0)
+                        changed = True
+                    except Exception:
+                        pass
+
+                # Title/Artist/Album fields (often hex)
+                if "Title" in data:
+                    raw_title = str(data.get("Title", "") or "")
+                    dec_title = _maybe_decode_text(raw_title)
+                    if dec_title.startswith("http://") or dec_title.startswith("https://"):
+                        if self._state.track_uri != dec_title:
+                            self._state.track_uri = dec_title
+                            changed = True
+                    else:
+                        if self._state.title != dec_title:
+                            self._state.title = dec_title
+                            changed = True
+
+                if "Artist" in data:
+                    artist = _maybe_decode_text(str(data.get("Artist", "") or ""))
+                    if self._state.artist != artist:
+                        self._state.artist = artist
+                        changed = True
+
+                if "Album" in data:
+                    album = _maybe_decode_text(str(data.get("Album", "") or ""))
+                    if self._state.album != album:
+                        self._state.album = album
+                        changed = True
+
+                # mode inside PLY can mirror PLM; if it changes, treat like a source change
+                if "mode" in data:
+                    mode = str(data.get("mode", "") or "").strip()
+                    if mode and mode != getattr(self, "_plm", None):
+                        self._plm = mode
+                        new_source = _PLM_TO_SOURCE.get(mode, "unknown")
+                        if self._state.source != new_source:
+                            self._state.source = new_source
+                            changed = True
+                        _clear_now_playing(clear_source_detail=True)
+
+        elif p.startswith("AXX+PLY+NEW"):
+            # Something changed (preset/track/source). Clear stale fields and hint refresh.
+            _clear_now_playing(clear_source_detail=False)
+            self._schedule_hint_refresh()
             changed = True
 
         elif p.startswith("AXX+PLY+"):
-            code = p.split("+", 2)[2]
-            # Observed / reported behavior:
-            # 000 = paused, 001 = playing  [oai_citation:4‡Arylic Forum](https://forum.arylic.com/t/beta-firmware-and-beta-app-test-invitation/499?page=4&utm_source=chatgpt.com)
+            # Short playback state codes (e.g., AXX+PLY+000 / AXX+PLY+001)
+            code = p.split("+", 2)[2].strip()
             if code == "000":
-                self._state.transport = "paused"
-                changed = True
+                if self._state.transport != "paused":
+                    self._state.transport = "paused"
+                    changed = True
             elif code == "001":
-                self._state.transport = "playing"
-                changed = True
-            # else: leave unchanged (unknown code)
+                if self._state.transport != "playing":
+                    self._state.transport = "playing"
+                    changed = True
+            # Some firmwares may emit other codes; ignore unknowns.
 
-        elif p.startswith("AXX+PLY+INF"):
-            # JSON blob after "AXX+PLY+INF"
-            j = p[len("AXX+PLY+INF") :]
-            j = j.strip()
-            if j.startswith("{") and j.endswith("}"):
-                try:
-                    data = json.loads(j)
-                    self._ply = data
-                    # status
-                    st = str(data.get("status", "")).lower()
-                    vend = str(data.get("vendor", "") or "").strip()
-                    if vend:
-                        self._state.source_detail = vend
-                        changed = True
-                    if st in _STATUS_TO_TRANSPORT:
-                        self._state.transport = _STATUS_TO_TRANSPORT[st]
-                        changed = True
-                    # vol/mute sometimes included here too
-                    if "vol" in data:
-                        try:
-                            vi = int(str(data["vol"]))
-                            self._state.volume = _clamp_int(vi, 0, 100) / 100.0
-                            changed = True
-                        except Exception:
-                            pass
-                    if "mute" in data:
-                        try:
-                            mi = int(str(data["mute"]))
-                            self._state.muted = (mi != 0)
-                            changed = True
-                        except Exception:
-                            pass
-                    # Title/Artist/Album are often hex-encoded.
-                    # Some firmwares put a URL directly in Title when streaming.
-                    if "Title" in data:
-                        raw_title = str(data.get("Title", "") or "")
-                        dec_title = _hex_to_text(raw_title)
-                        if dec_title.startswith("http://") or dec_title.startswith("https://"):
-                            self._state.track_uri = dec_title
-                        else:
-                            self._state.title = dec_title
-                        changed = True
-                    if "Artist" in data:
-                        self._state.artist = _hex_to_text(str(data.get("Artist", "")))
-                        changed = True
-                    if "Album" in data:
-                        self._state.album = _hex_to_text(str(data.get("Album", "")))
-                        changed = True
-                    # mode inside PLY can mirror PLM
-                    if "mode" in data:
-                        mode = str(data.get("mode", ""))
-                        if mode:
-                            self._plm = mode
-                            self._state.source = _PLM_TO_SOURCE.get(mode, self._state.source or "unknown")
-                            changed = True
-                except Exception:
-                    pass
+        elif p.startswith("AXX+PLM+"):
+            mode = p.split("+", 2)[2].strip()
+            old_mode = getattr(self, "_plm", None)
+            self._plm = mode
+
+            new_source = _PLM_TO_SOURCE.get(mode, "unknown")
+            # If mode/source changes, blank now-playing because old metadata is very likely stale.
+            if mode != old_mode or self._state.source != new_source:
+                self._state.source = new_source
+                changed = True
+                _clear_now_playing(clear_source_detail=True)
+            else:
+                self._state.source = new_source
+                changed = True
+
+            # "idle" implies not playing. Treat mode == "000" as idle (per your mapping).
+            if mode == "000":
+                if self._state.transport != "idle":
+                    self._state.transport = "idle"
+                    changed = True
+                # Clear now-playing when idle to avoid stale track display
+                _clear_now_playing()
 
         elif p.startswith("AXX+MEA+DAT"):
-            j = p[len("AXX+MEA+DAT") :].strip()
-            if j.startswith("{") and j.endswith("}"):
-                try:
-                    data = json.loads(j)
+            data = _parse_json_after_prefix("AXX+MEA+DAT")
+            if isinstance(data, dict):
+                # These are often hex-encoded
+                t = _maybe_decode_text(str(data.get("title", "") or ""))
+                a = _maybe_decode_text(str(data.get("artist", "") or ""))
+                al = _maybe_decode_text(str(data.get("album", "") or ""))
 
-                    t = _hex_to_text(str(data.get("title", "") or "")).strip()
-                    a = _hex_to_text(str(data.get("artist", "") or "")).strip()
-                    al = _hex_to_text(str(data.get("album", "") or "")).strip()
+                vend = _maybe_decode_text(str(data.get("vendor", "") or ""))
+                if vend and self._state.source_detail != vend:
+                    self._state.source_detail = vend
+                    changed = True
 
-                    vend = _hex_to_text(str(data.get("vendor", "") or "")).strip()
-                    if vend:
-                        self._state.source_detail = vend
+                url_raw = str(data.get("url", "") or "").strip()
+                url = _maybe_decode_text(url_raw) if url_raw else ""
+
+                # Apply only if any meaningful field is present.
+                if t or a or al or url:
+                    # Normalize empty strings to None
+                    nt = t or None
+                    na = a or None
+                    nal = al or None
+                    if self._state.title != nt:
+                        self._state.title = nt
                         changed = True
-
-                    url_raw = str(data.get("url", "") or "").strip()
-                    url = _hex_to_text(url_raw).strip() if url_raw else ""
-
-                    # Apply atomically only if any meaningful field is present.
-                    if t or a or al or url:
-                        self._state.title = t or None
-                        self._state.artist = a or None
-                        self._state.album = al or None
-                        if url:
+                    if self._state.artist != na:
+                        self._state.artist = na
+                        changed = True
+                    if self._state.album != nal:
+                        self._state.album = nal
+                        changed = True
+                    if url:
+                        if self._state.track_uri != url:
                             self._state.track_uri = url
-                        changed = True
-                except Exception:
-                    pass
-
+                            changed = True
 
         elif p.startswith("AXX+SNG+INF"):
-            # short progress/status; we only care about status to keep transport fresh
-            j = p[len("AXX+SNG+INF") :].strip()
-            if j.startswith("{") and j.endswith("}"):
-                try:
-                    data = json.loads(j)
-                    st = str(data.get("status", "")).lower()
-                    vend = str(data.get("vendor", "") or "").strip()
-                    if vend:
-                        self._state.source_detail = vend
+            # Short progress/status; use it to keep transport fresh, but ignore weird statuses.
+            data = _parse_json_after_prefix("AXX+SNG+INF")
+            if isinstance(data, dict):
+                st = str(data.get("status", "")).lower().strip()
+                if st in _STATUS_TO_TRANSPORT:
+                    new_transport = _STATUS_TO_TRANSPORT[st]
+                    if self._state.transport != new_transport:
+                        self._state.transport = new_transport
                         changed = True
-                    if st in _STATUS_TO_TRANSPORT:
-                        self._state.transport = _STATUS_TO_TRANSPORT[st]
-                        changed = True
-                except Exception:
-                    pass
+                    if new_transport in ("idle", "stopped", "stop"):
+                        _clear_now_playing()
 
-        elif p.startswith("AXX+PLY+NEW"):
-            # Something changed (preset/track/source). Clear stale now-playing fields so we do not mix old/new.
-            self._state.track_uri = None
-            self._state.title = None
-            self._state.artist = None
-            self._state.album = None
-            self._schedule_hint_refresh()
-            changed = True
+                vend = _maybe_decode_text(str(data.get("vendor", "") or ""))
+                if vend and self._state.source_detail != vend:
+                    self._state.source_detail = vend
+                    changed = True
+
+        # If anything meaningful changed, bump "last_update" (keep "last_notify" separate).
+        if changed:
+            self._state.last_update_ts = now
     
     async def _pinfget(self) -> None:
         """Fetch a single current-status snapshot from the speaker."""
