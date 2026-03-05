@@ -218,8 +218,6 @@ class LinkPlaySpeaker:
             "title": s.title,
             "artist": s.artist,
             "album": s.album,
-            "last_notify_ts": s.last_notify_ts,
-            "last_event_ts": s.last_event_ts,
             "last_update_ts": s.last_update_ts,
         }
 
