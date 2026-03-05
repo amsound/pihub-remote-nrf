@@ -425,6 +425,18 @@ class LinkPlaySpeaker:
                 self._state.transport = "idle"
             changed = True
 
+        elif p.startswith("AXX+PLY+"):
+            code = p.split("+", 2)[2]
+            # Observed / reported behavior:
+            # 000 = paused, 001 = playing  [oai_citation:4‡Arylic Forum](https://forum.arylic.com/t/beta-firmware-and-beta-app-test-invitation/499?page=4&utm_source=chatgpt.com)
+            if code == "000":
+                self._state.transport = "paused"
+                changed = True
+            elif code == "001":
+                self._state.transport = "playing"
+                changed = True
+            # else: leave unchanged (unknown code)
+
         elif p.startswith("AXX+PLY+INF"):
             # JSON blob after "AXX+PLY+INF"
             j = p[len("AXX+PLY+INF") :]
@@ -439,8 +451,8 @@ class LinkPlaySpeaker:
                     if vend:
                         self._state.source_detail = vend
                         changed = True
-                    if st:
-                        self._state.transport = _STATUS_TO_TRANSPORT.get(st, st)
+                    if st in _STATUS_TO_TRANSPORT:
+                        self._state.transport = _STATUS_TO_TRANSPORT[st]
                         changed = True
                     # vol/mute sometimes included here too
                     if "vol" in data:
@@ -493,6 +505,11 @@ class LinkPlaySpeaker:
                     a = _hex_to_text(str(data.get("artist", "") or "")).strip()
                     al = _hex_to_text(str(data.get("album", "") or "")).strip()
 
+                    vend = _hex_to_text(str(data.get("vendor", "") or "")).strip()
+                    if vend:
+                        self._state.source_detail = vend
+                        changed = True
+
                     url_raw = str(data.get("url", "") or "").strip()
                     url = _hex_to_text(url_raw).strip() if url_raw else ""
 
@@ -519,8 +536,8 @@ class LinkPlaySpeaker:
                     if vend:
                         self._state.source_detail = vend
                         changed = True
-                    if st:
-                        self._state.transport = _STATUS_TO_TRANSPORT.get(st, st)
+                    if st in _STATUS_TO_TRANSPORT:
+                        self._state.transport = _STATUS_TO_TRANSPORT[st]
                         changed = True
                 except Exception:
                     pass
