@@ -133,6 +133,7 @@ class SpeakerState:
     muted: bool | None = None
 
     source: str | None = None     # wifi/bluetooth/line-in/optical/hdmi/airplay/...
+    source_detail: str | None = None  # e.g. vendor field (CustomRadio/newTuneIn/etc)
     track_uri: str | None = None
     title: str | None = None
     artist: str | None = None
@@ -192,6 +193,11 @@ class LinkPlaySpeaker:
         self._plm: str | None = None
         self._ply: dict[str, Any] | None = None
 
+        # Hint-driven refresh (AXX+PLY+NEW)
+        self._hint_task: asyncio.Task | None = None
+        self._load_follow_task: asyncio.Task | None = None
+        self._hint_armed: bool = False  # set True after hint until first PINFGET processed
+
     # ---------- small public helpers ----------
 
     @property
@@ -204,7 +210,8 @@ class LinkPlaySpeaker:
 
     def snapshot(self) -> dict[str, Any]:
         """Compact state snapshot for /health.
-           Intentionally minimal: one timestamp ("last_update") + an ISO string for humans.
+
+        Intentionally minimal: one timestamp ("last_update") + an ISO string for humans.
         """
         s = self._state
         last_ts = s.last_update_ts
@@ -427,6 +434,11 @@ class LinkPlaySpeaker:
                     self._ply = data
                     # status
                     st = str(data.get("status", "")).lower()
+                    # vendor provides useful source detail
+                    vend = str(data.get("vendor", "") or "").strip()
+                    if vend:
+                        self._state.source_detail = vend
+                        changed = True
                     if st:
                         self._state.transport = _STATUS_TO_TRANSPORT.get(st, st)
                         changed = True
@@ -507,8 +519,8 @@ class LinkPlaySpeaker:
                     pass
 
         elif p.startswith("AXX+PLY+NEW"):
-            # indicates "something changed"; ask for a fresh PINF/MEA
-            asyncio.create_task(self._prime_state())
+            # indicates "something changed"; fetch status after short delay (bounded retries)
+            self._schedule_hint_refresh()
 
         # else: ignore
 
@@ -516,6 +528,46 @@ class LinkPlaySpeaker:
             self._state.last_update_ts = _now()
 
     
+    
+    async def _pinfget(self) -> None:
+        """Fetch a single current-status snapshot from the speaker."""
+        if not self._writer:
+            return
+        try:
+            await self._send("MCU+PINFGET")
+        except Exception:
+            return
+
+    async def _mutget(self) -> None:
+        """Fetch current mute state from the speaker."""
+        if not self._writer:
+            return
+        try:
+            await self._send("MCU+MUT+GET")
+        except Exception:
+            return
+
+    def _schedule_hint_refresh(self) -> None:
+        """
+        Called on AXX+PLY+NEW ("something changed").
+        Policy:
+        - Immediately request a snapshot (MCU+PINFGET).
+        - If the snapshot reports status == load/loading, do a bounded follow-up:
+            after 2s -> PINFGET, if still loading
+            after 5s -> PINFGET, then stop.
+        """
+        # Arm: the next AXX+PLY+INF we parse can decide whether we need follow-ups.
+        self._hint_armed = True
+
+        async def _immediate() -> None:
+            # Cancel any in-flight immediate task
+            await self._pinfget()
+
+        # avoid spawning endless tasks if hints spam; keep one immediate task
+        if self._hint_task and not self._hint_task.done():
+            return
+        self._hint_task = asyncio.create_task(_immediate(), name=f"linkplay_hint_immediate[{self._host}]")
+
     async def _resync_after_control(self) -> None:
         """
         Event-triggered sync after sending a control command.
@@ -530,6 +582,7 @@ class LinkPlaySpeaker:
                 await self._send(c)
             except Exception:
                 return
+    
     async def _prime_state(self) -> None:
         """
         Ask for a full status snapshot so we can avoid polling and still converge quickly
@@ -572,23 +625,35 @@ class LinkPlaySpeaker:
         nxt = _clamp_int(cur - self._volume_step_pct, 0, 100)
         await self._send(f"MCU+VOL+{nxt:03d}")
 
+    
     async def mute_toggle(self) -> None:
-        # If we know the state, toggle; else request state then toggle.
-        if self._state.muted is None:
-            await self._send("MCU+MUT+GET")
-            await asyncio.sleep(0.05)
-        new = "000" if self._state.muted else "001"
+        """
+        Robust mute toggle:
+          - Ask current mute state first (handles external changes)
+          - Set opposite
+          - Ask again to confirm
+        """
+        await self._mutget()
+        await asyncio.sleep(0.25)
+
+        cur = bool(self._state.muted) if self._state.muted is not None else False
+        new = "000" if cur else "001"
         await self._send(f"MCU+MUT+{new}")
-        asyncio.create_task(self._resync_after_control())
+
+        await asyncio.sleep(0.25)
+        await self._mutget()
 
     async def play(self) -> None:
         await self._send("MCU+PLY-PLA")
+        await self._pinfget()
 
     async def pause(self) -> None:
         await self._send("MCU+PLY-PUS")
+        await self._pinfget()
 
     async def stop_playback(self) -> None:
         await self._send("MCU+PLY-STP")
+        await self._pinfget()
 
     async def next_track(self) -> None:
         await self._send("MCU+PLY+NXT")
@@ -598,6 +663,7 @@ class LinkPlaySpeaker:
 
     async def play_pause(self) -> None:
         await self._send("MCU+PLY+PUS")
+        await self._pinfget()
 
     async def preset(self, n: int) -> None:
         n = _clamp_int(int(n), 1, 10)
@@ -626,7 +692,7 @@ class LinkPlaySpeaker:
             asyncio.run(self._http_cmd(cmd))
 
 
-    # ---------- play URL (HTTP API) ----------
+    # -------------- (HTTP API) --------------
 
     async def play_url(self, url: str) -> None:
         """
@@ -657,3 +723,12 @@ class LinkPlaySpeaker:
         finally:
             # Ask for fresh now-playing
             asyncio.create_task(self._prime_state())
+
+    async def turn_off(self) -> None:
+        """Turn the speaker off/standby via HTTP API."""
+        cmd = getattr(self, "_http_poweroff_cmd", DEFAULT_HTTP_POWEROFF_CMD)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._http_cmd(cmd))
+        except RuntimeError:
+            asyncio.run(self._http_cmd(cmd))
