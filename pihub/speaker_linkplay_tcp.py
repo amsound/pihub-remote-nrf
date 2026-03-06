@@ -1,19 +1,18 @@
 """
 LinkPlay/WiiM speaker controller (TCP API only).
 
-Why this exists:
-- LinkPlay "TCP API" is a single TCP connection (default port 8899) that pushes
-  state changes (volume/mute/playback/media info) to the client.
-- This avoids UPnP/SSDP multicast + GENA eventing headaches across VLANs.
-
-Implements the same public surface as the existing speaker_linkplay.py (start/stop,
-volume/mute/transport, preset, play_url) so you can swap it in with minimal changes.
+Policy (agreed):
+- State refresh primitive: always MCU+PINFGET (no MEA / no SONGGET)
+- Connected gating: connected=True only after first successful PINFGET parse
+- Mute safety: always MUT+GET before changing mute
+- Polling: only on Wi-Fi-ish sources; 10s play/loading / 30s pause / 60s idle; physical inputs 60s liveness
+- After commands/hints: always PINFGET converge pull
+- Health details should be minimal (this file provides snapshot() accordingly)
 """
 
 from __future__ import annotations
 
 import asyncio
-import datetime
 import contextlib
 import json
 import logging
@@ -33,6 +32,16 @@ _TCP_HEADER = b"\x18\x96\x18\x20"  # 0x18 0x96 0x18 0x20
 _HTTPAPI_PATH = "/httpapi.asp"
 _HTTP_TIMEOUT_S = 10
 DEFAULT_HTTP_POWEROFF_CMD = "setPlayerCmd:poweroff"
+
+# Poll knobs (tweak here)
+POLL_WIFI_PLAYING_S = 10.0   # play OR loading
+POLL_WIFI_PAUSED_S = 30.0
+POLL_WIFI_IDLE_S = 60.0
+POLL_PHYSICAL_S = 60.0
+
+# Mute safety knobs
+MUTE_GET_DELAY_S = 0.05      # tiny settle delay after MUT+GET
+MUTE_GET_TIMEOUT_S = 0.6     # wait for AXX+MUT+... after GET
 
 # PLM input modes -> app-friendly "source"
 # (Doc: https://developer.arylic.com/tcpapi/ — see "Current Input Mode" / PLM table.)
@@ -65,12 +74,7 @@ _PLM_TO_SOURCE = {
     "011": "wifi",  # USB playlist (treated as "wifi" for your app needs)
 }
 
-
-_STATUS_TO_TRANSPORT = {
-    "play": "playing",
-    "pause": "paused",
-    "stop": "stopped",
-}
+_PHYSICAL_SOURCES = {"hdmi", "optical", "line-in", "bluetooth"}
 
 
 def _now() -> float:
@@ -79,26 +83,6 @@ def _now() -> float:
 
 def _clamp_int(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
-
-
-def _hex_to_text(maybe_hex: str) -> str:
-    """
-    LinkPlay uses hex-encoded UTF-8 strings in a bunch of places (Title/Artist/Album, etc).
-    If it isn't valid hex, return as-is.
-    """
-    if not maybe_hex:
-        return ""
-    s = maybe_hex.strip()
-    # quick filter
-    if len(s) % 2 != 0:
-        return s
-    try:
-        raw = bytes.fromhex(s)
-        # strip nulls
-        raw = raw.replace(b"\x00", b"")
-        return raw.decode("utf-8", errors="replace").strip()
-    except Exception:
-        return s
 
 
 def _parse_payload(payload: bytes) -> str:
@@ -125,18 +109,15 @@ def _mk_packet(payload_text: str) -> bytes:
 @dataclass
 class SpeakerState:
     reachable: bool = False
-    subscribed: bool = False  # "subscribed" = TCP connected
+    subscribed: bool = False        # TCP socket is up
+    connected: bool = False         # becomes true only after first successful PINFGET parse
     last_error: str | None = None
 
-    transport: str | None = None  # playing/paused/stopped/idle/unknown
-    volume: float | None = None   # 0..1
+    playback_status: str | None = None  # play/pause/stop/loading/... (wifi-ish only; physical inputs => None)
+    volume: float | None = None         # 0..1
     muted: bool | None = None
 
-    source: str | None = None     # wifi/bluetooth/line-in/optical/hdmi/airplay/...
-    track_uri: str | None = None
-    title: str | None = None
-    artist: str | None = None
-    album: str | None = None
+    source: str | None = None           # wifi/bluetooth/line-in/optical/hdmi/airplay/...
     last_update_ts: float | None = None
 
 
@@ -146,9 +127,9 @@ class LinkPlaySpeaker:
 
     Public API matches the UPnP version:
       - start/stop
-      - volume_up/volume_down/mute_toggle
+      - volume_up/volume_down/mute_toggle (+ set_muted)
       - play/pause/stop_playback/next_track/previous_track/play_pause
-      - preset
+      - preset (+ next_preset/previous_preset)
       - play_url (still uses httpapi.asp)
       - set_source (best-effort via PLM if supported)
       - turn_off / clear_playlist (best-effort)
@@ -188,9 +169,11 @@ class LinkPlaySpeaker:
 
         self._session: aiohttp.ClientSession | None = None
 
-        # Keep the most recent PLM and PLY blobs around (helps with "source"/"transport")
-        self._plm: str | None = None
-        self._ply: dict[str, Any] | None = None
+        self._poll_task: asyncio.Task | None = None
+        self._log_drop_once = False
+
+        # Mute GET waiter
+        self._mute_evt = asyncio.Event()
 
     # ---------- small public helpers ----------
 
@@ -203,36 +186,20 @@ class LinkPlaySpeaker:
         return self._state
 
     def snapshot(self) -> dict[str, Any]:
-        """Compact state snapshot for /health.
-           Intentionally minimal: one timestamp ("last_update") + an ISO string for humans.
-        """
+        """Minimal state snapshot for /health details. Whole-second timestamps."""
         s = self._state
-        last_ts = s.last_update_ts
-        now = time.time()
-        age_s = None if last_ts is None else max(0.0, now - last_ts)
-        last_iso = (
-            None
-            if last_ts is None
-            else datetime.datetime.fromtimestamp(last_ts, tz=datetime.timezone.utc).isoformat()
-        )
-
+        now_i = int(time.time())
+        last_i = None if s.last_update_ts is None else int(s.last_update_ts)
+        age_i = None if last_i is None else max(0, now_i - last_i)
         return {
-            "reachable": bool(s.reachable),
-            "subscribed": bool(s.subscribed),  # kept for backwards-compat; means "connected" here
-            "last_error": s.last_error,
-            "transport": s.transport,
+            "connected": bool(s.connected),
+            "playback_status": s.playback_status,
             "volume_pct": None if s.volume is None else int(round(s.volume * 100)),
             "muted": s.muted,
             "source": s.source,
-            "track_uri": s.track_uri,
-            "title": s.title,
-            "artist": s.artist,
-            "album": s.album,
-            "last_update_ts": last_ts,
-            "last_update_iso": last_iso,
-            "update_age_s": age_s,
+            "last_update_ts": last_i,
+            "update_age_s": age_i,
         }
-
 
     # ---------- lifecycle ----------
 
@@ -259,6 +226,12 @@ class LinkPlaySpeaker:
                 await self._task
         self._task = None
 
+        if self._poll_task:
+            self._poll_task.cancel()
+            with contextlib.suppress(Exception):
+                await self._poll_task
+        self._poll_task = None
+
         await self._disconnect()
 
         if self._session and not self._session.closed:
@@ -269,7 +242,13 @@ class LinkPlaySpeaker:
         while self._enabled and not self._stop_evt.is_set():
             try:
                 await self._connect()
-                await self._prime_state()
+
+                # Start polling loop alongside read loop
+                self._poll_task = asyncio.create_task(self._poll_loop(), name=f"linkplay_poll[{self._host}]")
+
+                # Initial handshake pull (this is what flips connected=True after parse)
+                await self._pinfget()
+
                 await self._read_loop()
             except asyncio.CancelledError:
                 break
@@ -277,7 +256,13 @@ class LinkPlaySpeaker:
                 logger.warning("TCP loop error host=%s err=%r", self._host, e)
                 self._mark_down(str(e))
             finally:
+                if self._poll_task:
+                    self._poll_task.cancel()
+                    with contextlib.suppress(Exception):
+                        await self._poll_task
+                self._poll_task = None
                 await self._disconnect()
+
             # backoff before reconnect
             if self._enabled and not self._stop_evt.is_set():
                 await asyncio.sleep(self._reconnect_s)
@@ -286,6 +271,8 @@ class LinkPlaySpeaker:
         self._state.last_error = None
         self._state.subscribed = False
         self._state.reachable = False
+        self._state.connected = False
+        self._log_drop_once = False
 
         reader, writer = await asyncio.open_connection(self._host, self._tcp_port)
         self._reader, self._writer = reader, writer
@@ -295,7 +282,10 @@ class LinkPlaySpeaker:
         logger.info("linkplay tcp connected host=%s port=%s", self._host, self._tcp_port)
 
     async def _disconnect(self) -> None:
+        # Reset flags; keep last_error as-is for inspection
         self._state.subscribed = False
+        self._state.reachable = False
+        self._state.connected = False
         self._state.last_update_ts = _now()
 
         if self._writer:
@@ -309,12 +299,14 @@ class LinkPlaySpeaker:
     def _mark_down(self, err: str | None) -> None:
         self._state.reachable = False
         self._state.subscribed = False
+        self._state.connected = False
         self._state.last_error = err
         self._state.last_update_ts = _now()
 
     # ---------- send / receive ----------
 
     async def _send(self, payload: str) -> None:
+        """Low-level send (does not apply the connected gate)."""
         if not self._writer:
             raise ConnectionError("not connected")
 
@@ -334,6 +326,31 @@ class LinkPlaySpeaker:
             await self._writer.drain()
 
             self._last_send_monotonic = time.monotonic()
+
+    async def _send_control(self, payload: str) -> bool:
+        """
+        Control-plane sends. Drop until connected=True (handshake complete).
+        Returns True if sent, False if dropped.
+        """
+        if not self._state.connected:
+            if not self._log_drop_once:
+                logger.info("speaker not connected yet; dropping command=%s", payload)
+                self._log_drop_once = True
+            return False
+        try:
+            await self._send(payload)
+            return True
+        except Exception as e:
+            self._state.last_error = str(e)
+            self._state.last_update_ts = _now()
+            return False
+
+    async def _pinfget(self) -> None:
+        """Single truth pull (allowed even before connected gate)."""
+        if not self._writer:
+            return
+        with contextlib.suppress(Exception):
+            await self._send("MCU+PINFGET")
 
     async def _read_loop(self) -> None:
         assert self._reader is not None
@@ -384,7 +401,6 @@ class LinkPlaySpeaker:
         #   AXX+VOL+030
         #   AXX+MUT+001
         #   AXX+PLM+010
-        #   AXX+MEA+DAT{ ... }&
         #   AXX+PLY+INF{ ... }&
         #   AXX+PLY+NEW
         #   AXX+KEY+003
@@ -407,30 +423,41 @@ class LinkPlaySpeaker:
             if m in ("000", "001"):
                 self._state.muted = (m == "001")
                 changed = True
+                self._mute_evt.set()
 
         elif p.startswith("AXX+PLM+"):
             mode = p.split("+", 2)[2]
-            self._plm = mode
             self._state.source = _PLM_TO_SOURCE.get(mode, "unknown")
-            # "idle" also implies not playing
-            if mode == "000" and self._state.transport in (None, "unknown", "playing", "paused"):
-                self._state.transport = "idle"
+            # Physical inputs: playback status not applicable / not trusted
+            if self._state.source in _PHYSICAL_SOURCES:
+                self._state.playback_status = None
             changed = True
 
         elif p.startswith("AXX+PLY+INF"):
             # JSON blob after "AXX+PLY+INF"
-            j = p[len("AXX+PLY+INF") :]
-            j = j.strip()
+            j = p[len("AXX+PLY+INF"):].strip()
             if j.startswith("{") and j.endswith("}"):
                 try:
                     data = json.loads(j)
-                    self._ply = data
-                    # status
-                    st = str(data.get("status", "")).lower()
-                    if st:
-                        self._state.transport = _STATUS_TO_TRANSPORT.get(st, st)
+
+                    # Gate: first valid PINFGET parse makes us "connected"
+                    self._state.connected = True
+
+                    # Mode can mirror PLM
+                    mode = str(data.get("mode", "")).strip()
+                    if mode:
+                        self._state.source = _PLM_TO_SOURCE.get(mode.zfill(3), self._state.source or "unknown")
+                        if self._state.source in _PHYSICAL_SOURCES:
+                            self._state.playback_status = None
                         changed = True
-                    # vol/mute sometimes included here too
+
+                    # status only meaningful for wifi-ish sources
+                    st = str(data.get("status", "")).strip().lower()
+                    if st and (self._state.source not in _PHYSICAL_SOURCES):
+                        self._state.playback_status = st
+                        changed = True
+
+                    # vol/mute included here too
                     if "vol" in data:
                         try:
                             vi = int(str(data["vol"]))
@@ -438,6 +465,7 @@ class LinkPlaySpeaker:
                             changed = True
                         except Exception:
                             pass
+
                     if "mute" in data:
                         try:
                             mi = int(str(data["mute"]))
@@ -445,118 +473,43 @@ class LinkPlaySpeaker:
                             changed = True
                         except Exception:
                             pass
-                    # title/artist/album (hex)
-                    if "Title" in data:
-                        self._state.title = _hex_to_text(str(data.get("Title", "")))
-                        changed = True
-                    if "Artist" in data:
-                        self._state.artist = _hex_to_text(str(data.get("Artist", "")))
-                        changed = True
-                    if "Album" in data:
-                        self._state.album = _hex_to_text(str(data.get("Album", "")))
-                        changed = True
-                    # mode inside PLY can mirror PLM
-                    if "mode" in data:
-                        mode = str(data.get("mode", ""))
-                        if mode:
-                            self._plm = mode
-                            self._state.source = _PLM_TO_SOURCE.get(mode, self._state.source or "unknown")
-                            changed = True
-                except Exception:
-                    pass
-
-        elif p.startswith("AXX+MEA+DAT"):
-            j = p[len("AXX+MEA+DAT") :].strip()
-            if j.startswith("{") and j.endswith("}"):
-                try:
-                    data = json.loads(j)
-                    # hex strings per doc
-                    t = _hex_to_text(str(data.get("title", "")))
-                    a = _hex_to_text(str(data.get("artist", "")))
-                    al = _hex_to_text(str(data.get("album", "")))
-                    if t:
-                        self._state.title = t
-                        changed = True
-                    if a:
-                        self._state.artist = a
-                        changed = True
-                    if al:
-                        self._state.album = al
-                        changed = True
-                    # url is sometimes empty here; keep if present
-                    url = str(data.get("url", "")).strip()
-                    if url:
-                        # Some firmwares hex-encode url as well
-                        url_dec = _hex_to_text(url)
-                        self._state.track_uri = url_dec
-                        changed = True
-                except Exception:
-                    pass
-
-        elif p.startswith("AXX+SNG+INF"):
-            # short progress/status; we only care about status to keep transport fresh
-            j = p[len("AXX+SNG+INF") :].strip()
-            if j.startswith("{") and j.endswith("}"):
-                try:
-                    data = json.loads(j)
-                    st = str(data.get("status", "")).lower()
-                    if st:
-                        self._state.transport = _STATUS_TO_TRANSPORT.get(st, st)
-                        changed = True
                 except Exception:
                     pass
 
         elif p.startswith("AXX+PLY+NEW"):
-            # indicates "something changed"; ask for a fresh PINF/MEA
-            asyncio.create_task(self._prime_state())
+            # Hint: pull authoritative state. For physical inputs, playback doesn't apply anyway,
+            # but we still allow the occasional liveness poll to do the correction.
+            asyncio.create_task(self._pinfget())
 
         # else: ignore
 
         if changed:
             self._state.last_update_ts = _now()
 
-    
-    async def _resync_after_control(self) -> None:
+    async def _poll_loop(self) -> None:
         """
-        Event-triggered sync after sending a control command.
-        This is NOT periodic polling: we only do it right after user actions,
-        because some firmwares don't push transport/mute changes reliably.
-        """
-        if not self._writer:
-            return
-        # Keep it short: transport + media + mute/vol.
-        for c in ("MCU+PINFGET", "MCU+MEA+GET", "MCU+VOL+GET", "MCU+MUT+GET", "MCU+PLM+GET"):
-            try:
-                await self._send(c)
-            except Exception:
-                return
-    async def _prime_state(self) -> None:
-        """
-        Ask for a full status snapshot so we can avoid polling and still converge quickly
-        after reconnect or out-of-band changes.
-        """
-        if not self._writer:
-            return
+        Gentle polling to catch out-of-band changes (app/CEC/stream stalls).
 
-        # Ask for the things you care about:
-        # - device info (optional)
-        # - input mode (PLM)
-        # - now playing (PINF + MEA + SONG)
-        cmds = [
-            "MCU+DEV+GET",
-            "MCU+PLM+GET",
-            "MCU+PINFGET",
-            "MCU+MEA+GET",
-            "MCU+SONGGET",
-            "MCU+VOL+GET",
-            "MCU+MUT+GET",
-        ]
-        for c in cmds:
-            try:
-                await self._send(c)
-            except Exception:
-                # if we're mid-disconnect, just bail
-                return
+        Rules:
+        - Wi-Fi source: 10s play/loading, 30s pause, 60s idle/stop/unknown
+        - Physical sources: 60s liveness poll
+        """
+        while self._enabled and not self._stop_evt.is_set():
+            src = self._state.source or "unknown"
+
+            if src == "wifi":
+                st = (self._state.playback_status or "").lower()
+                if st in ("play", "loading"):
+                    interval = POLL_WIFI_PLAYING_S
+                elif st == "pause":
+                    interval = POLL_WIFI_PAUSED_S
+                else:
+                    interval = POLL_WIFI_IDLE_S
+            else:
+                interval = POLL_PHYSICAL_S
+
+            await asyncio.sleep(float(interval))
+            await self._pinfget()
 
     # ---------- controls (TCP) ----------
 
@@ -564,58 +517,107 @@ class LinkPlaySpeaker:
         v = self._state.volume
         cur = int(round((v or 0.0) * 100))
         nxt = _clamp_int(cur + self._volume_step_pct, 0, 100)
-        await self._send(f"MCU+VOL+{nxt:03d}")
+        if await self._send_control(f"MCU+VOL+{nxt:03d}"):
 
     async def volume_down(self) -> None:
         v = self._state.volume
         cur = int(round((v or 0.0) * 100))
         nxt = _clamp_int(cur - self._volume_step_pct, 0, 100)
-        await self._send(f"MCU+VOL+{nxt:03d}")
+        if await self._send_control(f"MCU+VOL+{nxt:03d}"):
+
+    async def set_muted(self, target: bool) -> None:
+        # Always GET before SET (mute may have changed elsewhere)
+        self._mute_evt.clear()
+        # MUT+GET is safe even pre-connected; but _send_control will drop before connected.
+        if self._state.connected:
+            await self._send_control("MCU+MUT+GET")
+        else:
+            # If we're not connected yet, just drop (consistent with gating) and let handshake establish state
+            await self._send_control("MCU+MUT+GET")
+            return
+
+        with contextlib.suppress(Exception):
+            await asyncio.sleep(MUTE_GET_DELAY_S)
+            await asyncio.wait_for(self._mute_evt.wait(), timeout=MUTE_GET_TIMEOUT_S)
+
+        cur = bool(self._state.muted) if self._state.muted is not None else False
+        if cur == bool(target):
+            asyncio.create_task(self._pinfget())
+            return
+
+        new = "001" if target else "000"
+        if await self._send_control(f"MCU+MUT+{new}"):
+            asyncio.create_task(self._pinfget())
 
     async def mute_toggle(self) -> None:
-        # If we know the state, toggle; else request state then toggle.
-        if self._state.muted is None:
-            await self._send("MCU+MUT+GET")
-            await asyncio.sleep(0.05)
-        new = "000" if self._state.muted else "001"
-        await self._send(f"MCU+MUT+{new}")
-        asyncio.create_task(self._resync_after_control())
+        cur = bool(self._state.muted) if self._state.muted is not None else False
+        await self.set_muted(not cur)
 
     async def play(self) -> None:
-        await self._send("MCU+PLY-PLA")
+        if await self._send_control("MCU+PLY-PLA"):
+            asyncio.create_task(self._pinfget())
 
     async def pause(self) -> None:
-        await self._send("MCU+PLY-PUS")
+        if await self._send_control("MCU+PLY-PUS"):
+            asyncio.create_task(self._pinfget())
 
     async def stop_playback(self) -> None:
-        await self._send("MCU+PLY-STP")
+        if await self._send_control("MCU+PLY-STP"):
+            asyncio.create_task(self._pinfget())
 
     async def next_track(self) -> None:
-        await self._send("MCU+PLY+NXT")
+        if await self._send_control("MCU+PLY+NXT"):
+            # asyncio.create_task(self._pinfget())
 
     async def previous_track(self) -> None:
-        await self._send("MCU+PLY+PRV")
+        if await self._send_control("MCU+PLY+PRV"):
+            # asyncio.create_task(self._pinfget())
 
     async def play_pause(self) -> None:
-        await self._send("MCU+PLY+PUS")
+        if await self._send_control("MCU+PLY+PUS"):
+            asyncio.create_task(self._pinfget())
 
     async def preset(self, n: int) -> None:
         n = _clamp_int(int(n), 1, 10)
-        await self._send(f"MCU+KEY+{n:03d}")
-        asyncio.create_task(self._resync_after_control())
+        if await self._send_control(f"MCU+KEY+{n:03d}"):
+            # asyncio.create_task(self._pinfget())
+
+    async def next_preset(self) -> None:
+        if await self._send_control("MCU+KEY+NXT"):
+            # asyncio.create_task(self._pinfget())
+
+    async def previous_preset(self) -> None:
+        if await self._send_control("MCU+KEY+PRE"):
+            # asyncio.create_task(self._pinfget())
 
     async def set_source(self, source: str) -> None:
         """
-        Best-effort: the TCP API doc does not standardize "set input" in the basic set.
-        Some firmwares support it via PAS passthrough; keep this as a no-op unless you
-        know the right command for your model.
+        Best-effort: many firmwares accept MCU+PLM+<mode> to switch input.
+        Your device sources: wifi, hdmi, optical, line-in, bluetooth.
         """
-        logger.info("set_source ignored (no standardized TCP command) source=%s", source)
+        src = (source or "").strip().lower()
+        want_mode: str | None = None
+        if src == "wifi":
+            want_mode = "010"
+        elif src == "hdmi":
+            want_mode = "049"
+        elif src == "optical":
+            want_mode = "043"
+        elif src in ("line-in", "linein"):
+            want_mode = "040"
+        elif src in ("bluetooth", "bt"):
+            want_mode = "041"
+
+        if not want_mode:
+            logger.info("set_source ignored (unsupported) source=%s", source)
+            return
+
+        if await self._send_control(f"MCU+PLM+{want_mode}"):
+            asyncio.create_task(self._pinfget())
 
     async def clear_playlist(self) -> None:
         # Not standardized in the TCP doc; keep as no-op.
         logger.info("clear_playlist ignored (no standardized TCP command)")
-
 
     # -------------- HTTP API --------------
 
@@ -639,8 +641,6 @@ class LinkPlaySpeaker:
             timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
             self._session = aiohttp.ClientSession(timeout=timeout)
 
-        # Most LinkPlay firmwares accept: /httpapi.asp?command=setPlayerCmd:play:{url}
-        # Some variants use setPlayerCmd:play or setPlayerCmd:play_url. Keep play: as default.
         cmd = f"setPlayerCmd:play:{url}"
         endpoint = f"{self._http_scheme}://{self._host}{_HTTPAPI_PATH}"
         params = {"command": cmd}
@@ -655,5 +655,17 @@ class LinkPlaySpeaker:
             self._state.last_update_ts = _now()
             raise
         finally:
-            # Ask for fresh now-playing
-            asyncio.create_task(self._prime_state())
+            asyncio.create_task(self._pinfget())
+
+    async def _http_cmd(self, cmd: str) -> None:
+        if not self._session:
+            timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
+            self._session = aiohttp.ClientSession(timeout=timeout)
+
+        endpoint = f"{self._http_scheme}://{self._host}{_HTTPAPI_PATH}"
+        params = {"command": cmd}
+
+        async with self._session.get(endpoint, params=params, ssl=False) as resp:
+            _ = await resp.text(errors="replace")
+            if resp.status >= 400:
+                raise RuntimeError(f"httpapi status {resp.status}")
