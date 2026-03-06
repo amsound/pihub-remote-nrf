@@ -69,20 +69,26 @@ async def main() -> None:
         def _monitor_tv_task(task: asyncio.Task) -> None:
             if stop.is_set() or tv is None:
                 return
+
+            name = task.get_name()
+
             try:
                 task.result()
             except asyncio.CancelledError:
                 return
             except Exception:
-                logger.exception("%s crashed", task.get_name())
+                logger.exception("%s crashed", name)
             else:
-                logger.warning("%s exited unexpectedly", task.get_name())
+                if name != "tv:ssdp":
+                    return
+                logger.warning("%s exited unexpectedly", name)
 
-            if task.get_name() != "tv:ssdp":
+            if name != "tv:ssdp":
                 return
 
             replacement = asyncio.create_task(ssdp_listener(tv), name="tv:ssdp")
             replacement.add_done_callback(_monitor_tv_task)
+
             for idx, existing in enumerate(tv_discovery_tasks):
                 if existing is task:
                     tv_discovery_tasks[idx] = replacement
