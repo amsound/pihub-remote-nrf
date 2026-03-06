@@ -12,7 +12,7 @@ from aiohttp import web
 from .ha_ws import HAWS
 from .input_ble_dongle import BleDongleLink
 from .input_unifying import UnifyingReader
-from .speaker_linkplay import LinkPlaySpeaker
+from .speaker_linkplay_tcp import LinkPlaySpeaker
 from .tv import TvController
 
 
