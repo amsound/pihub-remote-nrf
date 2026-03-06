@@ -244,15 +244,14 @@ class HealthServer:
             speaker_enabled = True
             snap = self._speaker.snapshot()
 
-            if isinstance(snap, dict):
-                subscribed = bool(snap.get("subscribed"))
-                reachable = bool(snap.get("reachable"))
-            else:
-                subscribed = bool(getattr(snap, "subscribed", False))
-                reachable = bool(getattr(snap, "reachable", False))
+            # Link flags come from the driver's state (details no longer repeat reachable/subscribed)
+            sstate = getattr(self._speaker, "state", None)
+            subscribed = bool(getattr(sstate, "subscribed", False))
+            reachable = bool(getattr(sstate, "reachable", False))
+            connected = bool(getattr(sstate, "connected", False))
 
             sp_link_up = subscribed
-            sp_link_ready = subscribed and reachable
+            sp_link_ready = connected
             sp_error = speaker_enabled and (not reachable)
 
             sp_reasons: list[str] = []
@@ -260,6 +259,8 @@ class HealthServer:
                 sp_reasons.append("speaker.not_subscribed")
             if subscribed and not reachable:
                 sp_reasons.append("speaker.not_reachable")
+            if subscribed and reachable and not connected:
+                sp_reasons.append("speaker.not_ready")
 
             speaker_state = {
                 "status": self._domain_status(enabled=speaker_enabled, degraded=bool(sp_reasons)),
