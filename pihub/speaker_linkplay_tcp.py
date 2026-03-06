@@ -517,13 +517,13 @@ class LinkPlaySpeaker:
         v = self._state.volume
         cur = int(round((v or 0.0) * 100))
         nxt = _clamp_int(cur + self._volume_step_pct, 0, 100)
-        if await self._send_control(f"MCU+VOL+{nxt:03d}"):
+        await self._send_control(f"MCU+VOL+{nxt:03d}"):
 
     async def volume_down(self) -> None:
         v = self._state.volume
         cur = int(round((v or 0.0) * 100))
         nxt = _clamp_int(cur - self._volume_step_pct, 0, 100)
-        if await self._send_control(f"MCU+VOL+{nxt:03d}"):
+        await self._send_control(f"MCU+VOL+{nxt:03d}"):
 
     async def set_muted(self, target: bool) -> None:
         # Always GET before SET (mute may have changed elsewhere)
@@ -566,12 +566,10 @@ class LinkPlaySpeaker:
             asyncio.create_task(self._pinfget())
 
     async def next_track(self) -> None:
-        if await self._send_control("MCU+PLY+NXT"):
-            # asyncio.create_task(self._pinfget())
+        await self._send_control("MCU+PLY+NXT"):
 
     async def previous_track(self) -> None:
-        if await self._send_control("MCU+PLY+PRV"):
-            # asyncio.create_task(self._pinfget())
+        await self._send_control("MCU+PLY+PRV"):
 
     async def play_pause(self) -> None:
         if await self._send_control("MCU+PLY+PUS"):
@@ -579,16 +577,13 @@ class LinkPlaySpeaker:
 
     async def preset(self, n: int) -> None:
         n = _clamp_int(int(n), 1, 10)
-        if await self._send_control(f"MCU+KEY+{n:03d}"):
-            # asyncio.create_task(self._pinfget())
+        await self._send_control(f"MCU+KEY+{n:03d}"):
 
     async def next_preset(self) -> None:
-        if await self._send_control("MCU+KEY+NXT"):
-            # asyncio.create_task(self._pinfget())
+        await self._send_control("MCU+KEY+NXT"):
 
     async def previous_preset(self) -> None:
-        if await self._send_control("MCU+KEY+PRE"):
-            # asyncio.create_task(self._pinfget())
+        await self._send_control("MCU+KEY+PRE"):
 
     async def set_source(self, source: str) -> None:
         """
