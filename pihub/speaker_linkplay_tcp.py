@@ -441,7 +441,10 @@ class LinkPlaySpeaker:
                     data = json.loads(j)
 
                     # Gate: first valid PINFGET parse makes us "connected"
+                    was_ready = self._state.connected
                     self._state.connected = True
+                    if not was_ready:
+                        logger.info("linkplay tcp ready host=%s (initial PINFGET received)", self._host)
 
                     # Mode can mirror PLM
                     mode = str(data.get("mode", "")).strip()
