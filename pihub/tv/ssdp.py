@@ -1,13 +1,8 @@
-"""SSDP-based TV discovery with passive NOTIFY and one-shot startup M-SEARCH.
+"""SSDP-based TV discovery.
 
-This module is part of the TV domain. It listens for SSDP NOTIFY packets
-from the configured TV and uses them as the logical on/off truth source
-(via TvController.notify_ssdp). On a positive discovery signal, it will also
-attempt a best-effort websocket connect for fast command delivery.
-
-On startup, a single targeted SSDP M-SEARCH is sent to bootstrap discovery
-for the restart/crash-recovery case where passive multicast events may have
-been missed while the app was down.
+Runtime truth comes from passive SSDP NOTIFY packets. On startup, a single
+M-SEARCH probe is sent to bootstrap state after app restart when the TV is
+already on.
 """
 
 from __future__ import annotations
@@ -16,6 +11,7 @@ import asyncio
 import logging
 import socket
 from typing import Iterable
+from urllib.parse import urlparse
 
 from .controller import TvController
 
@@ -26,17 +22,8 @@ _MCAST_PORT = 1900
 _MSEARCH_ST = "urn:schemas-upnp-org:device:MediaRenderer:1"
 
 
-def _parse_headers(txt: str) -> dict[str, str]:
-    hdr: dict[str, str] = {}
-    for line in txt.split("\r\n"):
-        if ":" in line:
-            k, v = line.split(":", 1)
-            hdr[k.strip().upper()] = v.strip()
-    return hdr
-
-
 async def ssdp_listener(tv: TvController) -> None:
-    """Listen for SSDP NOTIFY from the configured TV IP and forward to tv.notify_ssdp()."""
+    """Listen for SSDP NOTIFY from the configured TV IP and forward to controller."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -63,18 +50,24 @@ async def ssdp_listener(tv: TvController) -> None:
             if "NOTIFY * HTTP/1.1" not in txt:
                 continue
 
-            hdr = _parse_headers(txt)
-            nts = hdr.get("NTS", "")
-            nt = hdr.get("NT", "")
-            usn = hdr.get("USN", "")
-            loc = hdr.get("LOCATION")
+            hdr: dict[str, str] = {}
+            for line in txt.split("\r\n"):
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    hdr[k.strip().upper()] = v.strip()
 
-            acted = tv.notify_ssdp(nts=nts, nt=nt, usn=usn, location=loc, source="ssdp")
-            if acted and nts == "ssdp:alive":
+            acted = tv.notify_ssdp(
+                nts=hdr.get("NTS", ""),
+                nt=hdr.get("NT", ""),
+                usn=hdr.get("USN", ""),
+                location=hdr.get("LOCATION"),
+                source="ssdp",
+            )
+            if acted and hdr.get("NTS", "") == "ssdp:alive":
                 try:
                     await tv.ensure_ws_connected()
                 except Exception:
-                    logger.debug("tv:ssdp ws connect failed", exc_info=True)
+                    logger.debug("tv:ssdp ws connect failed after alive", exc_info=True)
     finally:
         try:
             sock.close()
@@ -82,8 +75,17 @@ async def ssdp_listener(tv: TvController) -> None:
             pass
 
 
-async def startup_msearch_probe(tv: TvController, *, timeout_s: float = 3.0) -> bool:
-    """Send one targeted SSDP M-SEARCH and treat a matching reply as an alive event."""
+def _parse_headers(packet: str) -> dict[str, str]:
+    hdr: dict[str, str] = {}
+    for line in packet.split("\r\n"):
+        if ":" in line:
+            k, v = line.split(":", 1)
+            hdr[k.strip().upper()] = v.strip()
+    return hdr
+
+
+async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None:
+    """Send one targeted M-SEARCH and accept only replies for the configured TV IP."""
     msg = "\r\n".join(
         [
             "M-SEARCH * HTTP/1.1",
@@ -99,54 +101,41 @@ async def startup_msearch_probe(tv: TvController, *, timeout_s: float = 3.0) -> 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     try:
         sock.settimeout(0.5)
-        sock.sendto(msg, (_MCAST_GRP, _MCAST_PORT))
-        deadline = asyncio.get_running_loop().time() + max(0.1, float(timeout_s))
+        await asyncio.to_thread(sock.sendto, msg, (_MCAST_GRP, _MCAST_PORT))
+        deadline = asyncio.get_running_loop().time() + timeout_s
 
         while asyncio.get_running_loop().time() < deadline:
             try:
                 data, addr = await asyncio.to_thread(sock.recvfrom, 65535)
-            except asyncio.CancelledError:
-                raise
             except socket.timeout:
                 continue
+            except asyncio.CancelledError:
+                raise
             except Exception:
-                logger.exception("tv:msearch probe error")
-                return False
+                logger.exception("tv:msearch bootstrap error")
+                return
 
-            src_ip = addr[0]
-            if src_ip != tv.tv_ip:
-                continue
-
+            reply_ip = addr[0]
             txt = data.decode("utf-8", errors="ignore")
             if "HTTP/1.1 200 OK" not in txt:
                 continue
 
             hdr = _parse_headers(txt)
-            st = hdr.get("ST", "")
-            usn = hdr.get("USN", "")
-            loc = hdr.get("LOCATION")
-            server = hdr.get("SERVER", "")
-
-            is_dmr = st == _MSEARCH_ST or (loc and "/dmr" in loc)
-            is_samsung = "Samsung" in server
-            if not (is_dmr and is_samsung):
+            if hdr.get("ST") != _MSEARCH_ST:
                 continue
 
-            acted = tv.notify_ssdp(
-                nts="ssdp:alive",
-                nt=st,
-                usn=usn,
-                location=loc,
-                source="msearch",
-            )
+            location = hdr.get("LOCATION")
+            location_ip = urlparse(location).hostname if location else None
+            if reply_ip != tv.tv_ip and location_ip != tv.tv_ip:
+                continue
+
+            acted = tv.notify_msearch(location=location)
             if acted:
                 try:
                     await tv.ensure_ws_connected()
                 except Exception:
-                    logger.debug("tv:msearch ws connect failed", exc_info=True)
-                return True
-
-        return False
+                    logger.debug("tv:msearch ws connect failed after bootstrap", exc_info=True)
+            return
     finally:
         try:
             sock.close()
@@ -154,11 +143,11 @@ async def startup_msearch_probe(tv: TvController, *, timeout_s: float = 3.0) -> 
             pass
 
 
-def start_discovery_tasks(tv: TvController, *, msearch_timeout_s: float = 3.0) -> list[asyncio.Task]:
-    """Start SSDP listener and one-shot startup M-SEARCH. Returns the created tasks."""
+def start_discovery_tasks(tv: TvController) -> list[asyncio.Task]:
+    """Start passive SSDP listener plus one-shot M-SEARCH bootstrap."""
     return [
         asyncio.create_task(ssdp_listener(tv), name="tv:ssdp"),
-        asyncio.create_task(startup_msearch_probe(tv, timeout_s=msearch_timeout_s), name="tv:msearch"),
+        asyncio.create_task(msearch_bootstrap(tv), name="tv:msearch_bootstrap"),
     ]
 
 

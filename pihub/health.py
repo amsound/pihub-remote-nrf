@@ -96,11 +96,9 @@ class HealthServer:
         degraded_reasons.extend(ha_reasons)
 
         usb_raw = self._reader.status
-
         usb_present = bool(usb_raw.get("receiver_present"))
         usb_path = usb_raw.get("input_path")
         usb_link_up = bool(usb_raw.get("input_open"))
-
         usb_link_ready = bool(
             usb_raw.get("input_open")
             and usb_raw.get("reader_running")
@@ -189,15 +187,13 @@ class HealthServer:
         else:
             s = self._tv.snapshot()
             tv_enabled = bool(s.token_present)
-            tv_link_up = s.logical_on is True
-            tv_link_ready = bool(s.logical_on is True and s.ws_connected)
+            tv_link_up = bool(s.logical_on)
+            tv_link_ready = bool(s.ws_connected and s.logical_on)
             tv_error = bool(s.last_error)
 
             tv_reasons: list[str] = []
             if not s.token_present:
                 tv_reasons.append("tv.token_missing")
-            if s.logical_on is True and not s.ws_connected:
-                tv_reasons.append("tv.ws_not_connected")
             if tv_error:
                 tv_reasons.append("tv.error")
 
@@ -233,7 +229,6 @@ class HealthServer:
         else:
             speaker_enabled = True
             snap = self._speaker.snapshot()
-
             sstate = getattr(self._speaker, "state", None)
             subscribed = bool(getattr(sstate, "subscribed", False))
             reachable = bool(getattr(sstate, "reachable", False))
@@ -263,7 +258,6 @@ class HealthServer:
         degraded_reasons.extend(speaker_state["reasons"])
 
         status = "ok" if not degraded_reasons else "degraded"
-
         domains = {
             "ha": ha_state["status"],
             "usb": usb_state["status"],

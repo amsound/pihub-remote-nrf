@@ -54,24 +54,16 @@ _PLM_TO_SOURCE = {
     "040": "line-in",
     "041": "bluetooth",
     "049": "hdmi",
-
-    # Optical isn't listed for every model in the public PLM table; you've observed 043 on your device.
     "043": "optical",
-    # Some firmwares use related codes for digital inputs; treat them as "optical" for the app UI.
-    "045": "optical",  # coaxial
-    "056": "optical",  # optical 2
-    "057": "optical",  # coaxial 2
-    "058": "optical",  # ARC
-
     "099": "multiroom-secondary",
 
     # Umbrella these under "wifi"
     "002": "wifi",  # DLNA
     "010": "wifi",  # online playlist / network playback
+    "011": "wifi",  # USB playlist
     "020": "wifi",  # HTTP API playback mode
     "031": "wifi",  # Spotify Connect
     "032": "wifi",  # TIDAL Connect
-    "011": "wifi",  # USB playlist (treated as "wifi" for your app needs)
 }
 
 _PHYSICAL_SOURCES = {"hdmi", "optical", "line-in", "bluetooth"}
@@ -91,7 +83,6 @@ def _parse_payload(payload: bytes) -> str:
         return payload.decode("utf-8", errors="replace").strip()
     except Exception:
         return ""
-
 
 def _needs_amp(s: str) -> bool:
     # Doc: payloads longer than 11 bytes should end with '&'

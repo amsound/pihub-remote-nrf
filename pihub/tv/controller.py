@@ -18,13 +18,13 @@ POWER_RETRY_S = 1.5
 
 @dataclass
 class TvSnapshot:
+    initialized: bool
     logical_on: bool | None
     logical_source: str
     last_change_age_s: int | None
     ws_connected: bool
     token_present: bool
     last_error: str
-    initialized: bool
 
 
 class TvController:
@@ -44,7 +44,10 @@ class TvController:
 
         self._session: Optional[aiohttp.ClientSession] = None
         self._dmr_cached: bool | None = None
+
         self._power_on_active: bool = False
+        self._last_ws_connect_attempt: float = 0.0
+
         self._logical_source: str = "unknown"
         self._logical_last_change_ts: float | None = None
 
@@ -58,8 +61,30 @@ class TvController:
         if sess:
             await sess.close()
 
-    def notify_ssdp(self, *, nts: str, nt: str, usn: str, location: str | None, source: str = "ssdp") -> bool:
-        """Handle DMR-related SSDP events and update logical power truth."""
+    def _commit_discovery(self, on: bool, *, source: str) -> bool:
+        if self._dmr_cached is on:
+            return False
+        now = asyncio.get_running_loop().time()
+        self._dmr_cached = on
+        self._logical_source = source
+        self._logical_last_change_ts = now
+        return True
+
+    def notify_msearch(self, *, location: str | None) -> bool:
+        if location and "/dmr" not in location:
+            return False
+        return self._commit_discovery(True, source="msearch")
+
+    def notify_ssdp(
+        self,
+        *,
+        nts: str,
+        nt: str,
+        usn: str,
+        location: str | None,
+        source: str = "ssdp",
+    ) -> bool:
+        """Return True only when discovery changed logical TV state."""
         is_dmr = False
         if location and "/dmr" in location:
             is_dmr = True
@@ -69,27 +94,17 @@ class TvController:
             return False
 
         if nts == "ssdp:alive":
-            if self._dmr_cached is not True:
-                self.set_power_state(True, reason="ssdp_alive", source=source)
-            return True
+            return self._commit_discovery(True, source=source)
 
         if nts == "ssdp:byebye":
-            if self._dmr_cached is not False:
-                self.set_power_state(False, reason="ssdp_byebye", source=source)
-            return True
+            return self._commit_discovery(False, source="ssdp_byebye")
 
         return False
 
     async def ensure_ws_connected(self) -> None:
-        if self._session:
-            await self.ws.connect(self._session)
-
-    def set_power_state(self, on: bool, *, reason: str, source: str = "unknown") -> None:
-        del reason
-        now = asyncio.get_running_loop().time()
-        self._logical_source = source
-        self._logical_last_change_ts = now
-        self._dmr_cached = bool(on)
+        if not self._session:
+            return
+        await self.ws.connect(self._session)
 
     def snapshot(self) -> TvSnapshot:
         st = self.ws.state
@@ -97,13 +112,13 @@ class TvController:
         if self._logical_last_change_ts is not None:
             last_change_age_s = int(asyncio.get_running_loop().time() - self._logical_last_change_ts)
         return TvSnapshot(
+            initialized=self._dmr_cached is not None,
             logical_on=self._dmr_cached,
             ws_connected=st.connected,
             token_present=st.token_present,
             last_error=st.last_error,
             logical_source=self._logical_source,
             last_change_age_s=last_change_age_s,
-            initialized=self._dmr_cached is not None,
         )
 
     async def power_off(self, *, wait: bool = True, timeout_s: float = 25.0) -> bool:
@@ -124,7 +139,10 @@ class TvController:
         deadline = asyncio.get_running_loop().time() + timeout_s
         while asyncio.get_running_loop().time() < deadline:
             if not await dmr_up(self._session, self.tv_ip):
-                self.set_power_state(False, reason="power_off", source="power_off")
+                self._dmr_cached = False
+                now = asyncio.get_running_loop().time()
+                self._logical_source = "power_off"
+                self._logical_last_change_ts = now
                 return True
             await asyncio.sleep(0.2)
         return False
@@ -153,7 +171,10 @@ class TvController:
                 now = loop.time()
 
                 if await dmr_up(self._session, self.tv_ip):
-                    self.set_power_state(True, reason="power_on", source="power_on")
+                    self._dmr_cached = True
+                    now = asyncio.get_running_loop().time()
+                    self._logical_source = "power_on"
+                    self._logical_last_change_ts = now
                     await self.ws.connect(self._session)
                     return True
 
@@ -193,21 +214,21 @@ class TvController:
             self._power_on_active = False
 
     async def volume_up(self) -> bool:
-        if not self._session or self._dmr_cached is not True:
+        if not self._session or not self._dmr_cached:
             return False
         if not self.ws.state.connected:
             await self.ws.connect(self._session)
         return await self.ws.send_key("KEY_VOLUP")
 
     async def volume_down(self) -> bool:
-        if not self._session or self._dmr_cached is not True:
+        if not self._session or not self._dmr_cached:
             return False
         if not self.ws.state.connected:
             await self.ws.connect(self._session)
         return await self.ws.send_key("KEY_VOLDOWN")
 
     async def mute_toggle(self) -> bool:
-        if not self._session or self._dmr_cached is not True:
+        if not self._session or not self._dmr_cached:
             return False
         if not self.ws.state.connected:
             await self.ws.connect(self._session)

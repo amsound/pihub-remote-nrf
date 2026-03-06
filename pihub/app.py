@@ -23,7 +23,7 @@ from .input_ble_dongle import BleDongleLink
 from .health import HealthServer
 from .tv import TvController
 from .speaker_linkplay_tcp import LinkPlaySpeaker
-from .tv.ssdp import start_discovery_tasks, stop_discovery_tasks
+from .tv.ssdp import ssdp_listener, start_discovery_tasks, stop_discovery_tasks
 
 
 def _debug_enabled() -> bool:
@@ -64,13 +64,44 @@ async def main() -> None:
         )
         await tv.start()
 
-        tv_discovery_tasks = start_discovery_tasks(tv, msearch_timeout_s=3.0)
+        stop = asyncio.Event()
+
+        def _monitor_tv_task(task: asyncio.Task) -> None:
+            if stop.is_set() or tv is None:
+                return
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("%s crashed", task.get_name())
+            else:
+                logger.warning("%s exited unexpectedly", task.get_name())
+
+            if task.get_name() != "tv:ssdp":
+                return
+
+            replacement = asyncio.create_task(ssdp_listener(tv), name="tv:ssdp")
+            replacement.add_done_callback(_monitor_tv_task)
+            for idx, existing in enumerate(tv_discovery_tasks):
+                if existing is task:
+                    tv_discovery_tasks[idx] = replacement
+                    break
+            else:
+                tv_discovery_tasks.append(replacement)
+            logger.warning("restarted tv:ssdp task")
+
+        tv_discovery_tasks = start_discovery_tasks(tv)
+        for task in tv_discovery_tasks:
+            task.add_done_callback(_monitor_tv_task)
 
         async def _stop_tv_discovery() -> None:
             await stop_discovery_tasks(tv_discovery_tasks)
 
         started.append(("tv_discovery", _stop_tv_discovery))
         started.append(("tv", tv.stop))
+    else:
+        stop = asyncio.Event()
 
     speaker: LinkPlaySpeaker | None = None
     if cfg.speaker_host:
@@ -123,8 +154,6 @@ async def main() -> None:
         speaker=speaker,
     )
 
-    stop = asyncio.Event()
-
     def _monitor_ws(task: asyncio.Task) -> None:
         if stop.is_set():
             return
@@ -138,32 +167,8 @@ async def main() -> None:
             logger.warning("ws task exited unexpectedly")
         stop.set()
 
-    def _monitor_tv_discovery(task: asyncio.Task) -> None:
-        if stop.is_set():
-            return
-        if task.get_name() == "tv:msearch":
-            try:
-                task.result()
-            except asyncio.CancelledError:
-                return
-            except Exception:
-                logger.exception("tv msearch task crashed")
-                stop.set()
-            return
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            logger.exception("tv discovery task crashed")
-        else:
-            logger.warning("tv discovery task exited unexpectedly")
-        stop.set()
-
     ws_task = asyncio.create_task(ws.start(), name="ha_ws")
     ws_task.add_done_callback(_monitor_ws)
-    for task in tv_discovery_tasks:
-        task.add_done_callback(_monitor_tv_discovery)
 
     try:
         await bt.start()
