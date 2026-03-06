@@ -40,6 +40,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+
 async def main() -> None:
     """Run the PiHub control loop until interrupted."""
     cfg = Config.load()
@@ -49,11 +50,8 @@ async def main() -> None:
         logger.error("cannot start without Home Assistant token: %s", exc)
         raise SystemExit(1) from exc
 
-    # Track started subsystems so we can always shut down cleanly (even if startup fails).
-    # Stop order should generally be reverse of start order.
-    started = []  # list[tuple[str, callable]]
+    started = []
 
-    # --- TV (create before wiring callbacks that reference it) ---
     tv: TvController | None = None
     tv_discovery_tasks: list[asyncio.Task] = []
 
@@ -66,7 +64,7 @@ async def main() -> None:
         )
         await tv.start()
 
-        tv_discovery_tasks = start_discovery_tasks(tv, interval_s=60.0)
+        tv_discovery_tasks = start_discovery_tasks(tv, msearch_timeout_s=3.0)
 
         async def _stop_tv_discovery() -> None:
             await stop_discovery_tasks(tv_discovery_tasks)
@@ -74,38 +72,32 @@ async def main() -> None:
         started.append(("tv_discovery", _stop_tv_discovery))
         started.append(("tv", tv.stop))
 
-    # --- Speaker (LinkPlay/WiiM) ---
     speaker: LinkPlaySpeaker | None = None
     if cfg.speaker_host:
         speaker = LinkPlaySpeaker(
             host=cfg.speaker_host,
-            http_scheme=cfg.speaker_http_scheme,   # default https
+            http_scheme=cfg.speaker_http_scheme,
             volume_step_pct=cfg.speaker_volume_step_pct,
         )
         await speaker.start()
         started.append(("speaker", speaker.stop))
 
-    # --- BLE ---
     bt = BleDongleLink(
         serial_port=cfg.ble_serial_device,
         baud=cfg.ble_serial_baud,
     )
 
-    # Create websocket first (we'll attach it to dispatcher after)
     ws: HAWS | None = None
 
     async def _send_cmd(action: str, **args) -> bool:
-        # Dispatcher uses this to send HA bus commands (domain="ha")
         assert ws is not None
         return await ws.send_cmd(action, **args)
 
-    # Create Dispatcher BEFORE HAWS so HAWS can call Dispatcher.on_cmd directly.
     DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt, tv=tv, speaker=speaker)
 
     async def _on_activity(activity: str | None) -> None:
         await DispatcherRef.on_activity(activity)
 
-    # HA WebSocket: breaking schema; all incoming commands go to Dispatcher.on_cmd
     ws = HAWS(
         url=cfg.ha_ws_url,
         token=token,
@@ -140,14 +132,38 @@ async def main() -> None:
             task.result()
         except asyncio.CancelledError:
             return
-        except Exception:  # pragma: no cover - defensive logging
+        except Exception:
             logger.exception("ws task crashed")
         else:
             logger.warning("ws task exited unexpectedly")
         stop.set()
 
+    def _monitor_tv_discovery(task: asyncio.Task) -> None:
+        if stop.is_set():
+            return
+        if task.get_name() == "tv:msearch":
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("tv msearch task crashed")
+                stop.set()
+            return
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("tv discovery task crashed")
+        else:
+            logger.warning("tv discovery task exited unexpectedly")
+        stop.set()
+
     ws_task = asyncio.create_task(ws.start(), name="ha_ws")
     ws_task.add_done_callback(_monitor_ws)
+    for task in tv_discovery_tasks:
+        task.add_done_callback(_monitor_tv_discovery)
 
     try:
         await bt.start()
@@ -168,7 +184,6 @@ async def main() -> None:
     finally:
         stop.set()
 
-        # Stop subsystems in reverse start order.
         for _name, stopper in reversed(started):
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await stopper()

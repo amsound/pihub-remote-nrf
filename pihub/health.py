@@ -77,7 +77,6 @@ class HealthServer:
 
         degraded_reasons: list[str] = []
 
-        # ---------------- Home Assistant (ws) ----------------
         ha_connected = bool(self._ws.is_connected)
         ha_reasons: list[str] = []
         if not ha_connected:
@@ -96,15 +95,12 @@ class HealthServer:
         }
         degraded_reasons.extend(ha_reasons)
 
-        # ---------------- USB ----------------
         usb_raw = self._reader.status
 
         usb_present = bool(usb_raw.get("receiver_present"))
         usb_path = usb_raw.get("input_path")
         usb_link_up = bool(usb_raw.get("input_open"))
 
-        # For USB, there isn't a firmware-computed "ready" signal, so we provide a
-        # practical "link_ready" derived from explicit flags.
         usb_link_ready = bool(
             usb_raw.get("input_open")
             and usb_raw.get("reader_running")
@@ -143,7 +139,6 @@ class HealthServer:
         }
         degraded_reasons.extend(usb_reasons)
 
-        # ---------------- BLE ----------------
         ble_raw = self._bt.status
         conn_params = ble_raw.get("conn_params") or {}
 
@@ -151,7 +146,7 @@ class HealthServer:
         ble_path = ble_raw.get("active_port") or ble_raw.get("device")
         ble_connected = bool(ble_raw.get("connected"))
         ble_advertising = bool(ble_raw.get("advertising"))
-        ble_link_ready = bool(ble_raw.get("ready"))  # firmware READY
+        ble_link_ready = bool(ble_raw.get("ready"))
 
         ble_reasons: list[str] = []
         if not ble_present:
@@ -169,8 +164,8 @@ class HealthServer:
             "reasons": ble_reasons,
             "present": ble_present,
             "path": ble_path,
-            "link_up": ble_present,          # serial open == link up for CDC ACM
-            "link_ready": ble_link_ready,    # firmware READY
+            "link_up": ble_present,
+            "link_ready": ble_link_ready,
             "error": bool(ble_raw.get("error")),
             "details": {
                 "advertising": ble_advertising,
@@ -181,9 +176,7 @@ class HealthServer:
         }
         degraded_reasons.extend(ble_reasons)
 
-        # ---------------- TV -----------------
         if self._tv is None:
-            tv_enabled = False
             tv_state = {
                 "status": "disabled",
                 "reasons": [],
@@ -195,17 +188,15 @@ class HealthServer:
             }
         else:
             s = self._tv.snapshot()
-            tv_enabled = bool(s.token_present)  # token is a must for configured/usable TV
-            tv_link_up = bool(s.logical_on)
-            tv_link_ready = bool(s.ws_connected and s.logical_on)
+            tv_enabled = bool(s.token_present)
+            tv_link_up = s.logical_on is True
+            tv_link_ready = bool(s.logical_on is True and s.ws_connected)
             tv_error = bool(s.last_error)
 
             tv_reasons: list[str] = []
             if not s.token_present:
                 tv_reasons.append("tv.token_missing")
-            if tv_enabled and not s.logical_on:
-                tv_reasons.append("tv.logical_off")
-            if tv_enabled and s.logical_on and not s.ws_connected:
+            if s.logical_on is True and not s.ws_connected:
                 tv_reasons.append("tv.ws_not_connected")
             if tv_error:
                 tv_reasons.append("tv.error")
@@ -218,7 +209,8 @@ class HealthServer:
                 "link_ready": tv_link_ready,
                 "error": tv_error,
                 "details": {
-                    "logical_on": bool(s.logical_on),
+                    "initialized": bool(s.initialized),
+                    "logical_on": s.logical_on,
                     "logical_source": s.logical_source,
                     "last_change_age_s": s.last_change_age_s,
                     "ws_connected": bool(s.ws_connected),
@@ -228,9 +220,7 @@ class HealthServer:
             }
         degraded_reasons.extend(tv_state["reasons"])
 
-        # ---------------- Speaker -------------
         if self._speaker is None or not getattr(self._speaker, "enabled", False):
-            speaker_enabled = False
             speaker_state = {
                 "status": "disabled",
                 "reasons": [],
@@ -244,7 +234,6 @@ class HealthServer:
             speaker_enabled = True
             snap = self._speaker.snapshot()
 
-            # Link flags come from the driver's state (details no longer repeat reachable/subscribed)
             sstate = getattr(self._speaker, "state", None)
             subscribed = bool(getattr(sstate, "subscribed", False))
             reachable = bool(getattr(sstate, "reachable", False))
@@ -273,10 +262,8 @@ class HealthServer:
             }
         degraded_reasons.extend(speaker_state["reasons"])
 
-        # Overall status: OK only when no degraded reasons.
         status = "ok" if not degraded_reasons else "degraded"
 
-        # Lightweight domain summary for dashboards/scrapers.
         domains = {
             "ha": ha_state["status"],
             "usb": usb_state["status"],
