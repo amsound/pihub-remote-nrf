@@ -44,23 +44,29 @@ logger = logging.getLogger(__name__)
 
 class Dispatcher:
     """
-    Routes remote key edges to actions defined per-activity in keymap.json:
+    Routes remote key edges to actions defined per-mode in keymap.json:
 
-      - HA bus action:
-        { "domain": "ha", "action": "<pihub.cmd text>", ...extras,
-          "when"?: "down"|"up" (default "down"),
-          "min_hold_ms"?: <int>   # bounded (0..5000)
+    - Flow action:
+        { "domain": "flow", "action": "run", "name": "<flow-name>",
+        "when"?: "down"|"up" (default "down"),
+        "min_hold_ms"?: <int>
         }
 
-      - BLE HID edge-accurate action:
-        { "domain": "ble",  "usage": "keyboard"|"consumer", "code": "<hid-name>" }
+    - HA bus action:
+        { "domain": "ha", "action": "<pihub.cmd text>", ...extras,
+        "when"?: "down"|"up" (default "down"),
+        "min_hold_ms"?: <int>
+        }
 
-      - No-op:
+    - BLE HID edge-accurate action:
+        { "domain": "ble", "usage": "keyboard"|"consumer", "code": "<hid-name>" }
+
+    - No-op:
         { "domain": "noop" }
 
     Notes:
-      - Key-repeat is *not* part of keymap schema. It is forced for rem_vol_up/rem_vol_down only.
-      - Repeat applies to TV/Speaker volume only.
+    - Key-repeat is *not* part of keymap schema. It is forced for rem_vol_up/rem_vol_down only.
+    - Repeat applies to TV/Speaker volume only.
     """
 
     def __init__(
@@ -70,12 +76,14 @@ class Dispatcher:
         bt_le: Any,
         tv: Any = None,
         speaker: Any = None,
+        run_flow: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self._cfg = cfg
         self._send_cmd = send_cmd
         self._bt = bt_le
         self._tv = tv
         self._speaker = speaker
+        self._run_flow = run_flow
         self._last_cmd_fail_log = 0.0
 
         # Load full keymap document, then split into parts we use
@@ -458,6 +466,10 @@ class Dispatcher:
         if domain == "ble":
             await self._handle_ble_action(a, edge)
             return
+        
+        if domain == "flow":
+            await self._handle_flow_action(a, edge, rem_key=rem_key, action_index=action_index)
+            return
 
         if domain == "ha":
             await self._handle_ha_action(a, edge, rem_key=rem_key, action_index=action_index)
@@ -549,6 +561,30 @@ class Dispatcher:
             # Treat as raw KEY_* string
             await self._tv.ws.send_key(action)
             return
+
+    async def _handle_flow_action(
+        self,
+        a: dict,
+        edge: str,
+        *,
+        rem_key: Optional[str],
+        action_index: int,
+    ) -> None:
+        """Handle local flow actions via the runtime engine."""
+        action = a.get("action")
+        if action != "run":
+            return
+        if edge != "down":
+            return
+        if self._run_flow is None:
+            return
+
+        name = a.get("name")
+        if not isinstance(name, str) or not name:
+            return
+
+        trigger = f"remote.{rem_key}" if rem_key else "remote"
+        await self._run_flow(name=name, trigger=trigger)
 
     async def _handle_ha_action(
         self,
@@ -665,12 +701,16 @@ class Dispatcher:
                     if not isinstance(action, dict):
                         raise ValueError(f"action {activity}.{rem_key}[{idx}] must be a dict")
                     domain = action.get("domain")
-                    if domain not in {"ha", "ble", "noop", "tv", "speaker"}:
+                    if domain not in {"ha", "ble", "noop", "tv", "speaker", "flow"}:
                         raise ValueError(f"action {activity}.{rem_key}[{idx}] has unknown domain={domain!r}")
-
                     if domain == "ha":
                         if not isinstance(action.get("action"), str):
                             raise ValueError(f"ha action {activity}.{rem_key}[{idx}] missing 'action' string")
+                    elif domain == "flow":
+                        if action.get("action") != "run":
+                            raise ValueError(f"flow action {activity}.{rem_key}[{idx}] requires action='run'")
+                        if not isinstance(action.get("name"), str):
+                            raise ValueError(f"flow action {activity}.{rem_key}[{idx}] missing 'name' string")
                     elif domain == "ble":
                         if not (isinstance(action.get("usage"), str) and isinstance(action.get("code"), str)):
                             raise ValueError(f"ble action {activity}.{rem_key}[{idx}] requires 'usage' and 'code'")

@@ -133,8 +133,18 @@ async def main() -> None:
             return False
         return await ws.send_cmd(action, **args)
 
-    DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt, tv=tv, speaker=speaker)
-    runtime = RuntimeEngine(dispatcher=DispatcherRef, initial_mode="power_off")
+    runtime = RuntimeEngine(initial_mode="power_off")
+
+    DispatcherRef = Dispatcher(
+        cfg=cfg,
+        send_cmd=_send_cmd,
+        bt_le=bt,
+        tv=tv,
+        speaker=speaker,
+        run_flow=runtime.run_flow,
+    )
+
+    runtime.attach_dispatcher(DispatcherRef)
     await runtime.start()
 
     async def _on_activity(activity: str | None) -> None:

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class RuntimeEngine:
     """Owns local mode/flow state and exposes a unified command entrypoint."""
 
-    def __init__(self, *, dispatcher: Any, initial_mode: str = "power_off") -> None:
+    def __init__(self, *, dispatcher: Any | None = None, initial_mode: str = "power_off") -> None:
         self._dispatcher = dispatcher
         self._mode = initial_mode
         self._last_flow: str | None = None
@@ -44,6 +44,9 @@ class RuntimeEngine:
             "current_trigger": self._current_trigger,
         }
 
+    def attach_dispatcher(self, dispatcher: Any) -> None:
+        self._dispatcher = dispatcher
+
     async def start(self) -> None:
         await self.set_mode(self._mode, trigger="boot")
 
@@ -53,6 +56,10 @@ class RuntimeEngine:
             return {"ok": False, "error": "mode name required"}
 
         prior = self._mode
+
+        if self._dispatcher is None:
+            return {"ok": False, "error": "dispatcher unavailable"}
+
         await self._dispatcher.on_activity(name)
         self._mode = name
 

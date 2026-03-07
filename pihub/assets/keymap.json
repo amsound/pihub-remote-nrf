@@ -2,9 +2,9 @@
   "version": 1,
   "scancode_map": {
     "786924": "rem_power_off",
-    "786920": "rem_activity_1",
-    "786925": "rem_activity_2",
-    "786921": "rem_activity_3",
+    "786920": "rem_mode_1",
+    "786925": "rem_mode_2",
+    "786921": "rem_mode_3",
     "786935": "rem_red",
     "786934": "rem_green",
     "786933": "rem_yellow",
@@ -48,16 +48,17 @@
   "activities": {
 
     "power_off": {
-      "rem_power_off":    [ { "domain": "ha", "action": "power_off" } ],
-      "rem_activity_1":   [ { "domain": "ha", "action": "listen" } ],
-      "rem_activity_2":   [ { "domain": "ha", "action": "watch" } ],
-      "rem_activity_3":   [ { "domain": "noop" } ] },
+      "rem_power_off":    [ { "domain": "flow", "action": "run", "name": "power_off" } ],
+      "rem_mode_1":       [ { "domain": "flow", "action": "run", "name": "listen" } ],
+      "rem_mode_2":       [ { "domain": "flow", "action": "run", "name": "watch" } ],
+      "rem_mode_3":       [ { "domain": "noop" } ] 
+    },
 
     "watch": {
-      "rem_power_off":    [ { "domain": "ha", "action": "power_off" } ],
-      "rem_activity_1":   [ { "domain": "noop" }, { "domain": "ha", "min_hold_ms": 1000, "action": "listen" } ],
-      "rem_activity_2":   [ { "domain": "ha", "action": "watch" } ],
-      "rem_activity_3":   [ { "domain": "noop" } ],
+      "rem_power_off":    [ { "domain": "flow", "action": "run", "name": "power_off" } ],
+      "rem_mode_1":       [ { "domain": "noop" }, { "domain": "flow", "min_hold_ms": 1000, "action": "run", "name": "listen" } ],
+      "rem_mode_2":       [ { "domain": "flow", "action": "run", "name": "watch" } ],
+      "rem_mode_3":       [ { "domain": "noop" } ],
 
       "rem_vol_up":       [ { "domain": "tv", "action": "volume_up" } ],
       "rem_vol_down":     [ { "domain": "tv", "action": "volume_down" } ],
@@ -105,10 +106,10 @@
     },
 
     "listen": {
-      "rem_power_off":    [ { "domain": "ha", "action": "power_off" } ],
-      "rem_activity_1":   [ { "domain": "ha", "action": "listen" } ],
-      "rem_activity_2":   [ { "domain": "ha", "action": "watch" } ],
-      "rem_activity_3":   [ { "domain": "noop" }],
+      "rem_power_off":    [ { "domain": "flow", "action": "run", "name": "power_off" } ],
+      "rem_mode_1":       [ { "domain": "flow", "action": "run", "name": "listen" } ],
+      "rem_mode_2":       [ { "domain": "flow", "action": "run", "name": "watch" } ],
+      "rem_mode_3":       [ { "domain": "noop" }],
 
       "rem_vol_up":       [ { "domain": "speaker", "action": "volume_up" } ],
       "rem_vol_down":     [ { "domain": "speaker", "action": "volume_down" } ],   
