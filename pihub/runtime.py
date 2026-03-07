@@ -27,6 +27,7 @@ class RuntimeEngine:
         self._last_flow: str | None = None
         self._flow_running = False
         self._current_trigger: str | None = None
+        self._startup_reconciled = False
         self._lock = asyncio.Lock()
         self._flows = FlowRunner(runtime=self, tv=tv, speaker=speaker, ble=ble)
 
@@ -57,8 +58,47 @@ class RuntimeEngine:
     def attach_dispatcher(self, dispatcher: Any) -> None:
         self._dispatcher = dispatcher
 
+    async def reconcile_startup_state(self) -> dict[str, Any]:
+        self._current_trigger = "startup_reconcile"
+        try:
+            mode = self._infer_startup_mode()
+            result = await self.set_mode(mode, trigger="startup_reconcile")
+            if result.get("ok"):
+                self._startup_reconciled = True
+            return result
+        finally:
+            self._current_trigger = None
+
+    def _infer_startup_mode(self) -> str:
+        # Strongest signal first: TV on => watch
+        try:
+            tv = getattr(self._flows, "_tv", None)
+            if tv is not None:
+                snap = tv.snapshot()
+                if snap.logical_on is True:
+                    logger.info("startup reconcile selected mode=watch")
+                    return "watch"
+        except Exception:
+            pass
+
+        # Music-ish playback => listen
+        try:
+            speaker = getattr(self._flows, "_speaker", None)
+            if speaker is not None:
+                snap = speaker.snapshot()
+                playback = (snap.get("playback_status") or "").strip().lower()
+                source = (snap.get("source") or "").strip().lower()
+                if playback == "play" and source in {"airplay", "wifi", "multiroom-secondary"}:
+                    logger.info("startup reconcile selected mode=listen")
+                    return "listen"
+        except Exception:
+            pass
+
+        logger.info("startup reconcile selected mode=power_off")
+        return "power_off"
+
     async def start(self) -> None:
-        await self.set_mode(self._mode, trigger="boot")
+        await self.reconcile_startup_state()
 
     async def set_mode(self, name: str, *, trigger: str = "internal") -> dict[str, Any]:
         name = (name or "").strip()

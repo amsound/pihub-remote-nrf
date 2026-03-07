@@ -9,7 +9,6 @@ from typing import Optional
 
 from aiohttp import web
 
-from .ha_ws import HAWS
 from .input_ble_dongle import BleDongleLink
 from .input_unifying import UnifyingReader
 from .speaker_linkplay_tcp import LinkPlaySpeaker
@@ -25,7 +24,6 @@ class HealthServer:
         *,
         host: str,
         port: int,
-        ws: Optional[HAWS],
         bt: BleDongleLink,
         reader: UnifyingReader,
         tv: Optional[TvController] = None,
@@ -34,7 +32,6 @@ class HealthServer:
     ) -> None:
         self._host = host
         self._port = port
-        self._ws = ws
         self._bt = bt
         self._reader = reader
         self._tv = tv
@@ -337,7 +334,6 @@ class HealthServer:
 
         status = "ok" if not degraded_reasons else "degraded"
         domains = {
-            "ha": ha_state["status"],
             "usb": usb_state["status"],
             "ble": ble_state["status"],
             "tv": tv_state["status"],

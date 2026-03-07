@@ -8,12 +8,6 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Config:
-    # Home Assistant
-    ha_ws_url: str
-    ha_token_file: str
-    ha_activity: str
-    ha_cmd_event: str
-
     # HID dongle transport (ACM)
     ble_serial_device: str
     ble_serial_baud: int
@@ -36,11 +30,6 @@ class Config:
     @staticmethod
     def load() -> "Config":
         """Build a Config from environment (compose env)."""
-        ha_ws_url = os.getenv("HA_WS_URL", "ws://127.0.0.1:8123/api/websocket")
-        ha_token_file = os.getenv("HA_TOKEN_FILE", "/run/secrets/ha_token")
-        ha_activity = os.getenv("HA_ACTIVITY", "input_select.activity")
-        ha_cmd_event = os.getenv("HA_CMD_EVENT", "pihub.cmd")
-
         # HID dongle
         ble_serial_device = os.getenv("BLE_SERIAL_DEVICE", "/dev/ttyACM0")
         ble_serial_baud = int(os.getenv("BLE_SERIAL_BAUD", "115200"))
@@ -65,10 +54,6 @@ class Config:
         speaker_volume_step_pct = 2
 
         return Config(
-            ha_ws_url=ha_ws_url,
-            ha_token_file=ha_token_file,
-            ha_activity=ha_activity,
-            ha_cmd_event=ha_cmd_event,
             ble_serial_device=ble_serial_device,
             ble_serial_baud=ble_serial_baud,
             health_host=health_host,
@@ -81,35 +66,3 @@ class Config:
             speaker_http_scheme=speaker_http_scheme,
             speaker_volume_step_pct=speaker_volume_step_pct,
         )
-
-    def maybe_load_token(self) -> str | None:
-        """Return the HA token from environment or configured file, else None."""
-        env_tok = (os.getenv("HA_TOKEN") or "").strip()
-        if env_tok:
-            return env_tok
-
-        path = (self.ha_token_file or "").strip()
-        if not path:
-            return None
-
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                token = f.read().strip()
-        except FileNotFoundError:
-            return None
-        except OSError:
-            return None
-
-        return token or None
-
-
-    def load_token(self) -> str:
-        """Return the HA token or raise, for callers that explicitly require HA."""
-        token = self.maybe_load_token()
-        if token:
-            return token
-
-        path = (self.ha_token_file or "").strip()
-        if not path:
-            raise RuntimeError("HA token unavailable: set HA_TOKEN or provide HA_TOKEN_FILE")
-        raise RuntimeError(f"HA token unavailable from configured source: {path}")

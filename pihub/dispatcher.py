@@ -397,14 +397,13 @@ class Dispatcher:
             with suppress(asyncio.CancelledError):
                 await t
 
-    # ---- Hold-trigger helpers (HA bus only; no repeat) ----
-    async def _schedule_hold_ha(
+    # ---- Hold-trigger helpers ----
+    async def _schedule_hold_action(
         self,
         rem_key: str,
         action_index: int,
         min_hold_ms: int,
-        action: str,
-        extras: dict,
+        callback: Callable[[], Awaitable[None]],
     ) -> None:
         """
         Schedule a delayed fire for "when=down" + min_hold_ms. If key is released
@@ -418,7 +417,7 @@ class Dispatcher:
             try:
                 await asyncio.sleep(max(0, min_hold_ms) / 1000.0)
                 if rem_key in self._pressed_at:
-                    await self._send_cmd(action=action, **extras)
+                    await callback()
             except asyncio.CancelledError:
                 pass
             finally:
@@ -574,8 +573,6 @@ class Dispatcher:
         action = a.get("action")
         if action != "run":
             return
-        if edge != "down":
-            return
         if self._run_flow is None:
             return
 
@@ -584,7 +581,46 @@ class Dispatcher:
             return
 
         trigger = f"remote.{rem_key}" if rem_key else "remote"
-        await self._run_flow(name=name, trigger=trigger)
+        min_hold_ms = (
+            parse_ms(
+                a.get("min_hold_ms"),
+                default=0,
+                min=0,
+                max=5000,
+                allow_none=False,
+                context="keymap.min_hold_ms",
+            )
+            or 0
+        )
+        when = a.get("when", "down")
+
+        async def _run() -> None:
+            await self._run_flow(name=name, trigger=trigger)
+
+        loop = asyncio.get_running_loop()
+
+        if when == "up" and edge == "up":
+            if min_hold_ms > 0 and rem_key:
+                t0 = self._pressed_at.get(rem_key)
+                if t0 is None:
+                    return
+                elapsed_ms = int((loop.time() - t0) * 1000.0)
+                if elapsed_ms < min_hold_ms:
+                    return
+            await _run()
+            return
+
+        if when == "down" and edge == "down":
+            if min_hold_ms > 0 and rem_key is not None:
+                await self._schedule_hold_action(
+                    rem_key=rem_key,
+                    action_index=action_index,
+                    min_hold_ms=min_hold_ms,
+                    callback=_run,
+                )
+                return
+            await _run()
+            return
 
     async def _handle_ha_action(
         self,
@@ -637,12 +673,11 @@ class Dispatcher:
         # when == "down": fire on press; if min_hold_ms > 0, delay until threshold
         if when == "down" and edge == "down":
             if min_hold_ms > 0 and rem_key is not None:
-                await self._schedule_hold_ha(
+                await self._schedule_hold_action(
                     rem_key=rem_key,
                     action_index=action_index,
                     min_hold_ms=min_hold_ms,
-                    action=cmd,
-                    extras=extras,
+                    callback=lambda: self._send_with_log(action=cmd, **extras),
                 )
                 return
             await self._send_with_log(action=cmd, **extras)

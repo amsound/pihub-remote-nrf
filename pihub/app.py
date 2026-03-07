@@ -16,7 +16,6 @@ except Exception:
     pass
 
 from .config import Config
-from .ha_ws import HAWS
 from .dispatcher import Dispatcher
 from .input_unifying import UnifyingReader
 from .input_ble_dongle import BleDongleLink
@@ -45,12 +44,6 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     """Run the PiHub control loop until interrupted."""
     cfg = Config.load()
-    token = cfg.maybe_load_token()
-    ha_enabled = bool(token)
-    if ha_enabled:
-        logger.info("home assistant websocket enabled")
-    else:
-        logger.info("home assistant websocket disabled (no HA token configured)")
 
     started = []
 
@@ -126,13 +119,6 @@ async def main() -> None:
         baud=cfg.ble_serial_baud,
     )
 
-    ws: HAWS | None = None
-
-    async def _send_cmd(action: str, **args) -> bool:
-        if ws is None:
-            return False
-        return await ws.send_cmd(action, **args)
-
     runtime = RuntimeEngine(
         tv=tv,
         speaker=speaker,
@@ -142,7 +128,7 @@ async def main() -> None:
 
     DispatcherRef = Dispatcher(
         cfg=cfg,
-        send_cmd=_send_cmd,
+        send_cmd=lambda *args, **kwargs: asyncio.sleep(0, result=False),
         bt_le=bt,
         tv=tv,
         speaker=speaker,
@@ -151,20 +137,6 @@ async def main() -> None:
 
     runtime.attach_dispatcher(DispatcherRef)
     await runtime.start()
-
-    async def _on_activity(activity: str | None) -> None:
-        await DispatcherRef.on_activity(activity)
-
-    if ha_enabled:
-        assert token is not None
-        ws = HAWS(
-            url=cfg.ha_ws_url,
-            token=token,
-            activity_entity=cfg.ha_activity,
-            event_name=cfg.ha_cmd_event,
-            on_activity=_on_activity,
-            on_cmd=DispatcherRef.on_cmd,
-        )
 
     reader = UnifyingReader(
         scancode_map=DispatcherRef.scancode_map,
@@ -175,31 +147,12 @@ async def main() -> None:
     health = HealthServer(
         host=cfg.health_host,
         port=cfg.health_port,
-        ws=ws,
         bt=bt,
         reader=reader,
         tv=tv,
         speaker=speaker,
         runtime=runtime,
     )
-
-    def _monitor_ws(task: asyncio.Task) -> None:
-        if stop.is_set():
-            return
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            logger.exception("ws task crashed")
-        else:
-            logger.warning("ws task exited unexpectedly")
-        stop.set()
-
-    ws_task: asyncio.Task | None = None
-    if ws is not None:
-        ws_task = asyncio.create_task(ws.start(), name="ha_ws")
-        ws_task.add_done_callback(_monitor_ws)
 
     try:
         await bt.start()
@@ -223,16 +176,6 @@ async def main() -> None:
         for _name, stopper in reversed(started):
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await stopper()
-
-        if ws is not None:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await ws.stop()
-
-        if ws_task is not None:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                if not ws_task.done():
-                    ws_task.cancel()
-                await ws_task
 
 
 if __name__ == "__main__":
