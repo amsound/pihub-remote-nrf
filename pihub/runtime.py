@@ -26,7 +26,7 @@ class RuntimeEngine:
         self._mode = initial_mode
         self._last_flow: str | None = None
         self._flow_running = False
-        self._current_trigger: str | None = None
+        self._last_trigger: str | None = None
         self._startup_reconciled = False
         self._lock = asyncio.Lock()
         self._flows = FlowRunner(runtime=self, tv=tv, speaker=speaker, ble=ble)
@@ -44,22 +44,22 @@ class RuntimeEngine:
         return self._flow_running
 
     @property
-    def current_trigger(self) -> str | None:
-        return self._current_trigger
+    def last_trigger(self) -> str | None:
+        return self._last_trigger
 
     def snapshot(self) -> dict[str, Any]:
         return {
             "mode": self._mode,
             "last_flow": self._last_flow,
             "flow_running": self._flow_running,
-            "current_trigger": self._current_trigger,
+            "last_trigger": self._last_trigger,
         }
 
     def attach_dispatcher(self, dispatcher: Any) -> None:
         self._dispatcher = dispatcher
 
     async def reconcile_startup_state(self) -> dict[str, Any]:
-        self._current_trigger = "startup_reconcile"
+        self._last_trigger = "startup_reconcile"
         try:
             mode = self._infer_startup_mode()
             result = await self.set_mode(mode, trigger="startup_reconcile")
@@ -67,7 +67,7 @@ class RuntimeEngine:
                 self._startup_reconciled = True
             return result
         finally:
-            self._current_trigger = None
+            self._last_trigger = None
 
     def _infer_startup_mode(self) -> str:
         # Strongest signal first: TV on => watch
@@ -144,7 +144,7 @@ class RuntimeEngine:
 
         async with self._lock:
             self._flow_running = True
-            self._current_trigger = trigger
+            self._last_trigger = trigger
             logger.info("flow started name=%s trigger=%s", name, trigger)
             try:
                 ok = await self._flows.run(name=name, trigger=trigger)
@@ -181,7 +181,7 @@ class RuntimeEngine:
                 }
             finally:
                 self._flow_running = False
-                self._current_trigger = None
+                self._last_trigger = None
 
     async def on_cmd(self, data: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(data, dict):
