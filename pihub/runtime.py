@@ -60,14 +60,11 @@ class RuntimeEngine:
 
     async def reconcile_startup_state(self) -> dict[str, Any]:
         self._last_trigger = "startup_reconcile"
-        try:
-            mode = self._infer_startup_mode()
-            result = await self.set_mode(mode, trigger="startup_reconcile")
-            if result.get("ok"):
-                self._startup_reconciled = True
-            return result
-        finally:
-            self._last_trigger = None
+        mode = self._infer_startup_mode()
+        result = await self.set_mode(mode, trigger="startup_reconcile")
+        if result.get("ok"):
+            self._startup_reconciled = True
+        return result
 
     def _infer_startup_mode(self) -> str:
         # Strongest signal first: TV on => watch
@@ -111,6 +108,7 @@ class RuntimeEngine:
             return {"ok": False, "error": "dispatcher unavailable"}
 
         await self._dispatcher.on_activity(name)
+        self._last_trigger = trigger
         self._mode = name
 
         if prior != name:
@@ -181,7 +179,6 @@ class RuntimeEngine:
                 }
             finally:
                 self._flow_running = False
-                self._last_trigger = None
 
     async def on_cmd(self, data: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(data, dict):
