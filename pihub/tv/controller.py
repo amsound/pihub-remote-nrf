@@ -94,7 +94,7 @@ class TvController:
             return False
 
         if nts == "ssdp:alive":
-            return self._commit_discovery(True, source=source)
+            return self._commit_discovery(True, source="ssdp_alive")
 
         if nts == "ssdp:byebye":
             return self._commit_discovery(False, source="ssdp_byebye")
