@@ -314,7 +314,6 @@ class HealthServer:
             "degraded_reasons": degraded_reasons,
             "domains": domains,
             "runtime": runtime_state,
-            "ha": ha_state,
             "usb": usb_state,
             "ble": ble_state,
             "tv": tv_state,
