@@ -119,6 +119,10 @@ class Dispatcher:
         """Public accessor for the logical rem_* scancode map."""
         return self._scancode_map
 
+    def available_modes(self) -> set[str]:
+        """Return the valid mode names loaded from keymap.json."""
+        return set(self._bindings.keys())
+
     @staticmethod
     def _action_kwargs(a: dict) -> dict:
         """Extract kwargs payload from an action dict without changing keymap schema."""
@@ -547,11 +551,8 @@ class Dispatcher:
                     if not isinstance(action, dict):
                         raise ValueError(f"action {mode}.{rem_key}[{idx}] must be a dict")
                     domain = action.get("domain")
-                    if domain not in {"ha", "ble", "noop", "tv", "speaker", "flow"}:
+                    if domain not in {"ble", "noop", "tv", "speaker", "flow"}:
                         raise ValueError(f"action {mode}.{rem_key}[{idx}] has unknown domain={domain!r}")
-                    if domain == "ha":
-                        if not isinstance(action.get("action"), str):
-                            raise ValueError(f"ha action {mode}.{rem_key}[{idx}] missing 'action' string")
                     elif domain == "flow":
                         if action.get("action") != "run":
                             raise ValueError(f"flow action {mode}.{rem_key}[{idx}] requires action='run'")

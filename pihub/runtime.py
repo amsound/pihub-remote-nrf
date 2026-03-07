@@ -102,10 +102,30 @@ class RuntimeEngine:
         if not name:
             return {"ok": False, "error": "mode name required"}
 
-        prior = self._mode
-
         if self._dispatcher is None:
             return {"ok": False, "error": "dispatcher unavailable"}
+
+        valid_modes_fn = getattr(self._dispatcher, "available_modes", None)
+        valid_modes = set(valid_modes_fn()) if callable(valid_modes_fn) else set()
+
+        if valid_modes and name not in valid_modes:
+            logger.warning(
+                "invalid mode rejected name=%s trigger=%s valid_modes=%s",
+                name,
+                trigger,
+                sorted(valid_modes),
+            )
+            return {
+                "ok": False,
+                "domain": "mode",
+                "action": "set",
+                "error": "invalid_mode",
+                "requested_mode": name,
+                "valid_modes": sorted(valid_modes),
+                "trigger": trigger,
+            }
+
+        prior = self._mode
 
         await self._dispatcher.set_mode_bindings(name)
         self._last_trigger = trigger
@@ -179,22 +199,3 @@ class RuntimeEngine:
                 }
             finally:
                 self._flow_running = False
-
-    async def on_cmd(self, data: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(data, dict):
-            return {"ok": False, "error": "command must be a dict"}
-
-        domain = (data.get("domain") or "").strip()
-        action = (data.get("action") or "").strip()
-        args = data.get("args") if isinstance(data.get("args"), dict) else {}
-        trigger = str(args.get("trigger") or data.get("trigger") or "cmd")
-
-        logger.info("cmd received domain=%s action=%s trigger=%s", domain, action, trigger)
-
-        if domain == "mode" and action == "set":
-            return await self.set_mode(str(args.get("name") or ""), trigger=trigger)
-
-        if domain == "flow" and action == "run":
-            return await self.run_flow(str(args.get("name") or ""), trigger=trigger)
-
-        return {"ok": False, "error": f"unsupported command {domain}.{action}"}
