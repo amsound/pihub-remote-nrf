@@ -81,12 +81,12 @@ class HealthServer:
             ha_state = {
                 "status": "disabled",
                 "reasons": [],
-                "present": false,
-                "link_up": false,
-                "link_ready": false,
-                "error": false,
+                "present": False,
+                "link_up": False,
+                "link_ready": False,
+                "error": False,
                 "details": {
-                    "connected": false,
+                    "connected": False,
                     "last_activity": None,
                 },
             }
