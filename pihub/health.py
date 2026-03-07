@@ -24,7 +24,7 @@ class HealthServer:
         *,
         host: str,
         port: int,
-        ws: HAWS,
+        ws: Optional[HAWS],
         bt: BleDongleLink,
         reader: UnifyingReader,
         tv: Optional[TvController] = None,
@@ -77,23 +77,37 @@ class HealthServer:
 
         degraded_reasons: list[str] = []
 
-        ha_connected = bool(self._ws.is_connected)
-        ha_reasons: list[str] = []
-        if not ha_connected:
-            ha_reasons.append("ha.not_connected")
-        ha_state = {
-            "status": self._domain_status(enabled=True, degraded=bool(ha_reasons)),
-            "reasons": ha_reasons,
-            "present": True,
-            "link_up": ha_connected,
-            "link_ready": ha_connected,
-            "error": not ha_connected,
-            "details": {
-                "connected": ha_connected,
-                "last_activity": self._ws.last_activity,
-            },
-        }
-        degraded_reasons.extend(ha_reasons)
+        if self._ws is None:
+            ha_state = {
+                "status": "disabled",
+                "reasons": [],
+                "present": false,
+                "link_up": false,
+                "link_ready": false,
+                "error": false,
+                "details": {
+                    "connected": false,
+                    "last_activity": None,
+                },
+            }
+        else:
+            ha_connected = bool(self._ws.is_connected)
+            ha_reasons: list[str] = []
+            if not ha_connected:
+                ha_reasons.append("ha.not_connected")
+            ha_state = {
+                "status": self._domain_status(enabled=True, degraded=bool(ha_reasons)),
+                "reasons": ha_reasons,
+                "present": True,
+                "link_up": ha_connected,
+                "link_ready": ha_connected,
+                "error": not ha_connected,
+                "details": {
+                    "connected": ha_connected,
+                    "last_activity": self._ws.last_activity,
+                },
+            }
+            degraded_reasons.extend(ha_reasons)
 
         usb_raw = self._reader.status
         usb_present = bool(usb_raw.get("receiver_present"))

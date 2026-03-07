@@ -82,25 +82,34 @@ class Config:
             speaker_volume_step_pct=speaker_volume_step_pct,
         )
 
-    def load_token(self) -> str:
-        """Return the HA token from environment or configured file."""
+    def maybe_load_token(self) -> str | None:
+        """Return the HA token from environment or configured file, else None."""
         env_tok = (os.getenv("HA_TOKEN") or "").strip()
         if env_tok:
             return env_tok
 
         path = (self.ha_token_file or "").strip()
         if not path:
-            raise RuntimeError("HA token unavailable: set HA_TOKEN or provide HA_TOKEN_FILE")
+            return None
 
         try:
             with open(path, "r", encoding="utf-8") as f:
                 token = f.read().strip()
-        except FileNotFoundError as exc:
-            raise RuntimeError(f"HA token file not found: {path}") from exc
-        except OSError as exc:
-            raise RuntimeError(f"Failed to read HA token file {path}: {exc}") from exc
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return None
 
-        if not token:
-            raise RuntimeError(f"HA token file {path} is empty")
+        return token or None
 
-        return token
+
+    def load_token(self) -> str:
+        """Return the HA token or raise, for callers that explicitly require HA."""
+        token = self.maybe_load_token()
+        if token:
+            return token
+
+        path = (self.ha_token_file or "").strip()
+        if not path:
+            raise RuntimeError("HA token unavailable: set HA_TOKEN or provide HA_TOKEN_FILE")
+        raise RuntimeError(f"HA token unavailable from configured source: {path}")

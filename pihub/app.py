@@ -44,11 +44,12 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     """Run the PiHub control loop until interrupted."""
     cfg = Config.load()
-    try:
-        token = cfg.load_token()
-    except RuntimeError as exc:
-        logger.error("cannot start without Home Assistant token: %s", exc)
-        raise SystemExit(1) from exc
+    token = cfg.maybe_load_token()
+    ha_enabled = bool(token)
+    if ha_enabled:
+        logger.info("home assistant websocket enabled")
+    else:
+        logger.info("home assistant websocket disabled (no HA token configured)")
 
     started = []
 
@@ -127,22 +128,28 @@ async def main() -> None:
     ws: HAWS | None = None
 
     async def _send_cmd(action: str, **args) -> bool:
-        assert ws is not None
+        if ws is None:
+            return False
         return await ws.send_cmd(action, **args)
 
     DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt, tv=tv, speaker=speaker)
 
+    # Local fallback until a future operation engine owns this properly.
+    await DispatcherRef.on_activity("power_off")
+
     async def _on_activity(activity: str | None) -> None:
         await DispatcherRef.on_activity(activity)
 
-    ws = HAWS(
-        url=cfg.ha_ws_url,
-        token=token,
-        activity_entity=cfg.ha_activity,
-        event_name=cfg.ha_cmd_event,
-        on_activity=_on_activity,
-        on_cmd=DispatcherRef.on_cmd,
-    )
+    if ha_enabled:
+        assert token is not None
+        ws = HAWS(
+            url=cfg.ha_ws_url,
+            token=token,
+            activity_entity=cfg.ha_activity,
+            event_name=cfg.ha_cmd_event,
+            on_activity=_on_activity,
+            on_cmd=DispatcherRef.on_cmd,
+        )
 
     reader = UnifyingReader(
         scancode_map=DispatcherRef.scancode_map,
@@ -173,8 +180,10 @@ async def main() -> None:
             logger.warning("ws task exited unexpectedly")
         stop.set()
 
-    ws_task = asyncio.create_task(ws.start(), name="ha_ws")
-    ws_task.add_done_callback(_monitor_ws)
+    ws_task: asyncio.Task | None = None
+    if ws is not None:
+        ws_task = asyncio.create_task(ws.start(), name="ha_ws")
+        ws_task.add_done_callback(_monitor_ws)
 
     try:
         await bt.start()
@@ -199,13 +208,15 @@ async def main() -> None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await stopper()
 
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await ws.stop()
+        if ws is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await ws.stop()
 
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            if not ws_task.done():
-                ws_task.cancel()
-            await ws_task
+        if ws_task is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                if not ws_task.done():
+                    ws_task.cancel()
+                await ws_task
 
 
 if __name__ == "__main__":
