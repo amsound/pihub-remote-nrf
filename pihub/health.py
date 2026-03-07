@@ -14,6 +14,7 @@ from .input_ble_dongle import BleDongleLink
 from .input_unifying import UnifyingReader
 from .speaker_linkplay_tcp import LinkPlaySpeaker
 from .tv import TvController
+from .runtime import RuntimeEngine
 
 
 class HealthServer:
@@ -29,6 +30,7 @@ class HealthServer:
         reader: UnifyingReader,
         tv: Optional[TvController] = None,
         speaker: Optional[LinkPlaySpeaker] = None,
+        runtime: Optional[RuntimeEngine] = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -37,6 +39,7 @@ class HealthServer:
         self._reader = reader
         self._tv = tv
         self._speaker = speaker
+        self._runtime = runtime
 
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -46,7 +49,14 @@ class HealthServer:
             return
 
         app = web.Application()
-        app.add_routes([web.get("/health", self._handle_health)])
+        app.add_routes(
+            [
+                web.get("/health", self._handle_health),
+                web.post("/flow/run/{name}", self._handle_flow_run),
+                web.post("/mode/set/{name}", self._handle_mode_set),
+                web.post("/command", self._handle_command),
+            ]
+        )
 
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -66,6 +76,49 @@ class HealthServer:
         status = 200 if snapshot["status"] == "ok" else 503
         return web.json_response(snapshot, status=status)
 
+    async def _handle_flow_run(self, request: web.Request) -> web.Response:
+        if self._runtime is None:
+            return web.json_response({"ok": False, "error": "runtime unavailable"}, status=503)
+
+        name = (request.match_info.get("name") or "").strip()
+        payload = await self._maybe_json(request)
+        trigger = str((payload or {}).get("trigger") or "http.flow")
+        result = await self._runtime.run_flow(name, trigger=trigger)
+        status = 200 if result.get("ok") else 409 if result.get("reason") == "runner_busy" else 400
+        return web.json_response(result, status=status)
+
+    async def _handle_mode_set(self, request: web.Request) -> web.Response:
+        if self._runtime is None:
+            return web.json_response({"ok": False, "error": "runtime unavailable"}, status=503)
+
+        name = (request.match_info.get("name") or "").strip()
+        payload = await self._maybe_json(request)
+        trigger = str((payload or {}).get("trigger") or "http.mode")
+        result = await self._runtime.set_mode(name, trigger=trigger)
+        status = 200 if result.get("ok") else 400
+        return web.json_response(result, status=status)
+
+    async def _handle_command(self, request: web.Request) -> web.Response:
+        if self._runtime is None:
+            return web.json_response({"ok": False, "error": "runtime unavailable"}, status=503)
+
+        payload = await self._maybe_json(request)
+        if payload is None:
+            return web.json_response({"ok": False, "error": "json body required"}, status=400)
+
+        result = await self._runtime.on_cmd(payload)
+        status = 200 if result.get("ok") else 409 if result.get("reason") == "runner_busy" else 400
+        return web.json_response(result, status=status)
+
+    async def _maybe_json(self, request: web.Request) -> dict | None:
+        if request.content_length in (None, 0):
+            return {}
+        try:
+            data = await request.json()
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
     @staticmethod
     def _domain_status(*, enabled: bool, degraded: bool) -> str:
         if not enabled:
@@ -74,6 +127,17 @@ class HealthServer:
 
     def snapshot(self) -> dict:
         pihub_id = socket.gethostname()
+    
+        runtime_state = (
+            self._runtime.snapshot()
+            if self._runtime is not None
+            else {
+                "mode": None,
+                "last_flow": None,
+                "flow_running": False,
+                "current_trigger": None,
+            }
+        )
 
         degraded_reasons: list[str] = []
 
@@ -285,6 +349,7 @@ class HealthServer:
             "status": status,
             "degraded_reasons": degraded_reasons,
             "domains": domains,
+            "runtime": runtime_state,
             "ha": ha_state,
             "usb": usb_state,
             "ble": ble_state,

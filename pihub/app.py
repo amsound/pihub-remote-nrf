@@ -24,6 +24,7 @@ from .health import HealthServer
 from .tv import TvController
 from .speaker_linkplay_tcp import LinkPlaySpeaker
 from .tv.ssdp import ssdp_listener, start_discovery_tasks, stop_discovery_tasks
+from .runtime import RuntimeEngine
 
 
 def _debug_enabled() -> bool:
@@ -133,9 +134,8 @@ async def main() -> None:
         return await ws.send_cmd(action, **args)
 
     DispatcherRef = Dispatcher(cfg=cfg, send_cmd=_send_cmd, bt_le=bt, tv=tv, speaker=speaker)
-
-    # Local fallback until a future operation engine owns this properly.
-    await DispatcherRef.on_activity("power_off")
+    runtime = RuntimeEngine(dispatcher=DispatcherRef, initial_mode="power_off")
+    await runtime.start()
 
     async def _on_activity(activity: str | None) -> None:
         await DispatcherRef.on_activity(activity)
@@ -165,6 +165,7 @@ async def main() -> None:
         reader=reader,
         tv=tv,
         speaker=speaker,
+        runtime=runtime,
     )
 
     def _monitor_ws(task: asyncio.Task) -> None:
