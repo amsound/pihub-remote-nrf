@@ -45,7 +45,7 @@
     "KEY_KPMINUS": "rem_hyphen"
   },
 
-  "activities": {
+  "modes": {
 
     "power_off": {
       "rem_power_off":    [ { "domain": "flow", "action": "run", "name": "power_off" } ],

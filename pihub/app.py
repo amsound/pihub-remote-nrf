@@ -128,7 +128,6 @@ async def main() -> None:
 
     DispatcherRef = Dispatcher(
         cfg=cfg,
-        send_cmd=lambda *args, **kwargs: asyncio.sleep(0, result=False),
         bt_le=bt,
         tv=tv,
         speaker=speaker,

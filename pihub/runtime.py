@@ -107,7 +107,7 @@ class RuntimeEngine:
         if self._dispatcher is None:
             return {"ok": False, "error": "dispatcher unavailable"}
 
-        await self._dispatcher.on_activity(name)
+        await self._dispatcher.set_mode_bindings(name)
         self._last_trigger = trigger
         self._mode = name
 

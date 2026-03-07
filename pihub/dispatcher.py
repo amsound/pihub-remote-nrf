@@ -1,4 +1,4 @@
-"""Route remote key events to BLE, HA, TV or Speaker methods"""
+"""Route remote key events to BLE, TV or Speaker methods"""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ _REPEAT_KEYS = {"rem_vol_up", "rem_vol_down"}
 
 _METHOD_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
 _DENY_CALLS = {
-    # lifecycle / internal methods that should never be callable from keymap or HA bus
+    # lifecycle / internal methods that should never be callable from keymap
     "start",
     "stop",
     "_runner",
@@ -52,12 +52,6 @@ class Dispatcher:
         "min_hold_ms"?: <int>
         }
 
-    - HA bus action:
-        { "domain": "ha", "action": "<pihub.cmd text>", ...extras,
-        "when"?: "down"|"up" (default "down"),
-        "min_hold_ms"?: <int>
-        }
-
     - BLE HID edge-accurate action:
         { "domain": "ble", "usage": "keyboard"|"consumer", "code": "<hid-name>" }
 
@@ -72,14 +66,12 @@ class Dispatcher:
     def __init__(
         self,
         cfg: Any,
-        send_cmd: Callable[..., Awaitable[bool]],
         bt_le: Any,
         tv: Any = None,
         speaker: Any = None,
         run_flow: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self._cfg = cfg
-        self._send_cmd = send_cmd
         self._bt = bt_le
         self._tv = tv
         self._speaker = speaker
@@ -91,17 +83,17 @@ class Dispatcher:
         try:
             self._validate_keymap(km)
             self._scancode_map: Dict[str, str] = dict(km["scancode_map"])
-            self._bindings: Dict[str, Dict[str, List[Dict[str, Any]]]] = dict(km["activities"])
+            self._bindings: Dict[str, Dict[str, List[Dict[str, Any]]]] = dict(km["modes"])
             if not isinstance(self._scancode_map, dict) or not isinstance(self._bindings, dict):
                 raise TypeError
         except Exception as exc:
             raise ValueError(
-                "keymap.json schema invalid: expected 'scancode_map' (dict) and 'activities' (dict)."
+                "keymap.json schema invalid: expected 'scancode_map' (dict) and 'modes' (dict)."
             ) from exc
 
         self._precompile_ha_actions()
-        self._activity: Optional[str] = None
-        self._activity_none_logged = False
+        self._mode: Optional[str] = None
+        self._mode_none_logged = False
         self._active_bindings: Dict[str, List[Dict[str, Any]]] = {}
 
         # Active repeat tasks keyed by rem_* (per-key)
@@ -113,15 +105,15 @@ class Dispatcher:
         # Delayed hold triggers: (rem_key, action_index) -> task
         self._hold_tasks: Dict[Tuple[str, int], asyncio.Task] = {}
 
-        # Precompiled BLE frames per activity (hot path)
-        self._ble_frames_by_activity: Dict[str, CompiledBleFrames] = {}
+        # Precompiled BLE frames per mode (hot path)
+        self._ble_frames_by_mode: Dict[str, CompiledBleFrames] = {}
         self._active_ble_frames: Optional[CompiledBleFrames] = None
         self._compile_ble_frames_once()
 
-        # Summary: count activities and scancodes
+        # Summary: count modes and scancodes
         acts = len(self._bindings)
         scan_total = len(self._scancode_map)
-        logger.info("keymap loaded: %s activities, %s scancodes", acts, scan_total)
+        logger.info("keymap loaded: %s modes, %s scancodes", acts, scan_total)
 
     @property
     def scancode_map(self) -> Dict[str, str]:
@@ -157,66 +149,13 @@ class Dispatcher:
             return
         await fn(**(kwargs or {}))
 
-    async def on_cmd(self, data: dict) -> None:
-        """
-        Handle a received event from Home Assistant on the designated bus, default is pihub.cmd
-
-        Expected payload (inside HA event data):
-        {
-            "dest": "pihub",
-            "domain": "speaker"|"tv"|"ble",
-            "action": "<method_name or key>",
-            "args": { ... }   # optional kwargs for method
-        }
-        """
-        if not isinstance(data, dict):
-            return
-        if data.get("dest") != "pihub":
-            return
-
-        domain = data.get("domain")
-        action = data.get("action")
-        args = data.get("args") if isinstance(data.get("args"), dict) else {}
-        if not isinstance(domain, str) or not isinstance(action, str):
-            return
-
-        # if domain == "ha":
-        #    action = args.get("action")
-        #    ha_args = args.get("args") if isinstance(args.get("args"), dict) else {}
-        #    if isinstance(action, str):
-        #        await self._send_with_log(action=action, **ha_args)
-        #    return
-
-        if domain == "ble":
-            if self._bt is None:
-                return
-            await self._call_action_method(self._bt, action, args)
-            return
-
-        if domain == "tv":
-            if self._tv is None:
-                return
-            await self._call_action_method(self._tv, action, args)
-            return
-
-        if domain == "speaker":
-            sp = getattr(self, "_speaker", None)
-            if sp is None:
-                return
-            # Hard drop if unreachable
-            st = getattr(sp, "state", None)
-            if st is not None and not getattr(st, "reachable", False):
-                return
-            await self._call_action_method(sp, action, args)
-            return
-
     def _compile_ble_frames_once(self) -> None:
         """
         Precompile BLE actions into binary frames.
 
-        New style: compile once per activity using the dongle link's encoder
+        New style: compile once per mode using the dongle link's encoder
         (which loads pihub.assets/hid_keymap.json) and store the resulting
-        CompiledBleFrames keyed by activity.
+        CompiledBleFrames keyed by mode.
 
         This keeps the hot path to:
         dict lookup (active frames) + enqueue bytes
@@ -224,93 +163,43 @@ class Dispatcher:
         compiled: Dict[str, CompiledBleFrames] = {}
         total = 0
 
-        for activity, mapping in (self._bindings or {}).items():
+        for mode, mapping in (self._bindings or {}).items():
             if not isinstance(mapping, dict):
                 continue
             try:
                 frames = self._bt.compile_ble_frames(mapping)
             except Exception:
-                logger.debug("ble compile failed for activity=%s", activity, exc_info=True)
+                logger.debug("ble compile failed for mode=%s", mode, exc_info=True)
                 continue
-            compiled[activity] = frames
+            compiled[mode] = frames
             total += (len(frames.kb_down) + len(frames.cc_down))
 
-        self._ble_frames_by_activity = compiled
+        self._ble_frames_by_mode = compiled
         logger.info("compiled %d ble HID codes into binary frames", total)
 
-    def _precompile_ha_actions(self) -> None:
-        """
-        Precompute HA action fields once at startup so the hot path doesn't:
-        - rebuild extras dict
-        - re-parse min_hold_ms
-        - re-derive when
-        """
-        for _activity, mapping in (self._bindings or {}).items():
-            if not isinstance(mapping, dict):
-                continue
-            for _rem_key, actions in mapping.items():
-                if not isinstance(actions, list):
-                    continue
-                for a in actions:
-                    if not isinstance(a, dict) or a.get("domain") != "ha":
-                        continue
+    async def set_mode_bindings(self, mode: Optional[str]) -> None:
+        """Apply the current mode by selecting its key bindings and BLE frame cache."""
+        prior_mode = self._mode
+        self._mode = mode
 
-                    # Store under private keys to avoid changing keymap schema.
-                    a["_when"] = a.get("when", "down")
-
-                    a["_min_hold_ms"] = (
-                        parse_ms(
-                            a.get("min_hold_ms"),
-                            default=0,
-                            min=0,
-                            max=5000,
-                            allow_none=False,
-                            context="keymap.min_hold_ms",
-                        )
-                        or 0
-                    )
-
-                    a["_extras"] = {
-                        k: v
-                        for k, v in a.items()
-                        if k
-                        not in {
-                            "domain",
-                            "when",
-                            "action",
-                            "min_hold_ms",
-                            "_when",
-                            "_min_hold_ms",
-                            "_extras",
-                        }
-                    }
-
-    # Activity comes from HA (ha_ws)
-    async def on_activity(self, text: Optional[str]) -> None:
-        """Record the current activity reported by Home Assistant."""
-        prior = self._activity
-        self._activity = text
-
-        # Cache mapping so per-edge dispatch is a single dict lookup.
-        if text is None:
+        if mode is None:
             self._active_bindings = {}
         else:
-            self._active_bindings = self._bindings.get(text, {}) or {}
+            self._active_bindings = self._bindings.get(mode, {}) or {}
 
-        # Cache compiled BLE frames for this activity (or None).
-        self._active_ble_frames = None if text is None else self._ble_frames_by_activity.get(text)
+        self._active_ble_frames = None if mode is None else self._ble_frames_by_mode.get(mode)
 
-        if (prior is None) != (text is None):
-            self._activity_none_logged = False
+        if (prior_mode is None) != (mode is None):
+            self._mode_none_logged = False
 
     # USB edges come from UnifyingReader
     async def on_usb_edge(self, rem_key: str, edge: str) -> None:
         """Handle a key edge originating from the USB receiver."""
         loop = asyncio.get_running_loop()
 
-        if self._activity is None and not self._activity_none_logged:
-            logger.info("activity not set yet; ignoring input until HA activity arrives")
-            self._activity_none_logged = True
+        if self._mode is None and not self._mode_none_logged:
+            logger.info("mode not set yet; ignoring input until mode set")
+            self._mode_none_logged = True
 
         if not await self._update_press_state(rem_key, edge, loop):
             return
@@ -470,10 +359,6 @@ class Dispatcher:
             await self._handle_flow_action(a, edge, rem_key=rem_key, action_index=action_index)
             return
 
-        if domain == "ha":
-            await self._handle_ha_action(a, edge, rem_key=rem_key, action_index=action_index)
-            return
-
         if domain == "tv":
             await self._handle_tv_action(a, edge, rem_key=rem_key, action_index=action_index)
             return
@@ -622,67 +507,6 @@ class Dispatcher:
             await _run()
             return
 
-    async def _handle_ha_action(
-        self,
-        a: dict,
-        edge: str,
-        *,
-        rem_key: Optional[str],
-        action_index: int,
-    ) -> None:
-        """Handle Home Assistant bus actions (supports min_hold_ms; no repeat)."""
-        cmd = a.get("action")
-        if not isinstance(cmd, str):
-            return
-
-        extras = a.get("_extras")
-        if not isinstance(extras, dict):
-            extras = {k: v for k, v in a.items() if k not in {"domain", "when", "action", "min_hold_ms"}}
-
-        min_hold_ms = a.get("_min_hold_ms")
-        if not isinstance(min_hold_ms, int):
-            min_hold_ms = (
-                parse_ms(
-                    a.get("min_hold_ms"),
-                    default=0,
-                    min=0,
-                    max=5000,
-                    allow_none=False,
-                    context="keymap.min_hold_ms",
-                )
-                or 0
-            )
-
-        loop = asyncio.get_running_loop()
-        when = a.get("_when")
-        if not isinstance(when, str):
-            when = a.get("when", "down")
-
-        # when == "up": fire on release; if min_hold_ms > 0, enforce press duration
-        if when == "up" and edge == "up":
-            if min_hold_ms > 0 and rem_key:
-                t0 = self._pressed_at.get(rem_key)
-                if t0 is None:
-                    return
-                elapsed_ms = int((loop.time() - t0) * 1000.0)
-                if elapsed_ms < min_hold_ms:
-                    return
-            await self._send_with_log(action=cmd, **extras)
-            return
-
-        # when == "down": fire on press; if min_hold_ms > 0, delay until threshold
-        if when == "down" and edge == "down":
-            if min_hold_ms > 0 and rem_key is not None:
-                await self._schedule_hold_action(
-                    rem_key=rem_key,
-                    action_index=action_index,
-                    min_hold_ms=min_hold_ms,
-                    callback=lambda: self._send_with_log(action=cmd, **extras),
-                )
-                return
-            await self._send_with_log(action=cmd, **extras)
-            return
-
     # ---- Keymap loader ----
     def _load_keymap(self) -> dict:
         identifier = "pihub.assets:keymap.json"
@@ -698,54 +522,42 @@ class Dispatcher:
         except json.JSONDecodeError as exc:
             raise ValueError(f"packaged keymap invalid JSON ({identifier}): {exc}") from exc
 
-        if not isinstance(doc, dict) or "scancode_map" not in doc or "activities" not in doc:
+        if not isinstance(doc, dict) or "scancode_map" not in doc or "modes" not in doc:
             raise ValueError(
-                f"packaged keymap schema invalid ({identifier}): expected 'scancode_map' and 'activities'."
+                f"packaged keymap schema invalid ({identifier}): expected 'scancode_map' and 'modes'."
             )
 
         return doc
-
-    async def _send_with_log(self, action: str, **extras: Any) -> None:
-        success = await self._send_cmd(action=action, **extras)
-        if success:
-            return
-        if not logger.isEnabledFor(logging.DEBUG):
-            return
-        now = time.monotonic()
-        if now - self._last_cmd_fail_log < 5.0:
-            return
-        self._last_cmd_fail_log = now
-        logger.warning("HA command send failed: %s", action)
 
     @staticmethod
     def _validate_keymap(doc: dict) -> None:
         if not isinstance(doc, dict):
             raise ValueError("keymap.json must be a dict")
 
-        activities = doc.get("activities")
-        if not isinstance(activities, dict):
-            raise ValueError("keymap.json 'activities' must be a dict")
+        modes = doc.get("modes")
+        if not isinstance(modes, dict):
+            raise ValueError("keymap.json 'modes' must be a dict")
 
-        for activity, mapping in activities.items():
+        for mode, mapping in modes.items():
             if not isinstance(mapping, dict):
-                raise ValueError(f"activity '{activity}' must map to a dict of actions")
+                raise ValueError(f"mode '{mode}' must map to a dict of actions")
             for rem_key, actions in mapping.items():
                 if not isinstance(actions, list):
-                    raise ValueError(f"actions for '{activity}.{rem_key}' must be a list")
+                    raise ValueError(f"actions for '{mode}.{rem_key}' must be a list")
                 for idx, action in enumerate(actions):
                     if not isinstance(action, dict):
-                        raise ValueError(f"action {activity}.{rem_key}[{idx}] must be a dict")
+                        raise ValueError(f"action {mode}.{rem_key}[{idx}] must be a dict")
                     domain = action.get("domain")
                     if domain not in {"ha", "ble", "noop", "tv", "speaker", "flow"}:
-                        raise ValueError(f"action {activity}.{rem_key}[{idx}] has unknown domain={domain!r}")
+                        raise ValueError(f"action {mode}.{rem_key}[{idx}] has unknown domain={domain!r}")
                     if domain == "ha":
                         if not isinstance(action.get("action"), str):
-                            raise ValueError(f"ha action {activity}.{rem_key}[{idx}] missing 'action' string")
+                            raise ValueError(f"ha action {mode}.{rem_key}[{idx}] missing 'action' string")
                     elif domain == "flow":
                         if action.get("action") != "run":
-                            raise ValueError(f"flow action {activity}.{rem_key}[{idx}] requires action='run'")
+                            raise ValueError(f"flow action {mode}.{rem_key}[{idx}] requires action='run'")
                         if not isinstance(action.get("name"), str):
-                            raise ValueError(f"flow action {activity}.{rem_key}[{idx}] missing 'name' string")
+                            raise ValueError(f"flow action {mode}.{rem_key}[{idx}] missing 'name' string")
                     elif domain == "ble":
                         if not (isinstance(action.get("usage"), str) and isinstance(action.get("code"), str)):
-                            raise ValueError(f"ble action {activity}.{rem_key}[{idx}] requires 'usage' and 'code'")
+                            raise ValueError(f"ble action {mode}.{rem_key}[{idx}] requires 'usage' and 'code'")
