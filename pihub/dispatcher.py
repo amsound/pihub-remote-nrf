@@ -91,7 +91,6 @@ class Dispatcher:
                 "keymap.json schema invalid: expected 'scancode_map' (dict) and 'modes' (dict)."
             ) from exc
 
-        self._precompile_ha_actions()
         self._mode: Optional[str] = None
         self._mode_none_logged = False
         self._active_bindings: Dict[str, List[Dict[str, Any]]] = {}
