@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from .flows import FlowRunner
 
 logger = logging.getLogger(__name__)
 
@@ -12,13 +13,22 @@ logger = logging.getLogger(__name__)
 class RuntimeEngine:
     """Owns local mode/flow state and exposes a unified command entrypoint."""
 
-    def __init__(self, *, dispatcher: Any | None = None, initial_mode: str = "power_off") -> None:
+    def __init__(
+        self,
+        *,
+        dispatcher: Any | None = None,
+        tv: Any = None,
+        speaker: Any = None,
+        ble: Any = None,
+        initial_mode: str = "power_off",
+    ) -> None:
         self._dispatcher = dispatcher
         self._mode = initial_mode
         self._last_flow: str | None = None
         self._flow_running = False
         self._current_trigger: str | None = None
         self._lock = asyncio.Lock()
+        self._flows = FlowRunner(runtime=self, tv=tv, speaker=speaker, ble=ble)
 
     @property
     def mode(self) -> str:
@@ -97,10 +107,18 @@ class RuntimeEngine:
             self._current_trigger = trigger
             logger.info("flow started name=%s trigger=%s", name, trigger)
             try:
-                # Slice 1 placeholder behavior:
-                # treat the flow name as the desired mode when possible.
-                await self.set_mode(name, trigger=trigger)
-                self._last_flow = name
+                ok = await self._flows.run(name=name, trigger=trigger)
+                if ok:
+                    self._last_flow = name
+                else:
+                    return {
+                        "ok": False,
+                        "domain": "flow",
+                        "action": "run",
+                        "name": name,
+                        "trigger": trigger,
+                        "error": "flow_failed",
+                    }
                 logger.info("flow completed name=%s trigger=%s", name, trigger)
                 return {
                     "ok": True,

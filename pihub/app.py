@@ -133,7 +133,12 @@ async def main() -> None:
             return False
         return await ws.send_cmd(action, **args)
 
-    runtime = RuntimeEngine(initial_mode="power_off")
+    runtime = RuntimeEngine(
+        tv=tv,
+        speaker=speaker,
+        ble=bt,
+        initial_mode="power_off",
+    )
 
     DispatcherRef = Dispatcher(
         cfg=cfg,
