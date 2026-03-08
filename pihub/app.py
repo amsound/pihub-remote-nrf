@@ -106,9 +106,9 @@ async def main() -> None:
         stop = asyncio.Event()
 
     speaker: LinkPlaySpeaker | None = None
-    if cfg.speaker_host:
+    if cfg.speaker_ip:
         speaker = LinkPlaySpeaker(
-            host=cfg.speaker_host,
+            speaker_ip=cfg.speaker_ip,
             http_scheme=cfg.speaker_http_scheme,
             volume_step_pct=cfg.speaker_volume_step_pct,
         )
