@@ -132,7 +132,7 @@ class HealthServer:
                 "mode": None,
                 "last_flow": None,
                 "flow_running": False,
-                "current_trigger": None,
+                "last_trigger": None,
             }
         )
 

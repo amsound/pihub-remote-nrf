@@ -24,6 +24,7 @@ from .tv import TvController
 from .speaker_linkplay_tcp import LinkPlaySpeaker
 from .tv.ssdp import ssdp_listener, start_discovery_tasks, stop_discovery_tasks
 from .runtime import RuntimeEngine
+from .overrides import OverrideEngine
 
 
 def _debug_enabled() -> bool:
@@ -135,6 +136,14 @@ async def main() -> None:
     )
 
     runtime.attach_dispatcher(DispatcherRef)
+
+    overrides = OverrideEngine(
+    runtime=runtime,
+    tv=tv,
+    speaker=speaker,
+    apply_mode=cfg.override_apply_mode,
+    )
+
     await runtime.start()
 
     reader = UnifyingReader(
@@ -162,6 +171,9 @@ async def main() -> None:
 
         await health.start()
         started.append(("health", health.stop))
+
+        await overrides.start()
+        started.append(("overrides", overrides.stop))
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(Exception):
