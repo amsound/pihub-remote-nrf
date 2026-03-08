@@ -89,7 +89,16 @@ class OverrideEngine:
 
         desired_mode = self._decide_mode(current_mode=self._runtime.mode, snap=snap)
 
-        # A stable description of the current override situation.
+        if desired_mode is None:
+            self._last_seen_signature = None
+            self._prev = snap
+            return
+        
+        if desired_mode == self._runtime.mode:
+            self._last_seen_signature = None
+            self._prev = snap
+            return
+        
         seen_signature = (
             self._runtime.mode,
             desired_mode,
@@ -99,13 +108,6 @@ class OverrideEngine:
             self._apply_mode,
         )
 
-        # No override candidate at all: clear seen signature and stay quiet.
-        if desired_mode is None:
-            self._last_seen_signature = None
-            self._prev = snap
-            return
-
-        # If nothing meaningful changed, do nothing.
         if seen_signature == self._last_seen_signature:
             self._prev = snap
             return
@@ -121,10 +123,6 @@ class OverrideEngine:
             snap.speaker_source,
             "true" if self._apply_mode else "false",
         )
-
-        if desired_mode == self._runtime.mode:
-            self._prev = snap
-            return
 
         if self._runtime.flow_running:
             logger.info("override skipped desired_mode=%s reason=flow_running", desired_mode)
