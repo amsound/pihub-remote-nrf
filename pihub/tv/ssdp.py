@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 _MCAST_GRP = "239.255.255.250"
 _MCAST_PORT = 1900
 _MSEARCH_ST = "urn:schemas-upnp-org:device:MediaRenderer:1"
+_MSEARCH_BURST_COUNT = 3
+_MSEARCH_BURST_GAP_S = 0.4
 
 
 async def ssdp_listener(tv: TvController) -> None:
@@ -85,7 +87,7 @@ def _parse_headers(packet: str) -> dict[str, str]:
 
 
 async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None:
-    """Send one targeted M-SEARCH and accept only replies for the configured TV IP."""
+    """Send a short targeted M-SEARCH burst and accept replies for the configured TV IP."""
     msg = "\r\n".join(
         [
             "M-SEARCH * HTTP/1.1",
@@ -100,8 +102,32 @@ async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
         sock.settimeout(0.5)
-        await asyncio.to_thread(sock.sendto, msg, (_MCAST_GRP, _MCAST_PORT))
+
+        logger.info(
+            "tv:msearch bootstrap start tv_ip=%s burst_count=%d timeout_s=%.1f",
+            tv.tv_ip,
+            _MSEARCH_BURST_COUNT,
+            timeout_s,
+        )
+
+        for i in range(_MSEARCH_BURST_COUNT):
+            try:
+                await asyncio.to_thread(sock.sendto, msg, (_MCAST_GRP, _MCAST_PORT))
+                logger.info(
+                    "tv:msearch probe sent tv_ip=%s seq=%d/%d",
+                    tv.tv_ip,
+                    i + 1,
+                    _MSEARCH_BURST_COUNT,
+                )
+            except Exception:
+                logger.exception("tv:msearch send failed seq=%d", i + 1)
+                break
+
+            if i + 1 < _MSEARCH_BURST_COUNT:
+                await asyncio.sleep(_MSEARCH_BURST_GAP_S)
+
         deadline = asyncio.get_running_loop().time() + timeout_s
 
         while asyncio.get_running_loop().time() < deadline:
@@ -117,25 +143,57 @@ async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None
 
             reply_ip = addr[0]
             txt = data.decode("utf-8", errors="ignore")
+
             if "HTTP/1.1 200 OK" not in txt:
+                logger.debug("tv:msearch ignored non-200 reply from=%s", reply_ip)
                 continue
 
             hdr = _parse_headers(txt)
-            if hdr.get("ST") != _MSEARCH_ST:
-                continue
-
+            st = hdr.get("ST")
             location = hdr.get("LOCATION")
             location_ip = urlparse(location).hostname if location else None
+
+            logger.info(
+                "tv:msearch reply from=%s st=%s location=%s",
+                reply_ip,
+                st,
+                location,
+            )
+
+            if st != _MSEARCH_ST:
+                logger.info(
+                    "tv:msearch ignored reply from=%s reason=st_mismatch st=%s expected=%s",
+                    reply_ip,
+                    st,
+                    _MSEARCH_ST,
+                )
+                continue
+
             if reply_ip != tv.tv_ip and location_ip != tv.tv_ip:
+                logger.info(
+                    "tv:msearch ignored reply from=%s reason=ip_mismatch location_ip=%s expected=%s",
+                    reply_ip,
+                    location_ip,
+                    tv.tv_ip,
+                )
                 continue
 
             acted = tv.notify_msearch(location=location)
+            logger.info(
+                "tv:msearch matched reply from=%s location=%s acted=%s",
+                reply_ip,
+                location,
+                "true" if acted else "false",
+            )
+
             if acted:
                 try:
                     await tv.ensure_ws_connected()
                 except Exception:
                     logger.debug("tv:msearch ws connect failed after bootstrap", exc_info=True)
             return
+
+        logger.info("tv:msearch bootstrap complete tv_ip=%s acted=false reason=timeout", tv.tv_ip)
     finally:
         try:
             sock.close()

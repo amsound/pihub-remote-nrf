@@ -72,8 +72,18 @@ class TvController:
 
     def notify_msearch(self, *, location: str | None) -> bool:
         if location and "/dmr" not in location:
+            logger.info("tv msearch rejected location=%s", location)
             return False
-        return self._commit_discovery(True, source="msearch")
+
+        changed = self._commit_discovery(True, source="msearch")
+        logger.info(
+            "tv msearch accepted changed=%s location=%s logical_on=%s logical_source=%s",
+            "true" if changed else "false",
+            location,
+            "true" if self._dmr_cached is True else "false",
+            self._logical_source,
+        )
+        return changed
 
     def notify_ssdp(
         self,
