@@ -129,14 +129,14 @@ class LinkPlaySpeaker:
     def __init__(
         self,
         *,
-        host: str,
+        speaker_ip: str,
         tcp_port: int = _TCP_DEFAULT_PORT,
         http_scheme: str = "https",
         volume_step_pct: int = 2,
         command_interval_s: float = 0.2,
         reconnect_s: float = 3.0,
     ) -> None:
-        self._host = host.strip()
+        self._speaker_ip = speaker_ip.strip()
         self._tcp_port = int(tcp_port)
         self._http_scheme = (http_scheme or "https").strip().lower()
         if self._http_scheme not in {"http", "https"}:
@@ -205,7 +205,7 @@ class LinkPlaySpeaker:
             # Keep it simple; LinkPlay HTTPS is often self-signed
             self._session = aiohttp.ClientSession(timeout=timeout)
 
-        self._task = asyncio.create_task(self._runner(), name=f"linkplay_tcp[{self._host}]")
+        self._task = asyncio.create_task(self._runner(), name=f"linkplay_tcp[{self._speaker_ip}]")
 
     async def stop(self) -> None:
         self._enabled = False
@@ -235,7 +235,7 @@ class LinkPlaySpeaker:
                 await self._connect()
 
                 # Start polling loop alongside read loop
-                self._poll_task = asyncio.create_task(self._poll_loop(), name=f"linkplay_poll[{self._host}]")
+                self._poll_task = asyncio.create_task(self._poll_loop(), name=f"linkplay_poll[{self._speaker_ip}]")
 
                 # Initial handshake pull (this is what flips connected=True after parse)
                 await self._pinfget()
@@ -244,7 +244,7 @@ class LinkPlaySpeaker:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning("TCP loop error host=%s err=%r", self._host, e)
+                logger.warning("TCP loop error speaker_ip=%s err=%r", self._speaker_ip, e)
                 self._mark_down(str(e))
             finally:
                 if self._poll_task:
@@ -265,12 +265,12 @@ class LinkPlaySpeaker:
         self._state.connected = False
         self._log_drop_once = False
 
-        reader, writer = await asyncio.open_connection(self._host, self._tcp_port)
+        reader, writer = await asyncio.open_connection(self._speaker_ip, self._tcp_port)
         self._reader, self._writer = reader, writer
         self._state.reachable = True
         self._state.subscribed = True
         self._state.last_update_ts = _now()
-        logger.info("linkplay tcp connected host=%s port=%s", self._host, self._tcp_port)
+        logger.info("linkplay tcp connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
 
     async def _disconnect(self) -> None:
         # Reset flags; keep last_error as-is for inspection
@@ -379,7 +379,7 @@ class LinkPlaySpeaker:
 
                 # validate checksum but don't die if it fails (some firmwares are weird)
                 if (sum(payload_bytes) & 0xFFFFFFFF) != checksum:
-                    logger.debug("checksum mismatch host=%s", self._host)
+                    logger.debug("checksum mismatch speaker_ip=%s", self._speaker_ip)
 
                 payload = _parse_payload(payload_bytes)
                 if payload:
@@ -435,7 +435,7 @@ class LinkPlaySpeaker:
                     was_ready = self._state.connected
                     self._state.connected = True
                     if not was_ready:
-                        logger.info("linkplay tcp ready host=%s (initial PINFGET received)", self._host)
+                        logger.info("linkplay tcp ready speaker_ip=%s (initial PINFGET received)", self._speaker_ip)
 
                     # Mode can mirror PLM
                     mode = str(data.get("mode", "")).strip()
@@ -631,7 +631,7 @@ class LinkPlaySpeaker:
             self._session = aiohttp.ClientSession(timeout=timeout)
 
         cmd = f"setPlayerCmd:play:{url}"
-        endpoint = f"{self._http_scheme}://{self._host}{_HTTPAPI_PATH}"
+        endpoint = f"{self._http_scheme}://{self._speaker_ip}{_HTTPAPI_PATH}"
         params = {"command": cmd}
 
         try:
@@ -651,7 +651,7 @@ class LinkPlaySpeaker:
             timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
             self._session = aiohttp.ClientSession(timeout=timeout)
 
-        endpoint = f"{self._http_scheme}://{self._host}{_HTTPAPI_PATH}"
+        endpoint = f"{self._http_scheme}://{self._speaker_ip}{_HTTPAPI_PATH}"
         params = {"command": cmd}
 
         async with self._session.get(endpoint, params=params, ssl=False) as resp:

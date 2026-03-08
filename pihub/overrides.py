@@ -48,6 +48,9 @@ class OverrideEngine:
         self._last_decision: str | None = None
         self._last_decision_ts: float | None = None
 
+        self._last_seen_signature: tuple | None = None
+        self._last_action_signature: tuple | None = None
+
     async def start(self) -> None:
         if self._task and not self._task.done():
             return
@@ -85,9 +88,29 @@ class OverrideEngine:
                 self._last_listen_ts = now
 
         desired_mode = self._decide_mode(current_mode=self._runtime.mode, snap=snap)
+
+        # A stable description of the current override situation.
+        seen_signature = (
+            self._runtime.mode,
+            desired_mode,
+            snap.tv_on,
+            snap.speaker_playback,
+            snap.speaker_source,
+            self._apply_mode,
+        )
+
+        # No override candidate at all: clear seen signature and stay quiet.
         if desired_mode is None:
+            self._last_seen_signature = None
             self._prev = snap
             return
+
+        # If nothing meaningful changed, do nothing.
+        if seen_signature == self._last_seen_signature:
+            self._prev = snap
+            return
+
+        self._last_seen_signature = seen_signature
 
         logger.info(
             "override detected current_mode=%s desired_mode=%s tv_on=%s speaker_playback=%s speaker_source=%s apply_mode=%s",
@@ -108,7 +131,14 @@ class OverrideEngine:
             self._prev = snap
             return
 
-        if self._last_decision == desired_mode and self._last_decision_ts is not None:
+        # A stable description of the action we'd take for this situation.
+        action_signature = (
+            desired_mode,
+            self._apply_mode,
+        )
+
+        # Only use cooldown for repeated action attempts, not repeated polling of the same stable state.
+        if self._last_action_signature == action_signature and self._last_decision_ts is not None:
             if (now - self._last_decision_ts) < DECISION_COOLDOWN_S:
                 logger.info("override skipped desired_mode=%s reason=cooldown", desired_mode)
                 self._prev = snap
@@ -116,6 +146,7 @@ class OverrideEngine:
 
         self._last_decision = desired_mode
         self._last_decision_ts = now
+        self._last_action_signature = action_signature
 
         if not self._apply_mode:
             logger.info("override apply suppressed by config desired_mode=%s", desired_mode)

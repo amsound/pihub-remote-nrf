@@ -22,8 +22,8 @@ class Config:
     tv_token_file: str
     tv_name: str
 
-    # LinkPlay/WiiM Speaker (static host)
-    speaker_host: str
+    # LinkPlay/WiiM Speaker
+    speaker_ip: str
     speaker_http_scheme: str  # https (self-signed)
     speaker_volume_step_pct: int  # MUST be 2%
 
@@ -48,7 +48,7 @@ class Config:
         tv_name = (os.getenv("TV_NAME", "PiHub Remote") or "").strip()
 
         # Speaker
-        speaker_host = (os.getenv("SPEAKER_HOST", "") or "").strip()
+        speaker_ip = (os.getenv("SPEAKER_IP", "") or "").strip()
         speaker_http_scheme = (os.getenv("SPEAKER_HTTP_SCHEME", "https") or "https").strip().lower()
         if speaker_http_scheme not in {"http", "https"}:
             speaker_http_scheme = "https"
@@ -67,7 +67,7 @@ class Config:
             tv_mac=tv_mac,
             tv_token_file=tv_token_file,
             tv_name=tv_name,
-            speaker_host=speaker_host,
+            speaker_ip=speaker_ip,
             speaker_http_scheme=speaker_http_scheme,
             speaker_volume_step_pct=speaker_volume_step_pct,
             override_apply_mode=override_apply_mode,
