@@ -125,8 +125,8 @@
       "rem_dir_right":    [ { "domain": "speaker", "action": "next_track" } ],
       "rem_ok":           [ { "domain": "speaker", "action": "play_pause" } ],
 
-      "rem_ch_up":        [ { "domain": "noop" } ],
-      "rem_ch_down":      [ { "domain": "noop" } ],
+      "rem_ch_up":        [ { "domain": "speaker", "action": "next_preset" } ],
+      "rem_ch_down":      [ { "domain": "speaker", "action": "previous_preset" } ],
 
       "rem_1":            [ { "domain": "speaker", "action": "preset", "n": 1 } ],
       "rem_2":            [ { "domain": "speaker", "action": "preset", "n": 2 } ],

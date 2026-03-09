@@ -92,6 +92,11 @@ class OverrideEngine:
             self._prev = snap
             return
 
+        if self._runtime.mode == "power_off" and self._runtime.last_flow == "power_off":
+            self._last_seen_signature = None
+            self._prev = snap
+            return
+
         desired_mode = self._decide_mode(current_mode=self._runtime.mode, snap=snap)
 
         if desired_mode is None:
