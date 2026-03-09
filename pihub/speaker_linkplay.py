@@ -31,7 +31,7 @@ _TCP_HEADER = b"\x18\x96\x18\x20"  # 0x18 0x96 0x18 0x20
 
 _HTTPAPI_PATH = "/httpapi.asp"
 _HTTP_TIMEOUT_S = 10
-DEFAULT_HTTP_POWEROFF_CMD = "setPlayerCmd:poweroff"
+DEFAULT_HTTP_POWEROFF_CMD = "setShutdown:0"
 
 # Poll knobs (tweak here)
 POLL_WIFI_PLAYING_S = 10.0   # play OR loading
