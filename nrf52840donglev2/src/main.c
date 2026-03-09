@@ -1,12 +1,14 @@
 
 /*
- * PiHub BLE HID Keyboard (minimal)
+ * PiHub BLE HID remote
  * NCS v3.2.1 / Zephyr 4.2.x
  *
- * Diagnostics-first build:
- *  - Always blinks LEDs via dk_buttons_and_leds (works on nrf52840dongle)
- *  - BLE advertising is started after bt_enable()
- *  - Shows up as HID-over-GATT (HOGP) keyboard-class device (HID service 0x1812)
+ * Behaviour contract:
+ *  - Advertise as a bondable HID-over-GATT keyboard + consumer-control peripheral
+ *  - Stop advertising while connected; restart advertising on disconnect
+ *  - Use a single bonded host model with an explicit unpair path
+ *  - Accept hot-path HID commands over USB CDC ACM
+ *  - Show advertising/connected/error state on the onboard LEDs
  */
 
 #include <zephyr/kernel.h>
@@ -98,30 +100,6 @@ LOG_MODULE_REGISTER(pihub_hogp, LOG_LEVEL_INF);
 /* Forward declarations (avoid implicit int / non-static declarations under C99) */
 static void start_advertising(void);
 static const char *phy_to_str(uint8_t phy);
-
-
-/* Erase the flash partition used by SETTINGS/NVS (label string: "storage").
- * This is used when the user long-presses SW1 to clear bonds + settings.
- */
-static int pihub_erase_settings_storage(void)
-{
-    const struct flash_area *fa;
-    int err = flash_area_open(FLASH_AREA_ID(storage), &fa);
-    if (err) {
-        LOG_ERR("flash_area_open(storage) failed: %d", err);
-        return err;
-    }
-
-    err = flash_area_erase(fa, 0, fa->fa_size);
-    flash_area_close(fa);
-
-    if (err) {
-        LOG_ERR("flash_area_erase(storage) failed: %d", err);
-    } else {
-        LOG_INF("Settings storage erased (%u bytes)", (unsigned int)fa->fa_size);
-    }
-    return err;
-}
 
 
 /* --- Simple HOGP: HID Service + a single input report characteristic --- */
@@ -692,13 +670,9 @@ static atomic_t sw1_pressed;
 /* --------------------------------------------------------------------------
  * SETTINGS/NVS storage helpers
  *
- * Why this exists:
- * - With CONFIG_BT_SETTINGS=y, bt_enable() will try to init the settings
- *   subsystem. If the settings backend can't open the flash area, bt_enable()
- *   fails and the app never advertises (you've been seeing solid green+red).
- * - On the dongle you only have USB DFU, so "west flash --erase" (debug-probe
- *   mass erase) isn't available. We therefore provide an *in-firmware* erase of
- *   the settings partition.
+ * Bonding data lives in the "storage" flash area. We keep explicit helpers here
+ * so the SW1 long-press / UNPAIR path can wipe bonds in firmware, which is useful
+ * on a dongle that is typically flashed over USB rather than with a debug probe.
  */
 
 static int pihub_open_storage(const struct flash_area **fa_out)
@@ -708,41 +682,37 @@ static int pihub_open_storage(const struct flash_area **fa_out)
     if (err) {
         return err;
     }
+
     *fa_out = fa;
     return 0;
 }
 
 static void pihub_close_storage(const struct flash_area *fa)
 {
-    if (fa) {
+    if (fa != NULL) {
         flash_area_close(fa);
     }
 }
 
-static int pihub_erase_storage(void)
+static int pihub_erase_settings_storage(void)
 {
     const struct flash_area *fa = NULL;
     int err = pihub_open_storage(&fa);
+
     if (err) {
+        LOG_ERR("flash_area_open(storage) failed: %d", err);
         return err;
     }
+
     err = flash_area_erase(fa, 0, fa->fa_size);
+    if (err) {
+        LOG_ERR("flash_area_erase(storage) failed: %d", err);
+    } else {
+        LOG_INF("Settings storage erased (%u bytes)", (unsigned int)fa->fa_size);
+    }
+
     pihub_close_storage(fa);
     return err;
-}
-
-static void pihub_storage_banner(void)
-{
-    const struct flash_area *fa = NULL;
-    int err = pihub_open_storage(&fa);
-    if (err) {
-        printk("[PiHub] storage area open failed (err %d)\n", err);
-        return;
-    }
-    printk("[PiHub] storage area: off=0x%lx size=0x%lx\n",
-           (unsigned long)fa->fa_off,
-           (unsigned long)fa->fa_size);
-    pihub_close_storage(fa);
 }
 
 static int pihub_settings_init_only(void)
@@ -897,8 +867,9 @@ static ssize_t read_input_report_ref(struct bt_conn *conn, const struct bt_gatt_
 
 
 /* HID Control Point (0x2A4C) write handler.
- * Hosts use this for things like "Suspend"/"Exit Suspend" in some HID profiles.
- * We don't need special handling; accept the write to keep hosts happy.
+ * Hosts may use this to signal Suspend (0x01) or Exit Suspend (0x00).
+ * We track the suspend bit so READY/STATUS reflect whether the input path is
+ * currently expected to be active.
  */
 static ssize_t write_ctrl_point(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                 const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
@@ -913,6 +884,19 @@ static ssize_t write_ctrl_point(struct bt_conn *conn, const struct bt_gatt_attr 
     }
 
     const uint8_t *cp = (const uint8_t *)buf;
+
+    switch (cp[0]) {
+    case 0x00:
+        hid_suspended = false;
+        break;
+    case 0x01:
+        hid_suspended = true;
+        break;
+    default:
+        break;
+    }
+
+    update_link_ready("ctrl_point");
     LOG_INF("HID Control Point write: 0x%02x", cp[0]);
     return len;
 }
@@ -986,9 +970,9 @@ enum hids_attr_index {
 };
 
 
-/* Device Information Service (helps some UIs show “keyboard” properly) */
+/* Device Information Service strings. */
 static const char mfg_name[] = "PiHub";
-static const char model_num[] = "PiHub Keyboard";
+static const char model_num[] = DEVICE_NAME;
 
 static ssize_t read_str(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                         void *buf, uint16_t len, uint16_t offset)
@@ -996,12 +980,6 @@ static ssize_t read_str(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     const char *s = attr->user_data;
     return bt_gatt_attr_read(conn, attr, buf, len, offset, s, (uint16_t)strlen(s));
 }
-
-/* --- Device Information Service (0x180A) --- */
-static const char dis_manufacturer[] = "PiHub";
-static const char dis_model[]        = "nRF52840 Dongle";
-static const char dis_serial[]       = "PIHUB-0001";
-static const char dis_fw_rev[]       = "0.1.0";
 
 BT_GATT_SERVICE_DEFINE(dis_svc,
     BT_GATT_PRIMARY_SERVICE(BT_UUID_DIS),
@@ -1027,9 +1005,9 @@ static const struct bt_data ad[] = {
     BT_DATA_BYTES(BT_DATA_GAP_APPEARANCE, 0xC1, 0x03),
 };
 
-/* Put the device name in scan response so platforms reliably show “PiHub”. */
+/* Put the configured device name in the scan response. */
 static const struct bt_data sd[] = {
-    BT_DATA(BT_DATA_NAME_COMPLETE, "PiHub", 5),
+    BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, sizeof(DEVICE_NAME) - 1),
 };
 
 
@@ -1172,19 +1150,22 @@ static int send_keyboard_report(const uint8_t report8[8])
 
 static __attribute__((unused)) int send_consumer_report(const uint8_t report2[2])
 {
-	if (!current_conn || !notify_cc_enabled) {
-		return -ENOTCONN;
-	}
-	if (current_sec_level < BT_SECURITY_L2) {
-		return -EACCES;
-	}
+    if (!current_conn) {
+        return -ENOTCONN;
+    }
+    if (current_sec_level < BT_SECURITY_L2) {
+        return -EACCES;
+    }
+    if (!notify_cc_enabled) {
+        return -EACCES;
+    }
 
-	/* Consumer Control report is 2 bytes (16-bit usage, little-endian). */
-	cc_report[0] = report2[0];
-	cc_report[1] = report2[1];
+    /* Consumer Control report is 2 bytes (16-bit usage, little-endian). */
+    cc_report[0] = report2[0];
+    cc_report[1] = report2[1];
 
-	return bt_gatt_notify(current_conn, &hids_svc.attrs[HIDS_ATTR_CC_VAL],
-				  cc_report, sizeof(cc_report));
+    return bt_gatt_notify(current_conn, &hids_svc.attrs[HIDS_ATTR_CC_VAL],
+                          cc_report, sizeof(cc_report));
 }
 
 
@@ -1299,22 +1280,6 @@ static void cmd_handle_line(char *line)
         /* We might reboot quickly, but try to ACK first */
         cmd_uart_send_line("OK");
         return;
-
-        /* Remove all bonds/keys from BT layer (then we also erase the backing store). */
-        (void)bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
-
-        int rc = pihub_erase_settings_storage();
-        if (rc) {
-            char b[32];
-            snprintk(b, sizeof(b), "ERR %d", rc);
-            cmd_uart_send_line(b);
-        } else {
-            cmd_uart_send_line("OK");
-            /* Slightly longer delay than before helps hosts process disconnect/unpair cleanly. */
-            k_msleep(300);
-            sys_reboot(SYS_REBOOT_COLD);
-        }
-        return;
     }
 
     if (!strcmp(line, "KB")) {
@@ -1357,24 +1322,11 @@ static void cmd_handle_line(char *line)
 
 static void set_leds_adv(void)
 {
-    /* Turn off all LEDs before Advertising */
+    /* Advertising state: blink LED4, keep the other LEDs off. */
     dk_set_led_off(DK_LED4);
     dk_set_led_off(DK_LED3);
     dk_set_led_off(DK_LED2);
     dk_set_led_off(DK_LED1);
-
-    /*
-     * USB CDC ACM console:
-     * If CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y, Zephyr already enables USB
-     * and calling usb_enable() again will return -EALREADY.
-     */
-#if IS_ENABLED(CONFIG_USB_DEVICE_STACK) && !IS_ENABLED(CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT)
-    int usb_ret = usb_enable(NULL);
-    if (usb_ret < 0 && usb_ret != -EALREADY) {
-        LOG_WRN("usb_enable() failed: %d", usb_ret);
-    }
-#endif
-    dk_set_led(DK_LED4, 0);
 }
 
 static void set_leds_conn(void)
@@ -1448,10 +1400,13 @@ static void connected(struct bt_conn *conn, uint8_t err)
     }
     current_conn = bt_conn_ref(conn);
 
-    update_link_ready("connected");
-    /* Reset per-connection state */
-    notify_kb_enabled = false; notify_cc_enabled = false; notify_boot_enabled = false;
+    /* Reset per-connection state before recomputing readiness. */
+    notify_kb_enabled = false;
+    notify_cc_enabled = false;
+    notify_boot_enabled = false;
     current_sec_level = BT_SECURITY_L1;
+    hid_suspended = false;
+    update_link_ready("connected");
 
     k_timer_stop(&blink_timer);
     set_leds_conn();
@@ -1462,7 +1417,6 @@ static void connected(struct bt_conn *conn, uint8_t err)
     }
 
     LOG_INF("Connected");
-    hid_suspended = false;
     update_link_ready("pm");
     log_conn_params(conn, "Conn (initial)");
 
@@ -1489,11 +1443,14 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     if (current_conn) {
         bt_conn_unref(current_conn);
         current_conn = NULL;
-    update_link_ready("disconnected");
     }
 
-    notify_kb_enabled = false; notify_cc_enabled = false; notify_boot_enabled = false;
+    notify_kb_enabled = false;
+    notify_cc_enabled = false;
+    notify_boot_enabled = false;
     current_sec_level = 0;
+    hid_suspended = false;
+    update_link_ready("disconnected");
 
     set_leds_adv();
     k_timer_start(&blink_timer, K_NO_WAIT, K_MSEC(500));
@@ -1550,6 +1507,20 @@ static void auth_cancel(struct bt_conn *conn)
     LOG_WRN("Pairing cancelled");
 }
 
+static void usb_console_init(void)
+{
+#if IS_ENABLED(CONFIG_USB_DEVICE_STACK) && !IS_ENABLED(CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT)
+    int usb_ret = usb_enable(NULL);
+
+    if (usb_ret < 0 && usb_ret != -EALREADY) {
+        LOG_WRN("usb_enable() failed: %d", usb_ret);
+    } else {
+        LOG_INF("USB enabled (%d)", usb_ret);
+    }
+#endif
+}
+
+/* Headless pairing model: no passkey/display/confirm callbacks => no input/no output. */
 static struct bt_conn_auth_cb auth_cb = {
     .cancel = auth_cancel,
 };
@@ -1558,7 +1529,7 @@ int main(void)
 {
     int err;
 
-    /* Hard “I am alive” sequence on boot (always visible) */
+    /* Short visible boot sequence so bring-up failures are obvious on bare hardware. */
     dk_leds_init();
     for (int i = 0; i < 6; i++) {
         dk_set_led(DK_LED1, i & 1);
@@ -1566,28 +1537,13 @@ int main(void)
         k_sleep(K_MSEC(120));
     }
     dk_set_led_off(DK_LED2);
-
-	    /*
-	     * USB CDC ACM console:
-	     * If CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y, Zephyr already enables USB
-	     * and calling usb_enable() again will return -EALREADY.
-	     */
-	#if IS_ENABLED(CONFIG_USB_DEVICE_STACK) && !IS_ENABLED(CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT)
-	    {
-	        int usb_ret = usb_enable(NULL);
-	        if (usb_ret < 0 && usb_ret != -EALREADY) {
-	            LOG_WRN("usb_enable() failed: %d", usb_ret);
-	        } else {
-	            LOG_INF("USB enabled (%d)", usb_ret);
-	        }
-	    }
-	#endif
+    usb_console_init();
 
     /* Bring up CDC ACM command interface (PING/PONG + KB/CC). */
     cmd_uart_init();
 
     /* Set identity early (appearance is set via Kconfig: CONFIG_BT_DEVICE_APPEARANCE) */
-    (void)bt_set_name("PiHub");
+    (void)bt_set_name(DEVICE_NAME);
 
     k_timer_init(&blink_timer, blink_timer_handler, NULL);
 
