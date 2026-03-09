@@ -1,11 +1,12 @@
-
 # PiHub – Universal Remote Bridge (Harmony Remote & Pi)
 
 PiHub turns a Raspberry Pi into a tiny, fast “universal remote” bridge.
 It listens to RF key events from a Logitech Harmony Remote (simple type, no display) paired to a Logitech Unifying receiver and sends actions to:
 
-* **Home Assistant (HA)** over WebSocket (`pihub.cmd` events)
-* **BLE HID** (Consumer + Keyboard) tested with Apple TV 4k 3rd Gen.
+* **BLE HID** (Consumer + Keyboard) tested with Apple TV 4K 3rd Gen
+* **Samsung TV**
+* **LinkPlay/WiiM speaker**
+* **Local runtime flows** over HTTP
 
 It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No Harmony Hub or cloud required.
 
@@ -14,22 +15,27 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 ## ✨ Features
 
 * **RF → Actions** via Linux `evdev`, mapped to canonical `rem_*` names
-* **HA WebSocket**: subscribe to `input_select.activity` to change keymap
+* **Local mode authority** with active key bindings selected by PiHub
+* **HTTP control surface** on port `9123`
 * **BLE Output**: per-button **Consumer + Keyboard** usages
-* **Macros**: **HA-driven** e.g. ble keys to return Apple TV to Home Screen for automations
+* **TV control** via Samsung WebSocket + SSDP discovery
+* **Speaker control** via LinkPlay TCP + HTTP
+* **Flows**: local named flows such as `watch`, `listen`, `power_off`
+* **Overrides**: passive state-driven mode correction (currently **mode-only**, no flow execution)
 * **Precise edges**: explicit **down/up**; filters kernel auto-repeat
-* **Optional synthetic repeats** (global initial/rate, defaults 400ms/400ms; off unless enabled per-key) ideal for HA calls
-* **Long-press**: hold for 'X' ms then trigger
-* **No queueing**: drops actions when offline; **reconnects with jitter**
+* **Long-press** via `min_hold_ms`
+* **No queueing**: drops actions when offline/unavailable; reconnects locally as needed
 
 ---
 
 ## 🧩 Requirements
 
 * Raspberry Pi 3B+ (tested on **aarch64** Raspberry Pi OS Lite)
-* Logitech Unifying receiver (model U-0007 recommended!)
-* Home Assistant reachable over WebSocket (I run this locally in a Docker Container)
-* Nordic nRF52840 Dongle (https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle)
+* Logitech Unifying receiver (model U-0007 recommended)
+* Nordic nRF52840 Dongle  
+  `https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle`
+* Samsung TV on the local network
+* LinkPlay / WiiM speaker on the local network (optional)
 
 ---
 
@@ -47,29 +53,21 @@ services:
     device_cgroup_rules:
       - 'c 13:* rmw'
     environment:
-      HA_TOKEN: "TOKEN HERE"      # This ENV takes precedence
-      # DEBUG: 1                  # optional for debug chatter
+      TV_IP: "192.168.90.43"
+      TV_MAC: "28:07:08:97:42:c8"
+      SPEAKER_IP: "192.168.70.43"
+      # OVERRIDE_APPLY_MODE: off   # optional: still detect/log overrides, but do not change mode
+      # DEBUG: 1                   # optional for debug chatter
     volumes:
       - /dev/input:/dev/input:ro
       - /dev/input/by-id:/dev/input/by-id:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+      - ./data:/data
     devices:
       - /dev/serial/by-id/usb-ZEPHYR_USB-DEV_425DAED15E820B58-if00:/dev/ttyACM0
     group_add:
       - dialout
-
-  homeassistant:
-    image: ghcr.io/home-assistant/home-assistant:stable
-    container_name: homeassistant
-    cpu_shares: 512
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      TZ: Europe/London
-    volumes:
-      - ./homeassistant:/config
-      - /etc/localtime:/etc/localtime:ro
 ```
 
 Start with:
@@ -78,7 +76,7 @@ Start with:
 docker compose up -d
 ```
 
-### Build then push to docker hub (personal reminder):
+### Build then push to docker hub (personal reminder)
 
 ```bash
 # From repo root
@@ -88,9 +86,9 @@ export DOCKER_BUILDKIT=1
 docker build -f Dockerfile -t pihub-nrf:latest .
 ```
 
-then push image to docker hub:
+Then push image to Docker Hub:
 
-```
+```bash
 VER=x.x.x
 docker tag pihub:latest a1exm/pihub-nrf:$VER
 docker tag pihub:latest a1exm/pihub-nrf:latest
@@ -102,116 +100,226 @@ docker push a1exm/pihub-nrf:latest
 
 ## ⚙️ Configuration
 
-| Variable             | Description                                                   | Default / Notes                    |
-| -------------------- | ------------------------------------------------------------- | ---------------------------------- |
-| `HA_TOKEN`           | HA Long-Lived Access Token                                    | ENV takes priority                 |
-| `HA_TOKEN_FILE`      | HA Long-Lived Access Token alternative                        | Expects /run/secrets/ha_token      |
-| `HA_WS_URL`          | Home Assistant WebSocket URL                                  | Defaults to `127.0.0.1`            |
-| `HA_CMD_EVENT`       | Home Assistant Event Bus                                      | Defaults to `pihub.cmd`            |
-| `HA_ACTIVITY`        | Home Assistant Activty for Keymap changes                     | Defaults to `input_select.activity`|
-| `HEALTH_HOST`        | Bind address for the HTTP health endpoint                     | Defaults to `0.0.0.0`              |
-| `HEALTH_PORT`        | Port for the HTTP health endpoint                             | Defaults to `9123`                 |
-| `DEBUG`              | Debug knob                                                    | Defaults to INFO/WARN              |
+| Variable | Description | Default / Notes |
+| --- | --- | --- |
+| `BLE_SERIAL_DEVICE` | CDC ACM device for the BLE dongle | `/dev/ttyACM0` |
+| `BLE_SERIAL_BAUD` | BLE serial baud rate | `115200` |
+| `HEALTH_HOST` | Bind address for the HTTP endpoint | `0.0.0.0` |
+| `HEALTH_PORT` | Port for health and local commands | `9123` |
+| `TV_IP` | Samsung TV IP address | required for TV support |
+| `TV_MAC` | Samsung TV MAC address | required for Wake-on-LAN / power-on path |
+| `TV_TOKEN_FILE` | Samsung TV token path | `/data/samsungtv-token.txt` |
+| `TV_NAME` | Name presented to the Samsung TV | `PiHub Remote` |
+| `SPEAKER_IP` | LinkPlay/WiiM speaker IP address | optional |
+| `SPEAKER_HTTP_SCHEME` | Speaker HTTP scheme | `https` |
+| `OVERRIDE_APPLY_MODE` | Disable override mode changes while keeping detection/logging active | set to `off`, `0`, `false`, or `no` to suppress mode changes |
+| `DEBUG` | Debug knob | defaults to INFO/WARN |
 
 Keymap is bundled with the application and loaded from packaged assets in production; it is not configurable at runtime.
 
-**Fail-fast:** the app exits on startup if it can’t obtain an HA token from env or file, logging `"cannot start without Home Assistant token: ..."` from the `pihub.app` logger to point operators at the missing credential.
+### Current terminology
+
+* **mode** = current active keymap / button behavior set
+* **flow** = named blocking orchestration, e.g. `watch`, `listen`, `power_off`
+* **override** = external state-driven mode correction
+* **last_trigger** = sticky record of the most recent runtime trigger source
 
 ---
 
-## 🌡️ Health endpoint
+## 🌡️ HTTP endpoint
 
-An HTTP endpoint publishes a JSON snapshot at `http://<host>:9123/health`:
+PiHub exposes an HTTP endpoint at:
+
+```text
+http://<host>:9123
+```
+
+### Health
+
+```text
+GET /health
+```
+
+Example response:
 
 ```json
 {
+  "pihub_id": "test-pihub",
   "status": "ok",
   "degraded_reasons": [],
-  "ws": {
-    "connected": true,
-    "last_activity": "watch"
+  "domains": {
+    "usb": "ok",
+    "ble": "ok",
+    "tv": "ok",
+    "speaker": "ok"
+  },
+  "runtime": {
+    "mode": "watch",
+    "last_flow": "watch",
+    "flow_running": false,
+    "last_trigger": "http.flow"
   },
   "usb": {
-    "receiver_present": true,
-    "paired_remote": true,
-    "reader_running": true,
-    "input_open": true,
-    "input_path": "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd",
-    "grabbed": true
+    "status": "ok",
+    "reasons": [],
+    "present": true,
+    "path": "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd",
+    "link_up": true,
+    "link_ready": true,
+    "error": false,
+    "details": {
+      "paired_remote": true,
+      "reader_running": true,
+      "input_open": true,
+      "grabbed": true
+    }
   },
   "ble": {
-    "adapter_present": true,
-    "device": "/dev/ttyACM0",
-    "ready": true,
-    "advertising": false,
-    "connected": true,
-    "sec": 2,
-    "proto_report": false,
+    "status": "ok",
+    "reasons": [],
+    "present": true,
+    "path": "/dev/ttyACM0",
+    "link_up": true,
+    "link_ready": true,
     "error": false,
-    "conn_params": {
-      "interval_ms": 15,
-      "latency": 0,
-      "timeout_ms": 3000
-    },
-    "phy": {
-      "tx": 0,
-      "rx": 0
-    },
-    "last_disc_reason": 19
+    "details": {
+      "advertising": false,
+      "connected": true,
+      "last_disc_reason": null,
+      "conn_params": {
+        "interval_ms": 15.0,
+        "latency": 0,
+        "timeout_ms": 3000
+      }
+    }
+  },
+  "tv": {
+    "status": "ok",
+    "reasons": [],
+    "present": true,
+    "link_up": true,
+    "link_ready": true,
+    "error": false,
+    "details": {
+      "initialized": true,
+      "logical_on": true,
+      "logical_source": "msearch",
+      "last_change_age_s": 2,
+      "ws_connected": true,
+      "token_present": true,
+      "last_error": ""
+    }
+  },
+  "speaker": {
+    "status": "ok",
+    "reasons": [],
+    "present": true,
+    "link_up": true,
+    "link_ready": true,
+    "error": false,
+    "details": {
+      "connected": true,
+      "playback_status": null,
+      "volume_pct": 30,
+      "muted": false,
+      "source": "hdmi",
+      "last_update_ts": 1773052406,
+      "update_age_s": 57
+    }
   }
 }
 ```
 
-This can be polled from Home Assistant via a REST sensor. A degraded status can indicate the HA websocket is unavailable, the USB reader is unhealthy, or BLE/USB pairing state is not ready. A reason is provided.
+### Commands accepted over HTTP
 
----
+PiHub currently accepts three local command forms:
 
-## 🔌 Event Contracts
+#### Run a flow
 
-### PiHub → Home Assistant (events)
-
-PiHub uses the existing **bidirectional** `pihub.cmd` convention and **does not change schema**.
-
-Example:
-
-```yaml
-dest: ha
-text: media_next
+```text
+POST /flow/run/{name}
 ```
 
-Volume
+Examples:
 
-```yaml
-dest: ha
-domain: emit
-text: volume_up
-repeat: true
+```bash
+curl -X POST http://pihub.local:9123/flow/run/watch
+curl -X POST http://pihub.local:9123/flow/run/listen
+curl -X POST http://pihub.local:9123/flow/run/power_off
 ```
 
-### Home Assistant → PiHub (commands/state)
+Optional JSON body:
 
-* Activity/state: push updates for `input_select.activity` to switch keymap modes
-* Commands, e.g.:
-
-**Macro:**
-
-```yaml
-dest: pihub
-text: macro
-name: power_on
+```json
+{ "trigger": "http.browser" }
 ```
-> Options: **power_on / power_off / return_home**, executed from HA.
 
-**Send a BLE key:**
+#### Set mode directly
 
-```yaml
-dest: pihub
-text: ble_key
-usage: consumer
-code: menu
+```text
+POST /mode/set/{name}
 ```
-> BLE: per-button may use **consumer or keyboard** usages. 40ms default hold.
-Optionally include `"hold_ms": "40"` - values accepted: `0, 40, 80, 100, 500, 2000.`
+
+Examples:
+
+```bash
+curl -X POST http://pihub.local:9123/mode/set/watch
+curl -X POST http://pihub.local:9123/mode/set/listen
+curl -X POST http://pihub.local:9123/mode/set/power_off
+```
+
+Optional JSON body:
+
+```json
+{ "trigger": "http.browser" }
+```
+
+#### Universal command endpoint
+
+```text
+POST /command
+```
+
+JSON body format:
+
+```json
+{
+  "domain": "flow",
+  "action": "run",
+  "args": {
+    "name": "watch",
+    "trigger": "http.command"
+  }
+}
+```
+
+Supported runtime commands today:
+
+##### Run a flow
+
+```json
+{
+  "domain": "flow",
+  "action": "run",
+  "args": {
+    "name": "watch",
+    "trigger": "http.command"
+  }
+}
+```
+
+##### Set mode
+
+```json
+{
+  "domain": "mode",
+  "action": "set",
+  "args": {
+    "name": "listen",
+    "trigger": "http.command"
+  }
+}
+```
 
 ---
 
@@ -220,33 +328,135 @@ Optionally include `"hold_ms": "40"` - values accepted: `0, 40, 80, 100, 500, 20
 * Reads from `/dev/input` Unifying device via `evdev`
 * Filters kernel auto-repeat; uses only `down/up` edges
 * Falls back to `MSC_SCAN` for stubborn keys
-* Maps physical keys → canonical `rem_*` names, then keymap decides action:
+* Maps physical keys → canonical `rem_*` names, then keymap decides action
+* Top-level remote mode buttons are bound to local flows, not external automation
+* `min_hold_ms` supports long-press flow triggering
+* Synthetic repeat is limited to physical volume keys
 
-  * `emit` → sends to HA via WebSocket
-  * `ble` → sends BLE Consumer/Keyboard usage to dongle via CDC-ACM
-  * Optional `min_hold_ms` "Long Press" - e.g hold for 1000ms then trigger
-  * Optional `repeat` (synthetic, for HA only)
+Keymap concepts:
+
+* `scancode_map` maps raw scan codes → canonical `rem_*` names
+* `modes` selects the active binding set
+* actions currently support:
+  * `flow`
+  * `ble`
+  * `tv`
+  * `speaker`
+  * `noop`
 
 ---
 
-## 🧠 Behavior & Resilience
+## 🔀 Startup and override behavior
 
-* **Drop when offline**: commands return `False`; nothing is queued
-* **Reconnect with jitter**: automatic, capped backoff
-* **Minimal logs**: quiet by default; env-gated debug available
-* **Seed-then-subscribe**: fetch current activity once post-connect, then push-only
+### Startup
+
+Startup is intentionally conservative:
+
+* PiHub always starts in **`power_off`** mode
+* It does **not** run any flows on boot
+* It does **not** mutate device state on boot
+* `last_trigger` is set to `startup_reconcile`
+
+This avoids boot-time races and lets late device truth arrive safely.
+
+### TV discovery
+
+TV presence is determined using:
+
+* passive SSDP `NOTIFY`
+* one-shot startup `M-SEARCH` burst
+
+If the TV is already on at boot, PiHub sends a short `M-SEARCH` burst and may set:
+
+* `logical_on: true`
+* `logical_source: "msearch"`
+
+Later passive updates may overwrite the source with:
+
+* `logical_source: "ssdp_alive"`
+* `logical_source: "ssdp_byebye"`
+
+### Overrides
+
+Overrides currently:
+
+* observe TV + speaker state
+* arbitrate desired mode
+* change **mode only**
+* do **not** run flows
+
+Current claims:
+
+* TV on → candidate `watch`
+* speaker playing on `airplay`, `wifi`, or `multiroom-secondary` → candidate `listen`
+
+Conflict rule:
+
+* equal-weight conflict uses most recent meaningful transition
+* if still ambiguous, stay put
+
+Testing switch:
+
+* `OVERRIDE_APPLY_MODE=off` keeps detection/logging active but suppresses mode changes
+
+---
+
+## 🧠 Flows
+
+Current named flows:
+
+* `watch`
+* `listen`
+* `power_off`
+
+Current intent:
+
+### `watch`
+* set mode `watch`
+* if TV was off, power it on
+* wait for TV on, then allow extra settle time for CEC handshake
+* power on BLE target
+* set speaker source to HDMI
+* set speaker volume to 30
+
+### `listen`
+* capture whether TV was on
+* set mode `listen`
+* if TV was on, power it off
+* if TV was on, return BLE target home
+* set speaker preset 1
+* set speaker volume to 20
+
+### `power_off`
+* capture whether TV was on
+* set mode `power_off`
+* if TV was on, return BLE target home
+* wait 3 seconds
+* if TV was on, power TV off
+
+These are the normal explicit flows. Overrides currently do **not** run them.
 
 ---
 
 ## 🧪 Troubleshooting
 
-* **No input events?** Look for `/dev/input/by-id/*event-kbd` (often `usb-Logitech_USB_Receiver-*event-kbd`); if missing, fall back to `/dev/input/by-path/*-event-kbd`. If no remote is paired/active, there may be no `event-kbd` node even if the receiver is plugged in. Ensure the relevant `/dev/input` paths are bind-mounted read-only into the container.
-* **Offline drops?** Expected by design: when HA WS is down, send paths return `False` and do not crash the process.
-* **Token issues?** Confirm `HA_TOKEN` is set (preferred) or `HA_TOKEN_FILE` path is mounted and readable.
+* **No input events?** Look for `/dev/input/by-id/*event-kbd` (often `usb-Logitech_USB_Receiver-*event-kbd`). Ensure the relevant `/dev/input` paths are bind-mounted read-only into the container.
+* **TV already on at boot but mode stays `power_off`?** Check `/health` for `tv.details.logical_on` and `logical_source`. If TV later becomes known, override should promote mode to `watch`.
+* **TV discovery confusion?** `logical_source` shows the most recent TV discovery source, not the current mode source of truth.
+* **Override too risky while testing?** Set `OVERRIDE_APPLY_MODE=off`.
+* **Speaker connected but not influencing mode?** Current startup is always conservative; mode changes come from overrides or explicit flows.
+* **No flow action from override?** That is expected. Overrides are currently mode-only.
+* **Mode changed but `last_flow` is null?** That is expected when mode changed by startup reconcile or override rather than by an explicit flow.
 
 ---
 
 ## 🏗️ Dev Notes
 
-* Built with `aiohttp` (one session, WS pings/clean reconnect)
-* Multi-stage Dockerfile for minimal runtime image: `Dockerfile`
+* Built with `aiohttp`
+* Local-only control plane; Home Assistant WebSocket support has been removed
+* Runtime is the authority for:
+  * current mode
+  * last flow
+  * sticky last trigger
+* Dispatcher owns key bindings and hot-path action dispatch
+* Override engine is polling-based internally but behaves edge-driven from a policy point of view
