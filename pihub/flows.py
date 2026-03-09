@@ -102,6 +102,7 @@ class FlowRunner:
             if self._speaker is not None:
                 logger.info("flow power_off: stopping speaker playback")
                 await self._speaker.stop_playback()
+                await asyncio.sleep(0.5)
 
                 logger.info("flow power_off: powering off speaker")
                 await self._speaker.power_off()
