@@ -13,6 +13,9 @@ SPEAKER_WAIT_TIMEOUT_S = 5.0
 TV_CEC_SETTLE_S = 3.0
 TV_OFF_SETTLE_S = 3.0
 
+WATCH_VOLUME_PCT = 30
+LISTEN_VOLUME_PCT = 20
+
 
 class FlowRunner:
     def __init__(
@@ -48,7 +51,6 @@ class FlowRunner:
         if self._tv is not None and not tv_was_on:
             logger.info("flow watch: powering on tv")
             await self._tv.power_on()
-            await self._wait_for_tv_on(timeout_s=TV_WAIT_TIMEOUT_S)
             await asyncio.sleep(TV_CEC_SETTLE_S)
 
         if self._ble is not None:
@@ -56,10 +58,11 @@ class FlowRunner:
             await self._ble.power_on()
 
         if self._speaker is not None:
-            logger.info("flow watch: setting speaker source=hdmi volume=30")
-            await self._speaker.set_source("hdmi")
-            await self._wait_for_speaker_source("hdmi", timeout_s=SPEAKER_WAIT_TIMEOUT_S)
-            await self._set_speaker_volume_pct(30)
+            logger.info("flow watch: setting speaker volume=%d", WATCH_VOLUME_PCT)
+            await self._set_speaker_volume_pct(WATCH_VOLUME_PCT)
+
+        if self._tv is not None and not tv_was_on:
+            await self._wait_for_tv_on(timeout_s=TV_WAIT_TIMEOUT_S)
 
         return True
 
@@ -69,28 +72,56 @@ class FlowRunner:
 
         await self._runtime.set_mode("listen", trigger="flow.listen")
 
-        if self._tv is not None and tv_was_on:
-            logger.info("flow listen: powering off tv")
-            await self._tv.power_off()
-            await self._wait_for_tv_off(timeout_s=TV_WAIT_TIMEOUT_S)
-
         if self._ble is not None and tv_was_on:
             logger.info("flow listen: returning ble target home")
             await self._ble.return_home()
+            await asyncio.sleep(TV_OFF_SETTLE_S)
+
+        if self._tv is not None and tv_was_on:
+            logger.info("flow listen: powering off tv")
+            await self._tv.power_off()
 
         if self._speaker is not None:
-            logger.info("flow listen: preset=1 volume=20")
+            logger.info("flow listen: preset=1 volume=%d", LISTEN_VOLUME_PCT)
             await self._speaker.preset(1)
-            await self._set_speaker_volume_pct(20)
+            await self._set_speaker_volume_pct(LISTEN_VOLUME_PCT)
+
+        if self._tv is not None and tv_was_on:
+            await self._wait_for_tv_off(timeout_s=TV_WAIT_TIMEOUT_S)
 
         return True
 
     async def _run_power_off(self, *, trigger: str) -> bool:
         del trigger
+        current_mode = self._runtime.mode
         tv_was_on = self._tv_is_on()
 
         await self._runtime.set_mode("power_off", trigger="flow.power_off")
 
+        if current_mode == "listen":
+            if self._speaker is not None:
+                logger.info("flow power_off: stopping speaker playback")
+                await self._speaker.stop_playback()
+
+                logger.info("flow power_off: powering off speaker")
+                await self._speaker.power_off()
+
+            return True
+
+        if current_mode == "watch":
+            if self._ble is not None and tv_was_on:
+                logger.info("flow power_off: returning ble target home")
+                await self._ble.return_home()
+                await asyncio.sleep(TV_OFF_SETTLE_S)
+
+            if self._tv is not None and tv_was_on:
+                logger.info("flow power_off: powering off tv")
+                await self._tv.power_off()
+                await self._wait_for_tv_off(timeout_s=TV_WAIT_TIMEOUT_S)
+
+            return True
+
+        # Fallback for any other mode/state: behave like the old watch-style path.
         if self._ble is not None and tv_was_on:
             logger.info("flow power_off: returning ble target home")
             await self._ble.return_home()

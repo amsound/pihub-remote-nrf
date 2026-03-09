@@ -87,6 +87,11 @@ class OverrideEngine:
             if not prev_listen and curr_listen:
                 self._last_listen_ts = now
 
+        if self._runtime.flow_running:
+            self._last_seen_signature = None
+            self._prev = snap
+            return
+
         desired_mode = self._decide_mode(current_mode=self._runtime.mode, snap=snap)
 
         if desired_mode is None:
@@ -185,7 +190,7 @@ class OverrideEngine:
     def _is_listen_signal(self, snap: OverrideSnapshot) -> bool:
         playback = (snap.speaker_playback or "").strip().lower()
         source = (snap.speaker_source or "").strip().lower()
-        return playback == "play" and source in LISTEN_SOURCES
+        return playback in {"play", "load"} and source in LISTEN_SOURCES
 
     def _decide_mode(self, *, current_mode: str, snap: OverrideSnapshot) -> str | None:
         watch_claim = snap.tv_on is True

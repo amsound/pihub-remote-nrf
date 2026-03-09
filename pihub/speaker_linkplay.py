@@ -123,7 +123,7 @@ class LinkPlaySpeaker:
       - preset (+ next_preset/previous_preset)
       - play_url (still uses httpapi.asp)
       - set_source (best-effort via PLM if supported)
-      - turn_off / clear_playlist (best-effort)
+      - power_off
     """
 
     def __init__(
@@ -610,7 +610,7 @@ class LinkPlaySpeaker:
 
     # -------------- HTTP API --------------
 
-    async def turn_off(self) -> None:
+    async def power_off(self) -> None:
         """Turn the speaker off/standby via HTTP API."""
         cmd = getattr(self, "_http_poweroff_cmd", DEFAULT_HTTP_POWEROFF_CMD)
         try:
