@@ -519,7 +519,7 @@ class LinkPlaySpeaker:
         nxt = _clamp_int(cur - self._volume_step_pct, 0, 100)
         await self._send_control(f"MCU+VOL+{nxt:03d}")
 
-    async def set_volume_pct(self, pct: int) -> None:
+    async def set_volume(self, pct: int) -> None:
         target = max(0, min(100, int(pct)))
         await self._send_payload(f"MCU+VOL+{target:03d}")
 
