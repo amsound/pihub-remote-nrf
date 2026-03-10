@@ -40,7 +40,7 @@ POLL_WIFI_IDLE_S = 60.0
 POLL_PHYSICAL_S = 60.0
 
 # Mute safety knobs
-MUTE_GET_DELAY_S = 0.05      # tiny settle delay after MUT+GET
+MUTE_GET_DELAY_S = 0.02      # tiny settle delay after MUT+GET
 MUTE_GET_TIMEOUT_S = 0.6     # wait for AXX+MUT+... after GET
 
 # PLM input modes -> app-friendly "source"
@@ -607,10 +607,6 @@ class LinkPlaySpeaker:
 
         if await self._send_control(f"MCU+PLM+{want_mode}"):
             asyncio.create_task(self._pinfget())
-
-    async def clear_playlist(self) -> None:
-        # Not standardized in the TCP doc; keep as no-op.
-        logger.info("clear_playlist ignored (no standardized TCP command)")
 
     # -------------- HTTP API --------------
 
