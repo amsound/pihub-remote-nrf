@@ -521,7 +521,7 @@ class LinkPlaySpeaker:
 
     async def set_volume(self, pct: int) -> None:
         target = max(0, min(100, int(pct)))
-        await self._send_payload(f"MCU+VOL+{target:03d}")
+        await self._send_control(f"MCU+VOL+{target:03d}")
 
     async def set_muted(self, target: bool) -> None:
         # Always GET before SET (mute may have changed elsewhere)
