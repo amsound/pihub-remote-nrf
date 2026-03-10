@@ -10,11 +10,12 @@ logger = logging.getLogger(__name__)
 
 TV_WAIT_TIMEOUT_S = 20.0
 SPEAKER_WAIT_TIMEOUT_S = 5.0
-TV_CEC_SETTLE_S = 3.0
-TV_OFF_SETTLE_S = 3.0
+TV_CEC_SETTLE_S = 1.0
+TV_OFF_SETTLE_S = 1.0
 
 WATCH_VOLUME_PCT = 30
-LISTEN_VOLUME_PCT = 20
+LISTEN_VOLUME_PCT = 22
+LISTEN_PRESET = 2
 
 
 class FlowRunner:
@@ -59,7 +60,7 @@ class FlowRunner:
 
         if self._speaker is not None:
             logger.info("flow watch: setting speaker volume=%d", WATCH_VOLUME_PCT)
-            await self._set_speaker_volume_pct(WATCH_VOLUME_PCT)
+            await self._speaker.set_volume(WATCH_VOLUME_PCT)
 
         if self._tv is not None and not tv_was_on:
             await self._wait_for_tv_on(timeout_s=TV_WAIT_TIMEOUT_S)
@@ -82,9 +83,9 @@ class FlowRunner:
             await self._tv.power_off()
 
         if self._speaker is not None:
-            logger.info("flow listen: preset=1 volume=%d", LISTEN_VOLUME_PCT)
-            await self._speaker.preset(1)
-            await self._set_speaker_volume_pct(LISTEN_VOLUME_PCT)
+            logger.info("flow listen: preset=%d volume=%d", LISTEN_PRESET, LISTEN_VOLUME_PCT)
+            await self._speaker.preset(LISTEN_PRESET)
+            await self._speaker.set_volume(LISTEN_VOLUME_PCT)
 
         if self._tv is not None and tv_was_on:
             await self._wait_for_tv_off(timeout_s=TV_WAIT_TIMEOUT_S)
@@ -185,21 +186,3 @@ class FlowRunner:
                 pass
             await asyncio.sleep(0.2)
         return False
-
-    async def _set_speaker_volume_pct(self, pct: int) -> None:
-        if self._speaker is None:
-            return
-
-        target = max(0, min(100, int(pct)))
-        snap = self._speaker.snapshot()
-        current = snap.get("volume_pct")
-        if not isinstance(current, int):
-            current = 0
-
-        steps = abs(target - current) // 2
-        if steps == 0:
-            return
-
-        fn = self._speaker.volume_up if target > current else self._speaker.volume_down
-        for _ in range(steps):
-            await fn()
