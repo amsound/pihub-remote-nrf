@@ -69,16 +69,18 @@ class FlowRunner:
 
     async def _run_listen(self, *, trigger: str) -> bool:
         del trigger
+        prior_mode = self._runtime.mode
         tv_was_on = self._tv_is_on()
+        tv_path_active = tv_was_on or prior_mode == "watch"
 
         await self._runtime.set_mode("listen", trigger="flow.listen")
 
-        if self._ble is not None and tv_was_on:
+        if self._ble is not None and tv_path_active:
             logger.info("flow listen: returning ble target home")
             await self._ble.return_home()
             await asyncio.sleep(TV_OFF_SETTLE_S)
 
-        if self._tv is not None and tv_was_on:
+        if self._tv is not None and tv_path_active:
             logger.info("flow listen: powering off tv")
             await self._tv.power_off()
 
@@ -87,7 +89,7 @@ class FlowRunner:
             await self._speaker.preset(LISTEN_PRESET)
             await self._speaker.set_volume(LISTEN_VOLUME_PCT)
 
-        if self._tv is not None and tv_was_on:
+        if self._tv is not None and tv_path_active:
             await self._wait_for_tv_off(timeout_s=TV_WAIT_TIMEOUT_S)
 
         return True
