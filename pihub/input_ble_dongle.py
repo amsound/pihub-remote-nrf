@@ -6,7 +6,9 @@ Serial transport to the nRF52840 dongle. Payloads are BLE HID reports:
     - b"\x01" + 8 bytes keyboard report
     - b"\x02" + 2 bytes consumer usage (little-endian)
 - Ops/control are ASCII lines: PING / STATUS / UNPAIR (newline terminated)
-- Telemetry from dongle is ASCII lines: EVT ... / STATUS ... / OK / ERR ...
+- Control replies are ASCII lines: PONG / STATUS ... / INFO ... / OK / ERR ...
+- Async telemetry from dongle is ASCII lines: EVT ...
+- Hot-path binary frames are fire-and-forget on success
 
 This module is SERIAL ONLY (no USB HID host libraries).
 """
@@ -48,7 +50,7 @@ class CompiledBleFrames:
 
 @dataclass
 class ConnParams:
-    interval_ms: float = 0.0
+    interval_ms: int = 0
     latency: int = 0
     timeout_ms: int = 0
 
@@ -108,7 +110,7 @@ class BleDongleLink:
         self._port: Optional[str] = None
 
         self.state = DongleState()
-        self._ready_evt = asyncio.Event()
+        self._transport_evt = asyncio.Event()
 
         self._reader_task: Optional[asyncio.Task] = None
         self._writer_task: Optional[asyncio.Task] = None
@@ -166,9 +168,9 @@ class BleDongleLink:
                     await t
         await self._close_serial()
 
-    async def wait_ready(self, timeout_s: float = 8.0) -> bool:
+    async def wait_transport(self, timeout_s: float = 8.0) -> bool:
         try:
-            await asyncio.wait_for(self._ready_evt.wait(), timeout=timeout_s)
+            await asyncio.wait_for(self._transport_evt.wait(), timeout=timeout_s)
             return True
         except asyncio.TimeoutError:
             return False
@@ -465,7 +467,7 @@ class BleDongleLink:
 
         interval = latency = timeout = None
         if self.state.connected and self.state.conn_params:
-            interval = float(self.state.conn_params.interval_ms)
+            interval = int(self.state.conn_params.interval_ms)
             latency = int(self.state.conn_params.latency)
             timeout = int(self.state.conn_params.timeout_ms)
 
@@ -518,7 +520,7 @@ class BleDongleLink:
         if logger.isEnabledFor(logging.DEBUG):
             # keep it compact
             logger.debug(
-                "state change (%s): label=%s adv=%d conn=%d ready=%d sec=%d err=%d port=%s interval=%.2f latency=%s timeout=%s",
+                "state change (%s): label=%s adv=%d conn=%d ready=%d sec=%d err=%d port=%s interval=%s latency=%s timeout=%s",
                 source,
                 label,
                 1 if self.state.advertising else 0,
@@ -527,7 +529,7 @@ class BleDongleLink:
                 self.state.sec,
                 err,
                 port,
-                interval or 0.0,
+                interval if interval is not None else "-",
                 latency if latency is not None else "-",
                 timeout if timeout is not None else "-",
             )
@@ -577,7 +579,7 @@ class BleDongleLink:
                 and timeout is not None
             ):
                 logger.info(
-                    "connection params updated (interval_ms=%.2f latency=%d timeout_ms=%d)",
+                    "connection params updated (interval_ms=%d latency=%d timeout_ms=%d)",
                     interval,
                     latency,
                     timeout,
@@ -623,7 +625,7 @@ class BleDongleLink:
     async def _write_line(self, line: str) -> None:
         if not self.is_open:
             return
-        framed = (line.strip() + "\n").encode("ascii", errors="replace")
+        framed = (line.rstrip("\r\n") + "\n").encode("ascii", errors="replace")
         await self._tx_q.put((self._tx_epoch, framed))
 
     async def _reconnect_loop(self) -> None:
@@ -721,7 +723,7 @@ class BleDongleLink:
         self._port = port
         self.state = DongleState()
         self._pong_counter = 0
-        self._ready_evt.clear()
+        self._transport_evt.clear()
         # Avoid stale/fragmented telemetry across reconnects.
         self._rx_buf.clear()
         with contextlib.suppress(Exception):
@@ -777,7 +779,7 @@ class BleDongleLink:
     async def _handshake_once(self, *, timeout_s: float = 1.2) -> bool:
         await self._write_line("PING")
         try:
-            await asyncio.wait_for(self._ready_evt.wait(), timeout=timeout_s)
+            await asyncio.wait_for(self._transport_evt.wait(), timeout=timeout_s)
             return True
         except asyncio.TimeoutError:
             return self._pong_counter > 0
@@ -786,7 +788,7 @@ class BleDongleLink:
         logger.debug("forcing serial reconnect (%s)", reason)
         await self._close_serial()
         self.state = DongleState()
-        self._ready_evt.clear()
+        self._transport_evt.clear()
 
     async def _close_serial(self) -> None:
         if self._resync_task and not self._resync_task.done():
@@ -853,7 +855,7 @@ class BleDongleLink:
             self._rx_buf.append(b)
             if b == 0x0A:  # '\n'
                 try:
-                    line = self._rx_buf.decode("ascii", errors="replace").strip()
+                    line = self._rx_buf.decode("ascii", errors="replace").rstrip("\r\n")
                 finally:
                     self._rx_buf.clear()
                 if line:
@@ -865,8 +867,14 @@ class BleDongleLink:
 
         if line == "PONG":
             self._pong_counter += 1
-            if not self._ready_evt.is_set():
-                self._ready_evt.set()
+            if not self._transport_evt.is_set():
+                self._transport_evt.set()
+            return
+
+        if line == "OK":
+            return
+
+        if line.startswith("BUSY"):
             return
 
         if line.startswith("ERR"):
@@ -887,7 +895,7 @@ class BleDongleLink:
         #  EVT CONN 0
         #  EVT READY 1
         #  EVT DISC reason=19
-        #  EVT CONN_PARAMS interval_ms=15.00 latency=0 timeout_ms=3000
+        #  EVT CONN_PARAMS interval_ms=15 latency=0 timeout_ms=3000
         parts = line.split()
         if len(parts) < 3:
             return
@@ -898,6 +906,7 @@ class BleDongleLink:
         if src == "ADV" and len(parts) >= 3:
             self.state.advertising = parts[2] == "1"
             self._request_status_soon()
+
         elif src == "CONN" and len(parts) >= 3:
             is_conn = parts[2] == "1"
             self.state.connected = is_conn
@@ -909,16 +918,17 @@ class BleDongleLink:
                 self.state.phy = None
                 self.state.notify = None
             self._request_status_soon()
+
         elif src == "READY" and len(parts) >= 3:
             self.state.ready = parts[2] == "1"
-            if self.state.ready:
-                self._ready_evt.set()
             self._request_status_soon()
+
         elif src == "DISC":
             # EVT DISC reason=19
             for tok in parts[2:]:
                 if tok.startswith("reason="):
                     self.state.last_disc_reason = tok.split("=", 1)[1]
+
         elif src == "CONN_PARAMS":
             kv = {}
             for tok in parts[2:]:
@@ -926,13 +936,14 @@ class BleDongleLink:
                     k, v = tok.split("=", 1)
                     kv[k] = v
             try:
-                interval_ms = float(kv.get("interval_ms", "0") or 0)
+                interval_ms = int(kv.get("interval_ms", "0") or 0)
                 latency = int(kv.get("latency", "0") or 0)
                 timeout_ms = int(kv.get("timeout_ms", "0") or 0)
                 self.state.conn_params = ConnParams(interval_ms=interval_ms, latency=latency, timeout_ms=timeout_ms)
                 self._log_state(source="EVT CONN_PARAMS")
             except ValueError:
                 pass
+
         elif src == "PHY":
             # Firmware may emit either "EVT PHY 2 2" or "EVT PHY tx=1M rx=2M".
             if len(parts) >= 4 and parts[2].isdigit() and parts[3].isdigit():
@@ -966,12 +977,6 @@ class BleDongleLink:
             except ValueError:
                 return default
 
-        def _f(name: str, default: float = 0.0) -> float:
-            try:
-                return float(kv.get(name, str(default)))
-            except ValueError:
-                return default
-
         before = (
             self.state.advertising,
             self.state.connected,
@@ -979,7 +984,7 @@ class BleDongleLink:
             self.state.sec,
             self.state.error,
             self.state.proto_report,
-            self.state.conn_params.interval_ms if self.state.conn_params else 0.0,
+            self.state.conn_params.interval_ms if self.state.conn_params else 0,
             self.state.conn_params.latency if self.state.conn_params else 0,
             self.state.conn_params.timeout_ms if self.state.conn_params else 0,
         )
@@ -1006,7 +1011,7 @@ class BleDongleLink:
         }
         self.state.notify = notify
 
-        interval_ms = _f("interval_ms", 0.0)
+        interval_ms = _i("interval_ms", 0)
         latency = _i("latency", 0)
         timeout_ms = _i("timeout_ms", 0)
         if self.state.connected and (interval_ms or latency or timeout_ms):
@@ -1018,9 +1023,6 @@ class BleDongleLink:
         phy_rx = _i("phy_rx", 0)
         self.state.phy = Phy(tx=phy_tx, rx=phy_rx)
 
-        if self.state.ready:
-            self._ready_evt.set()
-
         after = (
             self.state.advertising,
             self.state.connected,
@@ -1028,7 +1030,7 @@ class BleDongleLink:
             self.state.sec,
             self.state.error,
             self.state.proto_report,
-            self.state.conn_params.interval_ms if self.state.conn_params else 0.0,
+            self.state.conn_params.interval_ms if self.state.conn_params else 0,
             self.state.conn_params.latency if self.state.conn_params else 0,
             self.state.conn_params.timeout_ms if self.state.conn_params else 0,
         )

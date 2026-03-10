@@ -190,8 +190,11 @@ static bool link_ready;
  *   PING            -> PONG
  *   STATUS          -> STATUS adv=<0/1> conn=<0/1> proto=<0/1> err=<0/1>
  *   UNPAIR          -> OK (clears bonds + restarts advertising)
- *   KB <16hex>      -> OK|BUSY|ERR <rc>
- *   CC <4hex>       -> OK|BUSY|ERR <rc>
+ *   Binary hot path:
+ *     0x01 + 8 bytes keyboard report
+ *     0x02 + 2 bytes consumer report
+ *   No per-frame reply on success.
+ *   Rare async errors may be emitted as EVT BINERR ...
  *
  * Telemetry (emitted opportunistically when the link is up):
  *   EVT ADV 0|1
@@ -320,17 +323,6 @@ static void cmd_uart_send_line(const char *s)
     cmd_uart_send_str("\n");
 }
 
-
-
-static void fmt_interval_ms(char *dst, size_t dst_len, uint16_t interval_units)
-{
-    /* interval_units is 1.25 ms units (per BT spec). We format as xx.yy (2dp) without floats. */
-    uint32_t ms_x100 = (uint32_t)interval_units * 125U; /* 1.25ms -> 125/100 */
-    snprintk(dst, dst_len, "%u.%02u", (unsigned)(ms_x100 / 100U), (unsigned)(ms_x100 % 100U));
-}
-
-
-
 static void cmd_evt_adv(bool on)      { adv_is_on = on; char b[24]; snprintk(b, sizeof(b), "EVT ADV %d", on ? 1 : 0); cmd_uart_send_line(b); }
 static void cmd_evt_conn(bool on)     { char b[24]; snprintk(b, sizeof(b), "EVT CONN %d", on ? 1 : 0); cmd_uart_send_line(b); }
 static void cmd_evt_ready(bool on)    { char b[32]; snprintk(b, sizeof(b), "EVT READY %d", on ? 1 : 0); cmd_uart_send_line(b); }
@@ -356,12 +348,11 @@ static void cmd_evt_conn_params(uint16_t interval, uint16_t latency, uint16_t ti
     last_timeout  = timeout; /* 10ms units */
 
     char b[96];
-    char interval_s[16];
-    fmt_interval_ms(interval_s, sizeof(interval_s), interval);
+    uint32_t interval_ms = ((uint32_t)interval * 125U) / 100U; /* 1.25ms units -> whole ms */
+    uint32_t timeout_ms = (uint32_t)timeout * 10U;             /* 10ms units -> ms */
 
-    uint32_t timeout_ms = (uint32_t)timeout * 10U; /* 10ms units -> ms */
-    snprintk(b, sizeof(b), "EVT CONN_PARAMS interval_ms=%s latency=%u timeout_ms=%u",
-             interval_s, (unsigned)latency, (unsigned)timeout_ms);
+    snprintk(b, sizeof(b), "EVT CONN_PARAMS interval_ms=%u latency=%u timeout_ms=%u",
+             (unsigned)interval_ms, (unsigned)latency, (unsigned)timeout_ms);
     cmd_uart_send_line(b);
 }
 
@@ -410,18 +401,17 @@ static void cmd_emit_status_line(void)
 {
     char b[340];
 
-    /* Human-readable conn params (no floats). */
-    char interval_s[16] = "0.00";   /* was "?" */
+    uint32_t interval_ms = 0;
     uint32_t timeout_ms = 0;
 
     if (have_conn_params) {
-        fmt_interval_ms(interval_s, sizeof(interval_s), last_interval);
-        timeout_ms = (uint32_t)last_timeout * 10U; /* 10ms units -> ms */
+        interval_ms = ((uint32_t)last_interval * 125U) / 100U; /* 1.25ms units -> whole ms */
+        timeout_ms = (uint32_t)last_timeout * 10U;             /* 10ms units -> ms */
     }
 
     snprintk(b, sizeof(b),
              "STATUS adv=%d conn=%d sec=%u ready=%d proto=%u err=%d kb_notify=%d boot_notify=%d cc_notify=%d batt_notify=%d "
-             "suspend=%d interval_ms=%s latency=%u timeout_ms=%u phy_tx=%u phy_rx=%u",
+             "suspend=%d interval_ms=%u latency=%u timeout_ms=%u phy_tx=%u phy_rx=%u",
              adv_is_on ? 1 : 0,
              current_conn ? 1 : 0,
              (unsigned)current_sec_level,
@@ -433,7 +423,7 @@ static void cmd_emit_status_line(void)
              notify_cc_enabled ? 1 : 0,
              notify_batt_enabled ? 1 : 0,
              hid_suspended ? 1 : 0,
-             interval_s,
+             (unsigned)interval_ms,
              (unsigned)last_latency,
              (unsigned)timeout_ms,
              (unsigned)last_tx_phy,
@@ -517,15 +507,11 @@ static void cmd_handle_bin_kb(void)
     (void)cmd_uart_read_exact(report8, sizeof(report8), 1);
 
     int rc = send_keyboard_report(report8);
-    if (rc == 0) {
-        cmd_uart_send_line("OK");
-    } else if (rc == -EBUSY || rc == -EAGAIN || rc == -ENOMEM) {
+
+    /* Hot path is fire-and-forget: no per-frame ASCII ACKs. */
+    if (rc != 0 && rc != -EBUSY && rc != -EAGAIN && rc != -ENOMEM) {
         char b[32];
-        snprintk(b, sizeof(b), "BUSY %d", rc);
-        cmd_uart_send_line(b);
-    } else {
-        char b[32];
-        snprintk(b, sizeof(b), "ERR %d", rc);
+        snprintk(b, sizeof(b), "EVT BINERR kb %d", rc);
         cmd_uart_send_line(b);
     }
 }
@@ -536,15 +522,11 @@ static void cmd_handle_bin_cc(void)
     (void)cmd_uart_read_exact(report2, sizeof(report2), 1);
 
     int rc = send_consumer_report(report2);
-    if (rc == 0) {
-        cmd_uart_send_line("OK");
-    } else if (rc == -EBUSY || rc == -EAGAIN || rc == -ENOMEM) {
+
+    /* Hot path is fire-and-forget: no per-frame ASCII ACKs. */
+    if (rc != 0 && rc != -EBUSY && rc != -EAGAIN && rc != -ENOMEM) {
         char b[32];
-        snprintk(b, sizeof(b), "BUSY %d", rc);
-        cmd_uart_send_line(b);
-    } else {
-        char b[32];
-        snprintk(b, sizeof(b), "ERR %d", rc);
+        snprintk(b, sizeof(b), "EVT BINERR cc %d", rc);
         cmd_uart_send_line(b);
     }
 }
@@ -1372,16 +1354,15 @@ static void log_conn_params(struct bt_conn *conn, const char *tag)
     }
 
     /* interval units: 1.25 ms, timeout units: 10 ms */
-    uint32_t interval_ms_x100 = (uint32_t)info.le.interval * 125U; /* 1.25ms -> 125/100 */
+    uint32_t interval_ms = ((uint32_t)info.le.interval * 125U) / 100U;
     uint16_t latency = info.le.latency;
     uint32_t timeout_ms = (uint32_t)info.le.timeout * 10U;
 
     cmd_evt_conn_params(info.le.interval, info.le.latency, info.le.timeout);
 
-    LOG_INF("%s: interval=%u.%02u ms latency=%u timeout=%u ms",
+    LOG_INF("%s: interval=%u ms latency=%u timeout=%u ms",
             tag,
-            (unsigned)(interval_ms_x100 / 100U),
-            (unsigned)(interval_ms_x100 % 100U),
+            (unsigned)interval_ms,
             latency,
             (unsigned)timeout_ms);
 }
@@ -1467,12 +1448,11 @@ static void le_param_updated(struct bt_conn *conn, uint16_t interval,
     /* Update CMD snapshot + emit EVT CONN_PARAMS with the new values */
     cmd_evt_conn_params(interval, latency, timeout);
 
-    uint32_t interval_ms_x100 = (uint32_t)interval * 125U;
+    uint32_t interval_ms = ((uint32_t)interval * 125U) / 100U;
     uint32_t timeout_ms = (uint32_t)timeout * 10U;
 
-    LOG_INF("Conn (updated): interval=%u.%02u ms latency=%u timeout=%u ms",
-            (unsigned)(interval_ms_x100 / 100U),
-            (unsigned)(interval_ms_x100 % 100U),
+    LOG_INF("Conn (updated): interval=%u ms latency=%u timeout=%u ms",
+            (unsigned)interval_ms,
             latency,
             (unsigned)timeout_ms);
 }

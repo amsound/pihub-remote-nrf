@@ -188,33 +188,38 @@ class HealthServer:
         ble_connected = bool(ble_raw.get("connected"))
         ble_advertising = bool(ble_raw.get("advertising"))
         ble_link_ready = bool(ble_raw.get("ready"))
+        ble_transport_up = ble_present
+        ble_link_up = ble_connected
 
         ble_reasons: list[str] = []
         if not ble_present:
             ble_reasons.append("ble.adapter_missing")
+        elif ble_link_ready:
+            pass
+        elif ble_connected:
+            ble_reasons.append("ble.connected_not_ready")
+        elif ble_advertising:
+            ble_reasons.append("ble.advertising")
         else:
-            if ble_link_ready:
-                pass
-            elif ble_advertising:
-                ble_reasons.append("ble.advertising")
-            else:
-                ble_reasons.append("ble.not_ready")
+            ble_reasons.append("ble.idle")
 
         ble_state = {
             "status": self._domain_status(enabled=True, degraded=bool(ble_reasons)),
             "reasons": ble_reasons,
             "present": ble_present,
             "path": ble_path,
-            "link_up": ble_present,
+            "link_up": ble_link_up,
             "link_ready": ble_link_ready,
             "error": bool(ble_raw.get("error")),
             "details": {
+                "transport_up": ble_transport_up,
                 "advertising": ble_advertising,
                 "connected": ble_connected,
                 "last_disc_reason": ble_raw.get("last_disc_reason"),
                 "conn_params": conn_params or None,
             },
         }
+
         degraded_reasons.extend(ble_reasons)
 
         if self._tv is None:
