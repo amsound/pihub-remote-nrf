@@ -236,19 +236,6 @@ class RuntimeEngine:
                 "reason": "runner_busy",
             }
 
-        # Hard guard: explicit power_off should not be immediately undone.
-        if self._mode == "power_off" and self._last_flow == "power_off":
-            logger.info(
-                "device state change ignored name=%s reason=power_off_latched",
-                name,
-            )
-            return {
-                "ok": False,
-                "name": name,
-                "source": "device_state_change",
-                "reason": "power_off_latched",
-            }
-
         # Idempotence / no-op routing.
         if name == "listen" and self._mode == "listen":
             logger.info("device state change ignored name=listen reason=already_listen")
@@ -258,11 +245,9 @@ class RuntimeEngine:
             logger.info("device state change ignored name=watch reason=already_watch")
             return {"ok": False, "name": name, "reason": "already_watch"}
 
-        return await self.run_sequence(
+        return await self.set_mode(
             name,
             trigger=f"device_state_change.{name}",
-            source="device_state_change",
-            args={"override": True, **payload},
         )
 
     def _route_device_state_change(self, snapshot: dict[str, Any]) -> dict[str, Any]:
