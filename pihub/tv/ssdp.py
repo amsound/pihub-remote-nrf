@@ -105,7 +105,7 @@ async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
         sock.settimeout(0.5)
 
-        logger.info(
+        logger.debug(
             "tv:msearch bootstrap start tv_ip=%s burst_count=%d timeout_s=%.1f",
             tv.tv_ip,
             _MSEARCH_BURST_COUNT,
@@ -115,7 +115,7 @@ async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None
         for i in range(_MSEARCH_BURST_COUNT):
             try:
                 await asyncio.to_thread(sock.sendto, msg, (_MCAST_GRP, _MCAST_PORT))
-                logger.info(
+                logger.debug(
                     "tv:msearch probe sent tv_ip=%s seq=%d/%d",
                     tv.tv_ip,
                     i + 1,
@@ -153,7 +153,7 @@ async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None
             location = hdr.get("LOCATION")
             location_ip = urlparse(location).hostname if location else None
 
-            logger.info(
+            logger.debug(
                 "tv:msearch reply from=%s st=%s location=%s",
                 reply_ip,
                 st,
@@ -161,7 +161,7 @@ async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None
             )
 
             if st != _MSEARCH_ST:
-                logger.info(
+                logger.debug(
                     "tv:msearch ignored reply from=%s reason=st_mismatch st=%s expected=%s",
                     reply_ip,
                     st,
@@ -170,7 +170,7 @@ async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None
                 continue
 
             if reply_ip != tv.tv_ip and location_ip != tv.tv_ip:
-                logger.info(
+                logger.debug(
                     "tv:msearch ignored reply from=%s reason=ip_mismatch location_ip=%s expected=%s",
                     reply_ip,
                     location_ip,
@@ -179,7 +179,7 @@ async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None
                 continue
 
             acted = tv.notify_msearch(location=location)
-            logger.info(
+            logger.debug(
                 "tv:msearch matched reply from=%s location=%s acted=%s",
                 reply_ip,
                 location,
@@ -193,7 +193,7 @@ async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None
                     logger.debug("tv:msearch ws connect failed after bootstrap", exc_info=True)
             return
 
-        logger.info("tv:msearch bootstrap complete tv_ip=%s acted=false reason=timeout", tv.tv_ip)
+        logger.debug("tv:msearch bootstrap complete tv_ip=%s acted=false reason=timeout", tv.tv_ip)
     finally:
         try:
             sock.close()
