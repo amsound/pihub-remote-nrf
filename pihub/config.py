@@ -27,8 +27,6 @@ class Config:
     speaker_http_scheme: str  # https (self-signed)
     speaker_volume_step_pct: int  # MUST be 2%
 
-    override_apply_mode: bool
-
     @staticmethod
     def load() -> "Config":
         """Build a Config from environment (compose env)."""
@@ -55,9 +53,6 @@ class Config:
         
         speaker_volume_step_pct = 2
 
-        raw_override_apply_mode = (os.getenv("OVERRIDE_APPLY_MODE", "") or "").strip().lower()
-        override_apply_mode = raw_override_apply_mode not in {"0", "false", "no", "off"}
-
         return Config(
             ble_serial_device=ble_serial_device,
             ble_serial_baud=ble_serial_baud,
@@ -70,5 +65,4 @@ class Config:
             speaker_ip=speaker_ip,
             speaker_http_scheme=speaker_http_scheme,
             speaker_volume_step_pct=speaker_volume_step_pct,
-            override_apply_mode=override_apply_mode,
         )
