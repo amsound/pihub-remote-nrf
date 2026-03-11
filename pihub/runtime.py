@@ -216,33 +216,53 @@ class RuntimeEngine:
                 self._active_sequence_task = None
                 self._flow_running = False
 
-    async def on_device_state_change(
-        self,
-        snapshot: dict[str, Any],
-        *,
-        trigger: str = "device_state_change",
-    ) -> dict[str, Any]:
-        if not isinstance(snapshot, dict):
-            return {"ok": False, "error": "snapshot must be an object"}
-
-        decision = self._route_device_state_change(snapshot)
-        name = decision.get("name")
-        args = decision.get("args")
-        reason = decision.get("reason", "no_action")
+    async def on_device_state_change(self, name: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        name = (name or "").strip()
+        payload = payload or {}
 
         if not name:
+            return {"ok": False, "error": "state change name required"}
+
+        if self._lock.locked():
+            logger.info(
+                "sequence ignored name=%s trigger=device_state_change.%s source=device_state_change reason=runner_busy",
+                name,
+                name,
+            )
             return {
-                "ok": True,
-                "domain": "device_state_change",
-                "action": "route",
-                "reason": reason,
+                "ok": False,
+                "name": name,
+                "source": "device_state_change",
+                "reason": "runner_busy",
             }
 
+        # Hard guard: explicit power_off should not be immediately undone.
+        if self._mode == "power_off" and self._last_flow == "power_off":
+            logger.info(
+                "device state change ignored name=%s reason=power_off_latched",
+                name,
+            )
+            return {
+                "ok": False,
+                "name": name,
+                "source": "device_state_change",
+                "reason": "power_off_latched",
+            }
+
+        # Idempotence / no-op routing.
+        if name == "listen" and self._mode == "listen":
+            logger.info("device state change ignored name=listen reason=already_listen")
+            return {"ok": False, "name": name, "reason": "already_listen"}
+
+        if name == "watch" and self._mode == "watch":
+            logger.info("device state change ignored name=watch reason=already_watch")
+            return {"ok": False, "name": name, "reason": "already_watch"}
+
         return await self.run_sequence(
-            name=str(name),
+            name,
             trigger=f"device_state_change.{name}",
             source="device_state_change",
-            args=args if isinstance(args, dict) else None,
+            args={"override": True, **payload},
         )
 
     def _route_device_state_change(self, snapshot: dict[str, Any]) -> dict[str, Any]:

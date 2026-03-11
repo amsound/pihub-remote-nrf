@@ -24,7 +24,6 @@ from .tv import TvController
 from .speaker_linkplay import LinkPlaySpeaker
 from .tv.ssdp import ssdp_listener, start_discovery_tasks, stop_discovery_tasks
 from .runtime import RuntimeEngine
-from .overrides import OverrideEngine
 
 
 def _debug_enabled() -> bool:
@@ -127,6 +126,22 @@ async def main() -> None:
         initial_mode="power_off",
     )
 
+    async def _on_domain_state_change(name: str, payload: dict[str, Any]) -> None:
+        result = await runtime.on_device_state_change(name, payload)
+        if not result.get("ok") and result.get("reason"):
+            logger.info(
+                "device state change deferred name=%s reason=%s payload=%s",
+                name,
+                result.get("reason"),
+                payload,
+            )
+
+    if tv is not None:
+        tv._state_change_callback = _on_domain_state_change
+
+    if speaker is not None:
+        speaker._state_change_callback = _on_domain_state_change
+
     DispatcherRef = Dispatcher(
         cfg=cfg,
         bt_le=bt,
@@ -136,13 +151,6 @@ async def main() -> None:
     )
 
     runtime.attach_dispatcher(DispatcherRef)
-
-    overrides = OverrideEngine(
-    runtime=runtime,
-    tv=tv,
-    speaker=speaker,
-    apply_mode=cfg.override_apply_mode,
-    )
 
     await runtime.start()
 
@@ -171,9 +179,6 @@ async def main() -> None:
 
         await health.start()
         started.append(("health", health.stop))
-
-        await overrides.start()
-        started.append(("overrides", overrides.stop))
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(Exception):

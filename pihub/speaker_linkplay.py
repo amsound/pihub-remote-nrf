@@ -19,7 +19,7 @@ import logging
 import struct
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import aiohttp
 
@@ -136,6 +136,7 @@ class LinkPlaySpeaker:
         volume_step_pct: int = 2,
         command_interval_s: float = 0.2,
         reconnect_s: float = 3.0,
+        state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._speaker_ip = speaker_ip.strip()
         self._tcp_port = int(tcp_port)
@@ -167,6 +168,9 @@ class LinkPlaySpeaker:
 
         # Mute GET waiter
         self._mute_evt = asyncio.Event()
+
+        # State change callback for external state change
+        self._state_change_callback = state_change_callback
 
     # ---------- small public helpers ----------
 
@@ -398,9 +402,17 @@ class LinkPlaySpeaker:
 
     def _on_payload(self, payload: str) -> None:
         changed = False
+
         old_source = self._state.source
         old_status = self._state.playback_status
         old_connected = self._state.connected
+
+        def _listen_active(source: str | None, status: str | None) -> bool:
+            src = (source or "").strip().lower()
+            st = (status or "").strip().lower()
+            return src in {"wifi", "airplay"} and st in {"load", "play"}
+
+        old_listen_active = _listen_active(old_source, old_status)
 
         # Examples:
         #   AXX+VOL+030
@@ -433,9 +445,11 @@ class LinkPlaySpeaker:
         elif p.startswith("AXX+PLM+"):
             mode = p.split("+", 2)[2]
             self._state.source = _PLM_TO_SOURCE.get(mode, "unknown")
+
             # Physical inputs: playback status not applicable / not trusted
             if self._state.source in _PHYSICAL_SOURCES:
                 self._state.playback_status = None
+
             changed = True
 
         elif p.startswith("AXX+PLY+INF"):
@@ -449,19 +463,30 @@ class LinkPlaySpeaker:
                     was_ready = self._state.connected
                     self._state.connected = True
                     if not was_ready:
-                        logger.info("linkplay tcp ready speaker_ip=%s (initial PINFGET received)", self._speaker_ip)
+                        logger.info(
+                            "linkplay tcp ready speaker_ip=%s (initial PINFGET received)",
+                            self._speaker_ip,
+                        )
 
                     # Mode can mirror PLM
                     mode = str(data.get("mode", "")).strip()
                     if mode:
-                        self._state.source = _PLM_TO_SOURCE.get(mode.zfill(3), self._state.source or "unknown")
+                        self._state.source = _PLM_TO_SOURCE.get(
+                            mode.zfill(3),
+                            self._state.source or "unknown",
+                        )
                         if self._state.source in _PHYSICAL_SOURCES:
                             self._state.playback_status = None
                         changed = True
 
-                    # status only meaningful for wifi-ish sources
+                    # status only meaningful for wifi-ish / network-ish sources
                     st = str(data.get("status", "")).strip().lower()
-                    if st and (self._state.source not in _PHYSICAL_SOURCES):
+                    if self._state.source in _PHYSICAL_SOURCES:
+                        # Always blank playback status on physical inputs
+                        if self._state.playback_status is not None:
+                            self._state.playback_status = None
+                            changed = True
+                    elif st:
                         self._state.playback_status = st
                         changed = True
 
@@ -502,6 +527,17 @@ class LinkPlaySpeaker:
         ):
             self._wake_poll_loop()
 
+        new_listen_active = _listen_active(self._state.source, self._state.playback_status)
+        if not old_listen_active and new_listen_active:
+            self._emit_state_change(
+                "listen",
+                {
+                    "domain": "speaker",
+                    "source": self._state.source,
+                    "playback_status": self._state.playback_status,
+                },
+            )
+
     async def _poll_loop(self) -> None:
         """
         Gentle polling to catch out-of-band changes (app/CEC/stream stalls).
@@ -531,6 +567,20 @@ class LinkPlaySpeaker:
                 continue
             except asyncio.TimeoutError:
                 await self._pinfget()
+
+    def _listen_signal_active(self) -> bool:
+        source = (self._state.source or "").strip().lower()
+        playback = (self._state.playback_status or "").strip().lower()
+        return source in {"wifi", "airplay", "multiroom-secondary"} and playback in {"load", "play"}
+
+    def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:
+        cb = self._state_change_callback
+        if cb is None:
+            return
+        try:
+            asyncio.create_task(cb(name, payload))
+        except Exception:
+            logger.exception("speaker state change callback failed name=%s", name)
 
     # ---------- controls (TCP) ----------
 

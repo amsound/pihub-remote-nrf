@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import aiohttp
 
@@ -28,7 +28,15 @@ class TvSnapshot:
 
 
 class TvController:
-    def __init__(self, *, tv_ip: str, tv_mac: str, token_file: str, name: str) -> None:
+    def __init__(
+        self,
+        *,
+        tv_ip: str,
+        tv_mac: str,
+        token_file: str,
+        name: str,
+        state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> None:
         self.tv_ip = tv_ip
         self.tv_mac = tv_mac
         self.token_file = token_file
@@ -51,6 +59,8 @@ class TvController:
         self._logical_source: str = "unknown"
         self._logical_last_change_ts: float | None = None
 
+        self._state_change_callback = state_change_callback
+
     async def start(self) -> None:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
@@ -62,12 +72,25 @@ class TvController:
             await sess.close()
 
     def _commit_discovery(self, on: bool, *, source: str) -> bool:
+        prev_on = self._dmr_cached is True
         if self._dmr_cached is on:
             return False
+
         now = asyncio.get_running_loop().time()
         self._dmr_cached = on
         self._logical_source = source
         self._logical_last_change_ts = now
+
+        curr_on = self._dmr_cached is True
+        if not prev_on and curr_on:
+            self._emit_state_change(
+                "watch",
+                {
+                    "domain": "tv",
+                    "logical_source": source,
+                },
+            )
+
         return True
 
     def notify_msearch(self, *, location: str | None) -> bool:
@@ -130,6 +153,15 @@ class TvController:
             logical_source=self._logical_source,
             last_change_age_s=last_change_age_s,
         )
+
+    def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:
+        cb = self._state_change_callback
+        if cb is None:
+            return
+        try:
+            asyncio.create_task(cb(name, payload))
+        except Exception:
+            logger.exception("tv state change callback failed name=%s", name)
 
     async def power_off(self, *, wait: bool = True, timeout_s: float = 25.0) -> bool:
         if not self._session:
