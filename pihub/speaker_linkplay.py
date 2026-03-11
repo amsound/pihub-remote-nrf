@@ -5,7 +5,7 @@ Policy (agreed):
 - State refresh primitive: always MCU+PINFGET (no MEA / no SONGGET)
 - Connected gating: connected=True only after first successful PINFGET parse
 - Mute safety: always MUT+GET before changing mute
-- Polling: only on Wi-Fi-ish sources; 10s play/loading / 30s pause / 60s idle; physical inputs 60s liveness
+- Polling: only on Wi-Fi-ish sources; 10s play/load / 30s pause / 60s idle; physical inputs 60s liveness
 - After commands/hints: always PINFGET converge pull
 - Health details should be minimal (this file provides snapshot() accordingly)
 """
@@ -34,7 +34,7 @@ _HTTP_TIMEOUT_S = 10
 DEFAULT_HTTP_POWEROFF_CMD = "setShutdown:0"
 
 # Poll knobs (tweak here)
-POLL_WIFI_PLAYING_S = 10.0   # play OR loading
+POLL_WIFI_PLAYING_S = 10.0   # play OR load
 POLL_WIFI_PAUSED_S = 30.0
 POLL_WIFI_IDLE_S = 60.0
 POLL_PHYSICAL_S = 60.0
@@ -104,7 +104,7 @@ class SpeakerState:
     connected: bool = False         # becomes true only after first successful PINFGET parse
     last_error: str | None = None
 
-    playback_status: str | None = None  # play/pause/stop/loading/... (wifi-ish only; physical inputs => None)
+    playback_status: str | None = None  # play/pause/stop/load/... (wifi-ish only; physical inputs => None)
     volume: float | None = None         # 0..1
     muted: bool | None = None
 
@@ -485,7 +485,7 @@ class LinkPlaySpeaker:
         Gentle polling to catch out-of-band changes (app/CEC/stream stalls).
 
         Rules:
-        - Wi-Fi source: 10s play/loading, 30s pause, 60s idle/stop/unknown
+        - Wi-Fi source: 10s play/load, 30s pause, 60s idle/stop/unknown
         - Physical sources: 60s liveness poll
         """
         while self._enabled and not self._stop_evt.is_set():
@@ -493,7 +493,7 @@ class LinkPlaySpeaker:
 
             if src == "wifi":
                 st = (self._state.playback_status or "").lower()
-                if st in ("play", "loading"):
+                if st in ("play", "load"):
                     interval = POLL_WIFI_PLAYING_S
                 elif st == "pause":
                     interval = POLL_WIFI_PAUSED_S
