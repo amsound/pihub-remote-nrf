@@ -73,20 +73,12 @@ class RuntimeEngine:
         name = (name or "").strip()
         if not name:
             return {"ok": False, "error": "mode name required"}
-
         if self._dispatcher is None:
             return {"ok": False, "error": "dispatcher unavailable"}
-
         valid_modes_fn = getattr(self._dispatcher, "available_modes", None)
         valid_modes = set(valid_modes_fn()) if callable(valid_modes_fn) else set()
-
         if valid_modes and name not in valid_modes:
-            logger.warning(
-                "invalid mode rejected name=%s trigger=%s valid_modes=%s",
-                name,
-                trigger,
-                sorted(valid_modes),
-            )
+            logger.warning("invalid mode rejected name=%s trigger=%s valid_modes=%s", name, trigger, sorted(valid_modes))
             return {
                 "ok": False,
                 "domain": "mode",
@@ -96,18 +88,14 @@ class RuntimeEngine:
                 "valid_modes": sorted(valid_modes),
                 "trigger": trigger,
             }
-
         prior = self._mode
-
         await self._dispatcher.set_mode_bindings(name)
         self._last_trigger = trigger
         self._mode = name
-
         if prior != name:
             logger.info("mode changed %s -> %s trigger=%s", prior, name, trigger)
         else:
             logger.info("mode unchanged %s trigger=%s", name, trigger)
-
         return {
             "ok": True,
             "domain": "mode",
@@ -116,11 +104,10 @@ class RuntimeEngine:
             "trigger": trigger,
         }
 
-    async def run_flow(self, name: str, *, trigger: str = "internal") -> dict[str, Any]:
+    async def run_flow(self, name: str, *, trigger: str = "internal", args: dict[str, Any] | None = None) -> dict[str, Any]:
         name = (name or "").strip()
         if not name:
             return {"ok": False, "error": "flow name required"}
-
         if self._lock.locked():
             logger.info("flow ignored name=%s trigger=%s reason=runner_busy", name, trigger)
             return {
@@ -131,13 +118,12 @@ class RuntimeEngine:
                 "trigger": trigger,
                 "reason": "runner_busy",
             }
-
         async with self._lock:
             self._flow_running = True
             self._last_trigger = trigger
             logger.info("flow started name=%s trigger=%s", name, trigger)
             try:
-                ok = await self._flows.run(name=name, trigger=trigger)
+                ok = await self._flows.run(name=name, trigger=trigger, args=args)
                 if ok:
                     self._last_flow = name
                 else:
@@ -171,3 +157,15 @@ class RuntimeEngine:
                 }
             finally:
                 self._flow_running = False
+
+    async def on_cmd(self, payload: dict[str, Any]) -> dict[str, Any]:
+        domain = str(payload.get("domain") or "").strip().lower()
+        action = str(payload.get("action") or "").strip().lower()
+        args = payload.get("args") or {}
+        if not isinstance(args, dict):
+            return {"ok": False, "error": "args must be an object"}
+        if domain == "flow" and action == "run":
+            return await self.run_flow(str(args.get("name") or ""), trigger=str(args.get("trigger") or "http.command"), args=args)
+        if domain == "mode" and action == "set":
+            return await self.set_mode(str(args.get("name") or ""), trigger=str(args.get("trigger") or "http.command"))
+        return {"ok": False, "error": "unsupported_command", "domain": domain, "action": action}
