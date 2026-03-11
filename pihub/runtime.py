@@ -1,17 +1,18 @@
-"""Local runtime engine for mode + flow control."""
+"""Local runtime engine for mode + sequence control."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from typing import Any
+
 from .flows import FlowRunner
 
 logger = logging.getLogger(__name__)
 
 
 class RuntimeEngine:
-    """Owns local mode/flow state and exposes a unified command entrypoint."""
+    """Own local mode/sequence state and route intent and device-state signals."""
 
     def __init__(
         self,
@@ -29,6 +30,7 @@ class RuntimeEngine:
         self._last_trigger: str | None = None
         self._startup_reconciled = False
         self._lock = asyncio.Lock()
+        self._active_sequence_task: asyncio.Task | None = None
         self._flows = FlowRunner(runtime=self, tv=tv, speaker=speaker, ble=ble)
 
     @property
@@ -75,10 +77,28 @@ class RuntimeEngine:
             return {"ok": False, "error": "mode name required"}
         if self._dispatcher is None:
             return {"ok": False, "error": "dispatcher unavailable"}
+
+        current_task = asyncio.current_task()
+        if self._flow_running and current_task is not self._active_sequence_task:
+            logger.info("mode ignored name=%s trigger=%s reason=sequence_running", name, trigger)
+            return {
+                "ok": False,
+                "domain": "mode",
+                "action": "set",
+                "requested_mode": name,
+                "trigger": trigger,
+                "reason": "sequence_running",
+            }
+
         valid_modes_fn = getattr(self._dispatcher, "available_modes", None)
         valid_modes = set(valid_modes_fn()) if callable(valid_modes_fn) else set()
         if valid_modes and name not in valid_modes:
-            logger.warning("invalid mode rejected name=%s trigger=%s valid_modes=%s", name, trigger, sorted(valid_modes))
+            logger.warning(
+                "invalid mode rejected name=%s trigger=%s valid_modes=%s",
+                name,
+                trigger,
+                sorted(valid_modes),
+            )
             return {
                 "ok": False,
                 "domain": "mode",
@@ -88,14 +108,17 @@ class RuntimeEngine:
                 "valid_modes": sorted(valid_modes),
                 "trigger": trigger,
             }
+
         prior = self._mode
         await self._dispatcher.set_mode_bindings(name)
         self._last_trigger = trigger
         self._mode = name
+
         if prior != name:
             logger.info("mode changed %s -> %s trigger=%s", prior, name, trigger)
         else:
             logger.info("mode unchanged %s trigger=%s", name, trigger)
+
         return {
             "ok": True,
             "domain": "mode",
@@ -104,26 +127,57 @@ class RuntimeEngine:
             "trigger": trigger,
         }
 
-    async def run_flow(self, name: str, *, trigger: str = "internal", args: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def run_flow(
+        self,
+        name: str,
+        *,
+        trigger: str = "internal",
+        args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return await self.run_sequence(
+            name=name,
+            trigger=trigger,
+            source="intent",
+            args=args,
+        )
+
+    async def run_sequence(
+        self,
+        name: str,
+        *,
+        trigger: str,
+        source: str,
+        args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         name = (name or "").strip()
+        source = (source or "").strip() or "intent"
         if not name:
             return {"ok": False, "error": "flow name required"}
+
         if self._lock.locked():
-            logger.info("flow ignored name=%s trigger=%s reason=runner_busy", name, trigger)
+            logger.info(
+                "sequence ignored name=%s trigger=%s source=%s reason=runner_busy",
+                name,
+                trigger,
+                source,
+            )
             return {
                 "ok": False,
                 "domain": "flow",
                 "action": "run",
                 "name": name,
                 "trigger": trigger,
+                "source": source,
                 "reason": "runner_busy",
             }
+
         async with self._lock:
             self._flow_running = True
+            self._active_sequence_task = asyncio.current_task()
             self._last_trigger = trigger
-            logger.info("flow started name=%s trigger=%s", name, trigger)
+            logger.info("sequence started name=%s trigger=%s source=%s", name, trigger, source)
             try:
-                ok = await self._flows.run(name=name, trigger=trigger, args=args)
+                ok = await self._flows.run(name=name, trigger=trigger, args=args, source=source)
                 if ok:
                     self._last_flow = name
                 else:
@@ -133,9 +187,10 @@ class RuntimeEngine:
                         "action": "run",
                         "name": name,
                         "trigger": trigger,
+                        "source": source,
                         "error": "flow_failed",
                     }
-                logger.info("flow completed name=%s trigger=%s", name, trigger)
+                logger.info("sequence completed name=%s trigger=%s source=%s", name, trigger, source)
                 return {
                     "ok": True,
                     "domain": "flow",
@@ -144,19 +199,88 @@ class RuntimeEngine:
                     "mode": self._mode,
                     "last_flow": self._last_flow,
                     "trigger": trigger,
+                    "source": source,
                 }
             except Exception as exc:
-                logger.exception("flow failed name=%s trigger=%s", name, trigger)
+                logger.exception("sequence failed name=%s trigger=%s source=%s", name, trigger, source)
                 return {
                     "ok": False,
                     "domain": "flow",
                     "action": "run",
                     "name": name,
                     "trigger": trigger,
+                    "source": source,
                     "error": str(exc),
                 }
             finally:
+                self._active_sequence_task = None
                 self._flow_running = False
+
+    async def on_device_state_change(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        trigger: str = "device_state_change",
+    ) -> dict[str, Any]:
+        if not isinstance(snapshot, dict):
+            return {"ok": False, "error": "snapshot must be an object"}
+
+        decision = self._route_device_state_change(snapshot)
+        name = decision.get("name")
+        args = decision.get("args")
+        reason = decision.get("reason", "no_action")
+
+        if not name:
+            return {
+                "ok": True,
+                "domain": "device_state_change",
+                "action": "route",
+                "reason": reason,
+            }
+
+        return await self.run_sequence(
+            name=str(name),
+            trigger=f"device_state_change.{name}",
+            source="device_state_change",
+            args=args if isinstance(args, dict) else None,
+        )
+
+    def _route_device_state_change(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        tv_on = snapshot.get("tv_on") is True
+        speaker_playback = str(snapshot.get("speaker_playback") or "").strip().lower()
+        speaker_source = str(snapshot.get("speaker_source") or "").strip().lower()
+        listen_signal = speaker_playback in {"play", "load"} and speaker_source in {"airplay", "wifi", "multiroom-secondary"}
+        watch_signal = tv_on
+
+        if not watch_signal and not listen_signal:
+            return {"reason": "no_signal"}
+
+        if watch_signal and not listen_signal:
+            candidate = "watch"
+        elif listen_signal and not watch_signal:
+            candidate = "listen"
+        else:
+            if self._last_flow in {"watch", "listen"}:
+                candidate = self._last_flow
+            elif self._mode in {"watch", "listen"}:
+                candidate = self._mode
+            else:
+                return {"reason": "ambiguous"}
+
+        if self._mode == candidate and self._last_flow == candidate:
+            return {"reason": "already_aligned"}
+
+        if candidate == "listen":
+            return {
+                "name": "listen",
+                "args": {"override": True},
+                "reason": "listen_signal",
+            }
+        return {
+            "name": candidate,
+            "args": {},
+            "reason": "watch_signal",
+        }
 
     async def on_cmd(self, payload: dict[str, Any]) -> dict[str, Any]:
         domain = str(payload.get("domain") or "").strip().lower()
@@ -165,7 +289,19 @@ class RuntimeEngine:
         if not isinstance(args, dict):
             return {"ok": False, "error": "args must be an object"}
         if domain == "flow" and action == "run":
-            return await self.run_flow(str(args.get("name") or ""), trigger=str(args.get("trigger") or "http.command"), args=args)
+            return await self.run_flow(
+                str(args.get("name") or ""),
+                trigger=str(args.get("trigger") or "http.command"),
+                args=args,
+            )
         if domain == "mode" and action == "set":
-            return await self.set_mode(str(args.get("name") or ""), trigger=str(args.get("trigger") or "http.command"))
-        return {"ok": False, "error": "unsupported_command", "domain": domain, "action": action}
+            return await self.set_mode(
+                str(args.get("name") or ""),
+                trigger=str(args.get("trigger") or "http.command"),
+            )
+        return {
+            "ok": False,
+            "error": "unsupported_command",
+            "domain": domain,
+            "action": action,
+        }
