@@ -84,6 +84,7 @@ def _parse_payload(payload: bytes) -> str:
     except Exception:
         return ""
 
+
 def _needs_amp(s: str) -> bool:
     # Doc: payloads longer than 11 bytes should end with '&'
     return len(s.encode("utf-8")) > 11 and not s.endswith("&")
@@ -161,6 +162,7 @@ class LinkPlaySpeaker:
         self._session: aiohttp.ClientSession | None = None
 
         self._poll_task: asyncio.Task | None = None
+        self._poll_wake_evt = asyncio.Event()
         self._log_drop_once = False
 
         # Mute GET waiter
@@ -192,6 +194,9 @@ class LinkPlaySpeaker:
             "update_age_s": age_i,
         }
 
+    def _wake_poll_loop(self) -> None:
+        self._poll_wake_evt.set()
+
     # ---------- lifecycle ----------
 
     async def start(self) -> None:
@@ -199,6 +204,7 @@ class LinkPlaySpeaker:
             return
         self._enabled = True
         self._stop_evt.clear()
+        self._poll_wake_evt.clear()
 
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
@@ -210,6 +216,7 @@ class LinkPlaySpeaker:
     async def stop(self) -> None:
         self._enabled = False
         self._stop_evt.set()
+        self._poll_wake_evt.set()
 
         if self._task:
             self._task.cancel()
@@ -264,12 +271,14 @@ class LinkPlaySpeaker:
         self._state.reachable = False
         self._state.connected = False
         self._log_drop_once = False
+        self._poll_wake_evt.clear()
 
         reader, writer = await asyncio.open_connection(self._speaker_ip, self._tcp_port)
         self._reader, self._writer = reader, writer
         self._state.reachable = True
         self._state.subscribed = True
         self._state.last_update_ts = _now()
+        self._wake_poll_loop()
         logger.info("linkplay tcp connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
 
     async def _disconnect(self) -> None:
@@ -278,6 +287,7 @@ class LinkPlaySpeaker:
         self._state.reachable = False
         self._state.connected = False
         self._state.last_update_ts = _now()
+        self._wake_poll_loop()
 
         if self._writer:
             try:
@@ -293,6 +303,7 @@ class LinkPlaySpeaker:
         self._state.connected = False
         self._state.last_error = err
         self._state.last_update_ts = _now()
+        self._wake_poll_loop()
 
     # ---------- send / receive ----------
 
@@ -387,6 +398,9 @@ class LinkPlaySpeaker:
 
     def _on_payload(self, payload: str) -> None:
         changed = False
+        old_source = self._state.source
+        old_status = self._state.playback_status
+        old_connected = self._state.connected
 
         # Examples:
         #   AXX+VOL+030
@@ -473,12 +487,20 @@ class LinkPlaySpeaker:
         elif p.startswith("AXX+PLY+NEW"):
             # Hint: pull authoritative state. For physical inputs, playback doesn't apply anyway,
             # but we still allow the occasional liveness poll to do the correction.
+            self._wake_poll_loop()
             asyncio.create_task(self._pinfget())
 
         # else: ignore
 
         if changed:
             self._state.last_update_ts = _now()
+
+        if (
+            self._state.source != old_source
+            or self._state.playback_status != old_status
+            or self._state.connected != old_connected
+        ):
+            self._wake_poll_loop()
 
     async def _poll_loop(self) -> None:
         """
@@ -502,8 +524,13 @@ class LinkPlaySpeaker:
             else:
                 interval = POLL_PHYSICAL_S
 
-            await asyncio.sleep(float(interval))
-            await self._pinfget()
+            self._poll_wake_evt.clear()
+
+            try:
+                await asyncio.wait_for(self._poll_wake_evt.wait(), timeout=float(interval))
+                continue
+            except asyncio.TimeoutError:
+                await self._pinfget()
 
     # ---------- controls (TCP) ----------
 
