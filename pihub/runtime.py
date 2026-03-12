@@ -201,6 +201,14 @@ class RuntimeEngine:
                     "trigger": trigger,
                     "source": source,
                 }
+            except asyncio.CancelledError:
+                logger.exception(
+                    "sequence cancelled name=%s trigger=%s source=%s",
+                    name,
+                    trigger,
+                    source,
+                )
+                raise
             except Exception as exc:
                 logger.exception("sequence failed name=%s trigger=%s source=%s", name, trigger, source)
                 return {
