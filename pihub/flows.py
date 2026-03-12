@@ -9,12 +9,6 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-TV_WAIT_TIMEOUT_S = 20.0
-TV_ON_PAD_S = 2.0
-TV_OFF_PAD_S = 2.0
-TV_POST_OFF_PAD_S = 1.0
-SPEAKER_STOP_SETTLE_S = 0.5
-
 WATCH_VOLUME_PCT = 30
 LISTEN_VOLUME_PCT = 22
 LISTEN_PRESET = 1
@@ -310,15 +304,45 @@ class SequenceRunner:
         async def _invoke() -> None:
             await self._dispatch_step(sequence_name=sequence_name, step=step)
 
-        if step.mode == "dispatch":
-            asyncio.create_task(_invoke())
-            return
+        try:
+            if step.mode == "dispatch":
+                asyncio.create_task(_invoke())
+                return
 
-        if step.timeout_s is None:
-            await _invoke()
-            return
+            if step.timeout_s is None:
+                await _invoke()
+                return
 
-        await asyncio.wait_for(_invoke(), timeout=step.timeout_s)
+            await asyncio.wait_for(_invoke(), timeout=step.timeout_s)
+
+        except asyncio.TimeoutError:
+            logger.exception(
+                "sequence step timeout sequence=%s step=%s domain=%s action=%s timeout_s=%s",
+                sequence_name,
+                step.id,
+                step.domain,
+                step.action,
+                step.timeout_s,
+            )
+            raise
+        except asyncio.CancelledError:
+            logger.exception(
+                "sequence step cancelled sequence=%s step=%s domain=%s action=%s",
+                sequence_name,
+                step.id,
+                step.domain,
+                step.action,
+            )
+            raise
+        except Exception:
+            logger.exception(
+                "sequence step failed sequence=%s step=%s domain=%s action=%s",
+                sequence_name,
+                step.id,
+                step.domain,
+                step.action,
+            )
+            raise
 
     async def _dispatch_step(self, *, sequence_name: str, step: SequenceStep) -> None:
         args = step.args or {}
