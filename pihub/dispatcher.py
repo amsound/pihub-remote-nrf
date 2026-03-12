@@ -483,7 +483,20 @@ class Dispatcher:
         when = a.get("when", "down")
 
         async def _run() -> None:
-            await self._run_flow(name=name, trigger=trigger)
+            task = asyncio.create_task(
+                self._run_flow(name=name, trigger=trigger),
+                name=f"flow:{name}:{trigger}",
+            )
+
+            def _log_flow_result(t: asyncio.Task) -> None:
+                try:
+                    _ = t.result()
+                except asyncio.CancelledError:
+                    logger.info("spawned flow task cancelled name=%s trigger=%s", name, trigger)
+                except Exception:
+                    logger.exception("spawned flow task failed name=%s trigger=%s", name, trigger)
+
+            task.add_done_callback(_log_flow_result)
 
         loop = asyncio.get_running_loop()
 
