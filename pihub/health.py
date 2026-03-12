@@ -260,6 +260,9 @@ class HealthServer:
                     "ws_connected": bool(s.ws_connected),
                     "token_present": bool(s.token_present),
                     "last_error": s.last_error,
+                    "volume_pct": s.volume_pct,
+                    "volume_last_update_age_s": s.volume_last_update_age_s,
+                    "volume_optimistic": bool(s.volume_optimistic),
                 },
             }
         degraded_reasons.extend(tv_state["reasons"])
