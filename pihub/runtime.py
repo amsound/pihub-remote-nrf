@@ -173,11 +173,28 @@ class RuntimeEngine:
 
         async with self._lock:
             self._flow_running = True
-            self._active_sequence_task = asyncio.current_task()
             self._last_trigger = trigger
             logger.info("sequence started name=%s trigger=%s source=%s", name, trigger, source)
+
+            seq_task = asyncio.create_task(
+                self._flows.run(name=name, trigger=trigger, args=args, source=source),
+                name=f"sequence:{name}",
+            )
+            self._active_sequence_task = seq_task
+
             try:
-                ok = await self._flows.run(name=name, trigger=trigger, args=args, source=source)
+                try:
+                    ok = await asyncio.shield(seq_task)
+                except asyncio.CancelledError:
+                    # Caller task was cancelled; keep the sequence running to completion.
+                    logger.exception(
+                        "sequence caller cancelled name=%s trigger=%s source=%s; waiting for sequence task to finish",
+                        name,
+                        trigger,
+                        source,
+                    )
+                    ok = await asyncio.shield(seq_task)
+
                 if ok:
                     self._last_flow = name
                 else:
@@ -190,6 +207,7 @@ class RuntimeEngine:
                         "source": source,
                         "error": "flow_failed",
                     }
+
                 logger.info("sequence completed name=%s trigger=%s source=%s", name, trigger, source)
                 return {
                     "ok": True,
@@ -201,14 +219,7 @@ class RuntimeEngine:
                     "trigger": trigger,
                     "source": source,
                 }
-            except asyncio.CancelledError:
-                logger.exception(
-                    "sequence cancelled name=%s trigger=%s source=%s",
-                    name,
-                    trigger,
-                    source,
-                )
-                raise
+
             except Exception as exc:
                 logger.exception("sequence failed name=%s trigger=%s source=%s", name, trigger, source)
                 return {
