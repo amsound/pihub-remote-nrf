@@ -61,6 +61,8 @@ class SequenceRunner:
                 name="listen",
                 steps=(
                     SequenceStep("set_mode", "mode", "set", {"name": "listen"}),
+
+                    # If tv was on
                     SequenceStep(
                         "ble_return_home",
                         "ble",
@@ -69,10 +71,10 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "tv_off_pad_pre",
+                        "wait_1",
                         "system",
                         "sleep",
-                        {"seconds": TV_OFF_PAD_S},
+                        {"seconds": 2.5},
                         when="tv_was_on",
                     ),
                     SequenceStep(
@@ -83,12 +85,14 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "tv_off_pad_post",
+                        "wait_2",
                         "system",
                         "sleep",
-                        {"seconds": TV_POST_OFF_PAD_S},
+                        {"seconds": 1.0},
                         when="tv_was_on",
                     ),
+
+                    # If tv not on
                     SequenceStep(
                         "speaker_preset",
                         "speaker",
@@ -103,11 +107,13 @@ class SequenceRunner:
                         {"volume": LISTEN_VOLUME_PCT},
                         mode="dispatch",
                     ),
+
+                    # Only if tv was on
                     SequenceStep(
                         "wait_tv_off",
                         "wait",
                         "tv_off",
-                        {"timeout_s": TV_WAIT_TIMEOUT_S},
+                        {"timeout_s": 20.0},
                         when="tv_was_on",
                     ),
                 ),
@@ -116,6 +122,7 @@ class SequenceRunner:
                 name="watch",
                 steps=(
                     SequenceStep("set_mode", "mode", "set", {"name": "watch"}),
+
                     SequenceStep(
                         "tv_power_on",
                         "tv",
@@ -124,10 +131,10 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "tv_on_pad",
+                        "wait_1",
                         "system",
                         "sleep",
-                        {"seconds": TV_ON_PAD_S},
+                        {"seconds": 2.0},
                         when="tv_was_off",
                     ),
                     SequenceStep(
@@ -138,10 +145,10 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "wait_tv_on",
+                        "wait_2",
                         "wait",
                         "tv_on",
-                        {"timeout_s": TV_WAIT_TIMEOUT_S},
+                        {"timeout_s": 2.0},
                         when="tv_was_off",
                     ),
                     SequenceStep(
@@ -164,6 +171,8 @@ class SequenceRunner:
                 name="power_off",
                 steps=(
                     SequenceStep("set_mode", "mode", "set", {"name": "power_off"}),
+
+                    # If TV was On
                     SequenceStep(
                         "ble_return_home",
                         "ble",
@@ -172,10 +181,10 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "tv_off_pad",
+                        "wait_1",
                         "system",
                         "sleep",
-                        {"seconds": TV_OFF_PAD_S},
+                        {"seconds": 2.0},
                         when="tv_was_on",
                     ),
                     SequenceStep(
@@ -189,9 +198,11 @@ class SequenceRunner:
                         "wait_tv_off",
                         "wait",
                         "tv_off",
-                        {"timeout_s": TV_WAIT_TIMEOUT_S},
+                        {"timeout_s": 20},
                         when="tv_was_on",
                     ),
+
+                    # If speaker on wifi
                     SequenceStep(
                         "speaker_stop",
                         "speaker",
@@ -200,10 +211,10 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "speaker_stop_settle",
+                        "wait_1",
                         "system",
                         "sleep",
-                        {"seconds": SPEAKER_STOP_SETTLE_S},
+                        {"seconds": 0.5},
                         when="speaker_source_wifi",
                     ),
                     SequenceStep(
