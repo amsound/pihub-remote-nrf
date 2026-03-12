@@ -160,6 +160,15 @@ class TvController:
         except Exception:
             logger.exception("tv state change callback failed name=%s", name)
 
+    async def _send_wol_burst(self, *, count: int = 3, gap_s: float = 0.25) -> None:
+        for idx in range(count):
+            try:
+                send_wol(self.tv_mac)
+            except Exception:
+                pass
+            if idx + 1 < count:
+                await asyncio.sleep(gap_s)
+
     async def power_off(self, *, wait: bool = True, timeout_s: float = 25.0) -> bool:
         if not self._session:
             return False
@@ -225,10 +234,7 @@ class TvController:
                 ws_interval_s = WS_FAST_INTERVAL_S if elapsed < WS_FAST_WINDOW_S else WS_SLOW_INTERVAL_S
 
                 if (now - last_wol) >= wol_interval_s:
-                    try:
-                        send_wol(self.tv_mac)
-                    except Exception:
-                        pass
+                    await self._send_wol_burst(count=3, gap_s=0.25)
                     last_wol = now
 
                 ws_connected_now = self.ws.state.connected
