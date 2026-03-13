@@ -357,6 +357,10 @@ class AudioProSpeaker:
         with contextlib.suppress(Exception):
             await self._send("MCU+PINFGET")
 
+    async def _delayed_pinfget(self, delay_s: float = 0.5) -> None:
+        await asyncio.sleep(delay_s)
+        await self._pinfget()
+
     async def _read_loop(self) -> None:
         assert self._reader is not None
 
@@ -419,8 +423,7 @@ class AudioProSpeaker:
         #   AXX+PLM+010
         #   AXX+PLY+INF{ ... }&
         #   AXX+PLY+NEW
-        #   AXX+KEY+003
-        #   AXX+KEY+RDY
+        #   AXX+PMS+000
         p = payload.strip()
         if p.endswith("&"):
             p = p[:-1]
@@ -450,6 +453,13 @@ class AudioProSpeaker:
                 self._state.playback_status = None
 
             changed = True
+
+        elif p.startswith("AXX+PMS+"):
+            code = p.split("+", 2)[2]
+
+            if code in {"000", "001"}:
+                self._wake_poll_loop()
+                asyncio.create_task(self._pinfget())
 
         elif p.startswith("AXX+PLY+INF"):
             # JSON blob after "AXX+PLY+INF"
@@ -509,10 +519,9 @@ class AudioProSpeaker:
                     pass
 
         elif p.startswith("AXX+PLY+NEW"):
-            # Hint: pull authoritative state. For physical inputs, playback doesn't apply anyway,
-            # but we still allow the occasional liveness poll to do the correction.
+            # Hint: pull authoritative state
             self._wake_poll_loop()
-            asyncio.create_task(self._pinfget())
+            asyncio.create_task(self._delayed_pinfget(0.5))
 
         # else: ignore
 
@@ -682,7 +691,7 @@ class AudioProSpeaker:
             return
 
         if await self._send_control(f"MCU+PLM+{want_mode}"):
-            asyncio.create_task(self._pinfget())
+            asyncio.create_task(self._delayed_pinfget())
 
     # -------------- HTTP API --------------
 
