@@ -237,12 +237,10 @@ class TvController:
             WS_SLOW_INTERVAL_S = 0.8
             WS_FAST_WINDOW_S = 2.0
 
+            # Do not let HTTP fallback probing delay initial wake.
             HTTP_PROBE_INTERVAL_S = 1.0
+            HTTP_PROBE_START_DELAY_S = 2.0
 
-            # Recovery rescue:
-            # one best-effort toggle in the recent-off window only, while presence
-            # is still false. This avoids the "TV woke, then got toggled off again"
-            # failure mode.
             rescue_recent_off = (
                 self._last_power_off_request_ts is not None
                 and (start - self._last_power_off_request_ts) <= RECOVERY_WINDOW_S
@@ -257,25 +255,15 @@ class TvController:
                 now = loop.time()
                 elapsed = now - start
 
-                # Truth gate first: once presence is on, stop immediately.
+                # Presence truth gate first: if SSDP/M-SEARCH already says on, stop.
                 if self._presence_cached is True:
                     await self.ws.connect(self._session)
                     return True
 
-                # HTTP probe is fallback only, not primary truth.
-                if (now - last_http_probe) >= HTTP_PROBE_INTERVAL_S:
-                    last_http_probe = now
-                    try:
-                        if await presence_probe_up(self._session, self.tv_ip):
-                            self._commit_presence(True, source="probe_http_up")
-                            await self.ws.connect(self._session)
-                            return True
-                    except Exception:
-                        pass
-
                 wol_interval_s = WOL_FAST_INTERVAL_S if elapsed < WOL_FAST_WINDOW_S else WOL_SLOW_INTERVAL_S
                 ws_interval_s = WS_FAST_INTERVAL_S if elapsed < WS_FAST_WINDOW_S else WS_SLOW_INTERVAL_S
 
+                # Wake first, immediately.
                 if (now - last_wol) >= wol_interval_s:
                     try:
                         await send_wol_burst(
@@ -289,6 +277,7 @@ class TvController:
                         logger.debug("tv wol burst failed", exc_info=True)
                     last_wol = now
 
+                # Warm websocket early; SSDP presence still remains the truth gate.
                 ws_connected_now = self.ws.state.connected
                 if not ws_connected_now and (now - last_ws_attempt) >= ws_interval_s:
                     last_ws_attempt = now
@@ -305,6 +294,17 @@ class TvController:
                         await self.ws.send_key("KEY_POWER")
                     except Exception:
                         logger.debug("tv rescue power toggle failed", exc_info=True)
+
+                # Only start HTTP fallback probing after initial WOL window has had a chance.
+                if elapsed >= HTTP_PROBE_START_DELAY_S and (now - last_http_probe) >= HTTP_PROBE_INTERVAL_S:
+                    last_http_probe = now
+                    try:
+                        if await presence_probe_up(self._session, self.tv_ip):
+                            self._commit_presence(True, source="probe_http_up")
+                            await self.ws.connect(self._session)
+                            return True
+                    except Exception:
+                        logger.debug("tv http presence probe failed", exc_info=True)
 
                 await asyncio.sleep(0.2)
 
