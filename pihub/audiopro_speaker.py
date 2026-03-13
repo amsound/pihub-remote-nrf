@@ -1,7 +1,7 @@
 """
-LinkPlay/WiiM speaker controller (TCP API only).
+Audio Pro/LinkPlay/WiiM speaker controller (TCP API only).
 
-Policy (agreed):
+Policy:
 - State refresh primitive: always MCU+PINFGET (no MEA / no SONGGET)
 - Connected gating: connected=True only after first successful PINFGET parse
 - Mute safety: always MUT+GET before changing mute
@@ -113,7 +113,7 @@ class SpeakerState:
     last_update_ts: float | None = None
 
 
-class LinkPlaySpeaker:
+class AudioProSpeaker:
     """
     TCP API driver.
 
@@ -282,7 +282,7 @@ class LinkPlaySpeaker:
         self._state.subscribed = True
         self._state.last_update_ts = _now()
         self._wake_poll_loop()
-        logger.info("linkplay tcp connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
+        logger.info("audio pro tcp connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
 
     async def _disconnect(self) -> None:
         # Reset flags; keep last_error as-is for inspection
@@ -463,7 +463,7 @@ class LinkPlaySpeaker:
                     self._state.connected = True
                     if not was_ready:
                         logger.info(
-                            "linkplay tcp ready speaker_ip=%s (initial PINFGET received)",
+                            "audio pro tcp ready speaker_ip=%s (initial PINFGET received)",
                             self._speaker_ip,
                         )
 

@@ -11,7 +11,7 @@ import time
 from contextlib import suppress
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
-from .input_ble_dongle import CompiledBleFrames
+from .ble_dongle import CompiledBleFrames
 from .validation import parse_ms
 
 try:

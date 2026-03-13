@@ -17,12 +17,13 @@ except Exception:
 
 from .config import Config
 from .dispatcher import Dispatcher
-from .input_unifying import UnifyingReader
-from .input_ble_dongle import BleDongleLink
 from .health import HealthServer
-from .samsung_tv import TvController, ssdp_listener, start_discovery_tasks, stop_discovery_tasks
-from .speaker_linkplay import LinkPlaySpeaker
 from .runtime import RuntimeEngine
+
+from .unifying_input import UnifyingReader
+from .ble_dongle import BleDongleLink
+from .samsung_tv import TvController, ssdp_listener, start_discovery_tasks, stop_discovery_tasks
+from .audiopro_speaker import AudioProSpeaker
 
 
 def _debug_enabled() -> bool:
@@ -103,9 +104,9 @@ async def main() -> None:
     else:
         stop = asyncio.Event()
 
-    speaker: LinkPlaySpeaker | None = None
+    speaker: AudioProSpeaker | None = None
     if cfg.speaker_ip:
-        speaker = LinkPlaySpeaker(
+        speaker = AudioProSpeaker(
             speaker_ip=cfg.speaker_ip,
             http_scheme=cfg.speaker_http_scheme,
             volume_step_pct=cfg.speaker_volume_step_pct,

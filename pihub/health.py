@@ -9,11 +9,13 @@ from typing import Optional
 
 from aiohttp import web
 
-from .input_ble_dongle import BleDongleLink
-from .input_unifying import UnifyingReader
-from .speaker_linkplay import LinkPlaySpeaker
-from .samsung_tv import TvController
 from .runtime import RuntimeEngine
+
+from .ble_dongle import BleDongleLink
+from .unifying_input import UnifyingReader
+from .audiopro_speaker import AudioProSpeaker
+from .samsung_tv import TvController
+
 
 
 class HealthServer:
@@ -27,7 +29,7 @@ class HealthServer:
         bt: BleDongleLink,
         reader: UnifyingReader,
         tv: Optional[TvController] = None,
-        speaker: Optional[LinkPlaySpeaker] = None,
+        speaker: Optional[AudioProSpeaker] = None,
         runtime: Optional[RuntimeEngine] = None,
     ) -> None:
         self._host = host
