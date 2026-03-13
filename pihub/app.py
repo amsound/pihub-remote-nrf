@@ -20,9 +20,8 @@ from .dispatcher import Dispatcher
 from .input_unifying import UnifyingReader
 from .input_ble_dongle import BleDongleLink
 from .health import HealthServer
-from .tv import TvController
+from .samsung_tv import TvController, ssdp_listener, start_discovery_tasks, stop_discovery_tasks
 from .speaker_linkplay import LinkPlaySpeaker
-from .tv.ssdp import ssdp_listener, start_discovery_tasks, stop_discovery_tasks
 from .runtime import RuntimeEngine
 
 

@@ -18,7 +18,7 @@ async def pair_tv(*, tv_ip: str, token_file: str, name: str) -> dict:
         tv = SamsungTVWS(host=tv_ip, port=8002, token_file=token_file, name=name, timeout=5)
         tv.send_key("KEY_VOLUP")
 
-        logger.info("[tv] pair triggered; accept the prompt on the TV. token_file=%s", token_file)
+        logger.info("pair triggered; accept the prompt on the TV. token_file=%s", token_file)
         return {"ok": True, "note": "If TV prompted, accept it. Token should now be saved."}
     except Exception as e:
         logger.warning("pair failed: %r (token_file=%s)", e, token_file)

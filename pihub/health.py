@@ -12,7 +12,7 @@ from aiohttp import web
 from .input_ble_dongle import BleDongleLink
 from .input_unifying import UnifyingReader
 from .speaker_linkplay import LinkPlaySpeaker
-from .tv import TvController
+from .samsung_tv import TvController
 from .runtime import RuntimeEngine
 
 
