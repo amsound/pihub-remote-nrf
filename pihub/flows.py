@@ -161,6 +161,66 @@ class SequenceRunner:
                     ),
                 ),
             ),
+
+            "listen_signal": SequenceDefinition(
+                name="listen_signal",
+                steps=(
+                    SequenceStep("set_mode", "mode", "set", {"name": "listen"}),
+
+                    # If tv was on
+                    SequenceStep(
+                        "ble_return_home",
+                        "ble",
+                        "return_home",
+                        when="tv_was_on",
+                        mode="dispatch",
+                    ),
+                    SequenceStep(
+                        "wait_1",
+                        "system",
+                        "sleep",
+                        {"seconds": 2.5},
+                        when="tv_was_on",
+                    ),
+                    SequenceStep(
+                        "tv_power_off",
+                        "tv",
+                        "power_off",
+                        when="tv_was_on",
+                        mode="dispatch",
+                    ),
+                ),
+            ),
+
+            "watch_signal": SequenceDefinition(
+                name="watch_signal",
+                steps=(
+                    SequenceStep("set_mode", "mode", "set", {"name": "watch"}),
+
+                    SequenceStep(
+                        "wait_1",
+                        "wait",
+                        "tv_on",
+                        {"timeout_s": 4.0},
+                        when="tv_was_off",
+                    ),
+                    SequenceStep(
+                        "speaker_set_hdmi",
+                        "speaker",
+                        "set_source",
+                        {"source": SPEAKER_WATCH_SOURCE},
+                        mode="dispatch",
+                    ),
+                    SequenceStep(
+                        "speaker_volume",
+                        "speaker",
+                        "set_volume",
+                        {"volume": WATCH_VOLUME_PCT},
+                        mode="dispatch",
+                    ),
+                ),
+            ),
+
             "power_off": SequenceDefinition(
                 name="power_off",
                 steps=(

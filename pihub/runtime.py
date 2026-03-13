@@ -196,7 +196,11 @@ class RuntimeEngine:
                     ok = await asyncio.shield(seq_task)
 
                 if ok:
-                    self._last_flow = name
+                    logical_name = {
+                        "listen_signal": "listen",
+                        "watch_signal": "watch",
+                    }.get(name, name)
+                    self._last_flow = logical_name
                 else:
                     return {
                         "ok": False,
@@ -255,18 +259,32 @@ class RuntimeEngine:
                 "reason": "runner_busy",
             }
 
-        # Idempotence / no-op routing.
-        if name == "listen" and self._mode == "listen":
-            logger.info("device state change ignored name=listen reason=already_listen")
-            return {"ok": False, "name": name, "reason": "already_listen"}
+        # Idempotence for device signals uses last logical flow, not current mode.
+        if name == "listen" and self._last_flow == "listen":
+            logger.info("device state change ignored name=listen reason=last_flow_listen")
+            return {"ok": False, "name": name, "reason": "last_flow_listen"}
 
-        if name == "watch" and self._mode == "watch":
-            logger.info("device state change ignored name=watch reason=already_watch")
-            return {"ok": False, "name": name, "reason": "already_watch"}
+        if name == "watch" and self._last_flow == "watch":
+            logger.info("device state change ignored name=watch reason=last_flow_watch")
+            return {"ok": False, "name": name, "reason": "last_flow_watch"}
 
-        return await self.set_mode(
-            name,
+        sequence_name = {
+            "listen": "listen_signal",
+            "watch": "watch_signal",
+        }.get(name)
+
+        if not sequence_name:
+            return {
+                "ok": False,
+                "name": name,
+                "reason": "unknown_device_state_change",
+            }
+
+        return await self.run_sequence(
+            name=sequence_name,
             trigger=f"device_state_change.{name}",
+            source="device_state_change",
+            args=payload,
         )
 
     def _route_device_state_change(self, snapshot: dict[str, Any]) -> dict[str, Any]:
