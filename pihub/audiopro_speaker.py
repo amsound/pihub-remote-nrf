@@ -35,13 +35,15 @@ DEFAULT_HTTP_POWEROFF_CMD = "setShutdown:0"
 
 # Poll knobs (tweak here)
 POLL_WIFI_PLAYING_S = 10.0   # play OR load
-POLL_WIFI_PAUSED_S = 30.0
+POLL_WIFI_PAUSED_S = 15.0
 POLL_WIFI_IDLE_S = 60.0
 POLL_PHYSICAL_S = 60.0
 
 # Mute safety knobs
 MUTE_GET_DELAY_S = 0.02      # tiny settle delay after MUT+GET
-MUTE_GET_TIMEOUT_S = 0.6     # wait for AXX+MUT+... after GET
+MUTE_GET_TIMEOUT_S = 0.5     # wait for AXX+MUT+... after GET
+
+HINT_PINFGET_DELAY_S = 0.8
 
 # PLM input modes -> app-friendly "source"
 # (Doc: https://developer.arylic.com/tcpapi/ — see "Current Input Mode" / PLM table.)
@@ -357,7 +359,7 @@ class AudioProSpeaker:
         with contextlib.suppress(Exception):
             await self._send("MCU+PINFGET")
 
-    async def _delayed_pinfget(self, delay_s: float = 0.5) -> None:
+    async def _delayed_pinfget(self, delay_s: float = HINT_PINFGET_DELAY_S) -> None:
         await asyncio.sleep(delay_s)
         await self._pinfget()
 
@@ -521,7 +523,7 @@ class AudioProSpeaker:
         elif p.startswith("AXX+PLY+NEW"):
             # Hint: pull authoritative state
             self._wake_poll_loop()
-            asyncio.create_task(self._delayed_pinfget(0.5))
+            asyncio.create_task(self._delayed_pinfget())
 
         # else: ignore
 
