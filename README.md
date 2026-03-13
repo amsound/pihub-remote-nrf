@@ -202,8 +202,8 @@ Example response:
     "error": false,
     "details": {
       "initialized": true,
-      "logical_on": true,
-      "logical_source": "msearch",
+      "presence_on": true,
+      "presence_source": "msearch",
       "last_change_age_s": 2,
       "ws_connected": true,
       "token_present": true,
@@ -368,13 +368,13 @@ TV presence is determined using:
 
 If the TV is already on at boot, PiHub sends a short `M-SEARCH` burst and may set:
 
-* `logical_on: true`
-* `logical_source: "msearch"`
+* `presence_on: true`
+* `presence_source: "msearch"`
 
 Later passive updates may overwrite the source with:
 
-* `logical_source: "ssdp_alive"`
-* `logical_source: "ssdp_byebye"`
+* `presence_source: "ssdp_alive"`
+* `presence_source: "ssdp_byebye"`
 
 ### Overrides
 
@@ -441,8 +441,8 @@ These are the normal explicit flows. Overrides currently do **not** run them.
 ## 🧪 Troubleshooting
 
 * **No input events?** Look for `/dev/input/by-id/*event-kbd` (often `usb-Logitech_USB_Receiver-*event-kbd`). Ensure the relevant `/dev/input` paths are bind-mounted read-only into the container.
-* **TV already on at boot but mode stays `power_off`?** Check `/health` for `tv.details.logical_on` and `logical_source`. If TV later becomes known, override should promote mode to `watch`.
-* **TV discovery confusion?** `logical_source` shows the most recent TV discovery source, not the current mode source of truth.
+* **TV already on at boot but mode stays `power_off`?** Check `/health` for `tv.details.presence_on` and `presence_source`. If TV later becomes known, override should promote mode to `watch`.
+* **TV discovery confusion?** `presence_source` shows the most recent TV discovery source, not the current mode source of truth.
 * **Override too risky while testing?** Set `OVERRIDE_APPLY_MODE=off`.
 * **Speaker connected but not influencing mode?** Current startup is always conservative; mode changes come from overrides or explicit flows.
 * **No flow action from override?** That is expected. Overrides are currently mode-only.

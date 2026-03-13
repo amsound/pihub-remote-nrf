@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TvSnapshot:
     initialized: bool
-    logical_on: bool | None
-    logical_source: str
+    presence_on: bool | None
+    presence_source: str
     last_change_age_s: int | None
     ws_connected: bool
     token_present: bool
@@ -51,7 +51,7 @@ class TvController:
         self._session: Optional[aiohttp.ClientSession] = None
 
         # Internal naming moved to "presence" even though the public snapshot
-        # still uses logical_on/logical_source for compatibility.
+        # still uses presence_on/presence_source for compatibility.
         self._presence_cached: bool | None = None
         self._presence_source: str = "unknown"
         self._presence_last_change_ts: float | None = None
@@ -87,7 +87,7 @@ class TvController:
                 "watch",
                 {
                     "domain": "tv",
-                    "logical_source": source,
+                    "presence_source": source,
                 },
             )
 
@@ -100,7 +100,7 @@ class TvController:
 
         changed = self._commit_presence(True, source="msearch")
         logger.info(
-            "tv msearch accepted changed=%s location=%s logical_on=%s logical_source=%s",
+            "tv msearch accepted changed=%s location=%s presence_on=%s presence_source=%s",
             "true" if changed else "false",
             location,
             "true" if self._presence_cached is True else "false",
@@ -151,12 +151,12 @@ class TvController:
 
         return TvSnapshot(
             initialized=self._presence_cached is not None,
-            logical_on=self._presence_cached,
+            presence_on=self._presence_cached,
+            presence_source=self._presence_source,
+            last_change_age_s=last_change_age_s,
             ws_connected=st.connected,
             token_present=st.token_present,
             last_error=st.last_error,
-            logical_source=self._presence_source,
-            last_change_age_s=last_change_age_s,
         )
 
     def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:

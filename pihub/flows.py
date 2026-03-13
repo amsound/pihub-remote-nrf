@@ -426,7 +426,7 @@ class SequenceRunner:
             return False
         try:
             snap = self._tv.snapshot()
-            return snap.logical_on is True
+            return snap.presence_on is True
         except Exception:
             return False
 
@@ -445,7 +445,7 @@ class SequenceRunner:
         deadline = asyncio.get_running_loop().time() + timeout_s
         while asyncio.get_running_loop().time() < deadline:
             try:
-                if self._tv.snapshot().logical_on is True:
+                if self._tv.snapshot().presence_on is True:
                     return True
             except Exception:
                 pass
@@ -458,7 +458,7 @@ class SequenceRunner:
         deadline = asyncio.get_running_loop().time() + timeout_s
         while asyncio.get_running_loop().time() < deadline:
             try:
-                if self._tv.snapshot().logical_on is False:
+                if self._tv.snapshot().presence_on is False:
                     return True
             except Exception:
                 pass

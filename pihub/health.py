@@ -235,8 +235,8 @@ class HealthServer:
         else:
             s = self._tv.snapshot()
             tv_enabled = bool(s.token_present)
-            tv_link_up = bool(s.logical_on)
-            tv_link_ready = bool(s.ws_connected and s.logical_on)
+            tv_link_up = bool(s.presence_on)
+            tv_link_ready = bool(s.ws_connected and s.presence_on)
             tv_error = bool(s.last_error)
 
             tv_reasons: list[str] = []
@@ -254,8 +254,8 @@ class HealthServer:
                 "error": tv_error,
                 "details": {
                     "initialized": bool(s.initialized),
-                    "logical_on": s.logical_on,
-                    "logical_source": s.logical_source,
+                    "presence_on": s.presence_on,
+                    "presence_source": s.presence_source,
                     "last_change_age_s": s.last_change_age_s,
                     "ws_connected": bool(s.ws_connected),
                     "token_present": bool(s.token_present),
