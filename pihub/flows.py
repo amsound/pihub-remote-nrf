@@ -236,7 +236,7 @@ class SequenceRunner:
             return False
 
         snapshot = self._build_snapshot()
-        logger.info(
+        logger.debug(
             "sequence started name=%s trigger=%s source=%s snapshot=%s",
             seq.name,
             trigger,
@@ -246,7 +246,7 @@ class SequenceRunner:
 
         for index, step in enumerate(seq.steps, start=1):
             if step.when and not self._predicate(step.when, snapshot):
-                logger.info(
+                logger.debug(
                     "sequence step skipped sequence=%s step=%s index=%d reason=when_false when=%s",
                     seq.name,
                     step.id,
@@ -254,7 +254,7 @@ class SequenceRunner:
                     step.when,
                 )
                 continue
-            logger.info(
+            logger.debug(
                 "sequence step start sequence=%s step=%s index=%d domain=%s action=%s",
                 seq.name,
                 step.id,
@@ -274,14 +274,14 @@ class SequenceRunner:
                     step.action,
                 )
                 raise
-            logger.info(
+            logger.debug(
                 "sequence step ok sequence=%s step=%s index=%d",
                 seq.name,
                 step.id,
                 index,
             )
 
-        logger.info("sequence completed name=%s trigger=%s source=%s", seq.name, trigger, source)
+        logger.debug("sequence completed name=%s trigger=%s source=%s", seq.name, trigger, source)
         return True
 
     def _build_snapshot(self) -> dict[str, Any]:
