@@ -459,7 +459,7 @@ class AudioProSpeaker:
 
             if code in {"000", "001"}:
                 self._wake_poll_loop()
-                asyncio.create_task(self._pinfget())
+                asyncio.create_task(self._delayed_pinfget())
 
         elif p.startswith("AXX+PLY+INF"):
             # JSON blob after "AXX+PLY+INF"
