@@ -1,8 +1,4 @@
-dbus-fast==2.44.3
 evdev==1.9.2
-PyYAML==6.0.2
 uvloop==0.21.0
 aiohttp>=3.9,<4
 pyserial>=3.5,<4
-samsungtvws==3.0.3
-async-upnp-client>=0.41,<1

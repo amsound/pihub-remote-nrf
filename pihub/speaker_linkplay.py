@@ -117,7 +117,6 @@ class LinkPlaySpeaker:
     """
     TCP API driver.
 
-    Public API matches the UPnP version:
       - start/stop
       - volume_up/volume_down/mute_toggle (+ set_muted)
       - play/pause/stop_playback/next_track/previous_track/play_pause

@@ -32,8 +32,6 @@ _DENY_CALLS = {
     "start",
     "stop",
     "_runner",
-    "_connect_and_subscribe",
-    "_disconnect_upnp",
     "snapshot",
 }
 
