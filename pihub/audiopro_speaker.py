@@ -548,7 +548,7 @@ class AudioProSpeaker:
         while self._enabled and not self._stop_evt.is_set():
             src = self._state.source or "unknown"
 
-            if src == "wifi":
+            if src in {"wifi", "airplay", "multiroom-secondary"}:
                 st = (self._state.playback_status or "").lower()
                 if st in ("play", "load"):
                     interval = POLL_WIFI_PLAYING_S

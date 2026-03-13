@@ -13,6 +13,7 @@ WATCH_VOLUME_PCT = 30
 LISTEN_VOLUME_PCT = 22
 LISTEN_PRESET = 1
 SPEAKER_WATCH_SOURCE = "hdmi"
+LISTEN_SOURCES = {"wifi", "airplay", "multiroom-secondary"}
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ class SequenceRunner:
         self._predicates: dict[str, Callable[[dict[str, Any]], bool]] = {
             "tv_was_on": lambda snap: bool(snap.get("tv_was_on")),
             "tv_was_off": lambda snap: bool(snap.get("tv_was_off")),
-            "speaker_source_wifi": lambda snap: str(snap.get("speaker_source") or "") == "wifi",
+            "speaker_source_listen": lambda snap: str(snap.get("speaker_source") or "") in LISTEN_SOURCES,
         }
         self._defs: dict[str, SequenceDefinition] = {
             "listen": SequenceDefinition(
@@ -212,6 +213,13 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
+                        "wait_2",
+                        "wait",
+                        "tv_on",
+                        {"timeout_s": 0.5},
+                        when="tv_was_off",
+                    ),
+                    SequenceStep(
                         "speaker_volume",
                         "speaker",
                         "set_volume",
@@ -261,7 +269,7 @@ class SequenceRunner:
                         "speaker_stop",
                         "speaker",
                         "stop_playback",
-                        when="speaker_source_wifi",
+                        when="speaker_source_listen",
                         mode="dispatch",
                     ),
                     SequenceStep(
@@ -269,13 +277,13 @@ class SequenceRunner:
                         "system",
                         "sleep",
                         {"seconds": 0.5},
-                        when="speaker_source_wifi",
+                        when="speaker_source_listen",
                     ),
                     SequenceStep(
                         "speaker_power_off",
                         "speaker",
                         "power_off",
-                        when="speaker_source_wifi",
+                        when="speaker_source_listen",
                         mode="dispatch",
                     ),
                 ),
