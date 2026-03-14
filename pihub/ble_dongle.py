@@ -125,6 +125,8 @@ class BleDongleLink:
         self._tx_lock = asyncio.Lock()
 
         self._rx_buf = bytearray()
+        self._rx_line_max = 512
+
         self._pong_counter = 0
 
         # reconnect knobs
@@ -211,13 +213,17 @@ class BleDongleLink:
             await self._write_line("UNPAIR")
 
     def release_all(self) -> None:
-        """Best-effort host-side failsafe to avoid stuck keys."""
-        if not self.is_open:
-            return
-        with contextlib.suppress(asyncio.QueueFull):
-            self._tx_q.put_nowait((self._tx_epoch, b"\x01" + (b"\x00" * 8)))
-        with contextlib.suppress(asyncio.QueueFull):
-            self._tx_q.put_nowait((self._tx_epoch, b"\x02\x00\x00"))
+        """
+        Stronger host-side failsafe to avoid stuck keys.
+
+        This intentionally discards queued HID traffic from the current epoch so the
+        zero keyboard + zero consumer reports win over stale presses/releases.
+        """
+        self._enqueue_priority_frames([
+            b"\x01" + (b"\x00" * 8),
+            b"\x02\x00\x00",
+        ])
+
 
     # ---------- edge-level API ----------
 
@@ -597,6 +603,63 @@ class BleDongleLink:
 
     # ---------- TX/RX plumbing ----------
 
+    def _is_hid_frame(self, payload: bytes) -> bool:
+        return (
+            (len(payload) == 9 and payload[:1] == b"\x01") or
+            (len(payload) == 3 and payload[:1] == b"\x02")
+        )
+
+    def _drain_hid_frames_current_epoch(self) -> int:
+        """
+        Remove queued hot-path HID frames for the current epoch, preserving ASCII
+        control lines (PING/STATUS/UNPAIR/etc).
+        """
+        kept: list[tuple[int, bytes]] = []
+        dropped = 0
+
+        while True:
+            try:
+                item = self._tx_q.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+            epoch, payload = item
+            if epoch == self._tx_epoch and self._is_hid_frame(payload):
+                dropped += 1
+                continue
+            kept.append(item)
+
+        for item in kept:
+            with contextlib.suppress(asyncio.QueueFull):
+                self._tx_q.put_nowait(item)
+
+        return dropped
+
+    def _enqueue_priority_frames(self, frames: list[bytes]) -> None:
+        """
+        Best-effort priority injection for safety frames. Drop queued HID traffic from
+        the current epoch first, then enqueue the provided frames.
+        """
+        if not self.is_open:
+            return
+
+        dropped = self._drain_hid_frames_current_epoch()
+
+        for payload in frames:
+            try:
+                self._tx_q.put_nowait((self._tx_epoch, payload))
+            except asyncio.QueueFull:
+                # If we're still full after draining HID traffic, drop one oldest item
+                # and retry once. This should be rare and mostly affects queued ASCII ops.
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    _ = self._tx_q.get_nowait()
+                with contextlib.suppress(asyncio.QueueFull):
+                    self._tx_q.put_nowait((self._tx_epoch, payload))
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("priority release-all queued (dropped_hid=%d)", dropped)
+
+
     def _enqueue_nowait(self, payload: bytes) -> None:
         # Hot path gating: only send once dongle says READY + connected and serial is open.
         if not (self.is_open and self.state.connected and self.state.ready):
@@ -852,14 +915,24 @@ class BleDongleLink:
         for b in chunk:
             if b == 0:
                 continue
+
             self._rx_buf.append(b)
+
+            if len(self._rx_buf) > self._rx_line_max:
+                if logger.isEnabledFor(logging.WARNING):
+                    logger.warning("rx line exceeded %d bytes; dropping partial line", self._rx_line_max)
+                self._rx_buf.clear()
+                continue
+
             if b == 0x0A:  # '\n'
                 try:
                     line = self._rx_buf.decode("ascii", errors="replace").rstrip("\r\n")
                 finally:
                     self._rx_buf.clear()
+
                 if line:
                     self._handle_line(line)
+
 
     def _handle_line(self, line: str) -> None:
         if logger.isEnabledFor(logging.DEBUG):
@@ -879,6 +952,7 @@ class BleDongleLink:
 
         if line.startswith("ERR"):
             self.state.error = True
+            logger.warning("dongle error line: %s", line)
             return
 
         if line.startswith("EVT "):
@@ -894,6 +968,8 @@ class BleDongleLink:
         #  EVT ADV 1
         #  EVT CONN 0
         #  EVT READY 1
+        #  EVT PROTO 1
+        #  EVT ERR 0
         #  EVT DISC reason=19
         #  EVT CONN_PARAMS interval_ms=15 latency=0 timeout_ms=3000
         parts = line.split()
@@ -901,7 +977,14 @@ class BleDongleLink:
             return
 
         src = parts[1]
-        before = (self.state.advertising, self.state.connected, self.state.ready, self.state.sec, self.state.error)
+        before = (
+            self.state.advertising,
+            self.state.connected,
+            self.state.ready,
+            self.state.sec,
+            self.state.error,
+            self.state.proto_report,
+        )
 
         if src == "ADV" and len(parts) >= 3:
             self.state.advertising = parts[2] == "1"
@@ -923,6 +1006,18 @@ class BleDongleLink:
             self.state.ready = parts[2] == "1"
             self._request_status_soon()
 
+        elif src == "PROTO" and len(parts) >= 3:
+            try:
+                self.state.proto_report = int(parts[2]) == 1
+            except ValueError:
+                pass
+
+        elif src == "ERR" and len(parts) >= 3:
+            try:
+                self.state.error = int(parts[2]) == 1
+            except ValueError:
+                pass
+
         elif src == "DISC":
             # EVT DISC reason=19
             for tok in parts[2:]:
@@ -939,7 +1034,11 @@ class BleDongleLink:
                 interval_ms = int(kv.get("interval_ms", "0") or 0)
                 latency = int(kv.get("latency", "0") or 0)
                 timeout_ms = int(kv.get("timeout_ms", "0") or 0)
-                self.state.conn_params = ConnParams(interval_ms=interval_ms, latency=latency, timeout_ms=timeout_ms)
+                self.state.conn_params = ConnParams(
+                    interval_ms=interval_ms,
+                    latency=latency,
+                    timeout_ms=timeout_ms,
+                )
                 self._log_state(source="EVT CONN_PARAMS")
             except ValueError:
                 pass
@@ -956,12 +1055,19 @@ class BleDongleLink:
                         k, v = tok.split("=", 1)
                         kv[k] = v
                 if kv:
-                    # Keep presence; numeric mapping can be added later if needed.
                     self.state.phy = Phy(tx=0, rx=0)
 
-        after = (self.state.advertising, self.state.connected, self.state.ready, self.state.sec, self.state.error)
+        after = (
+            self.state.advertising,
+            self.state.connected,
+            self.state.ready,
+            self.state.sec,
+            self.state.error,
+            self.state.proto_report,
+        )
         if after != before:
             self._log_state(source=f"EVT {src}")
+
 
     def _handle_status(self, line: str) -> None:
         # STATUS adv=0 conn=1 sec=2 ready=1 proto=1 err=0 kb_notify=1 boot_notify=0 cc_notify=1 ...
