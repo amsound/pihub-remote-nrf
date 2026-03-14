@@ -32,6 +32,11 @@ class SequenceDefinition:
     name: str
     steps: tuple[SequenceStep, ...]
 
+class FlowWaitTimeout(RuntimeError):
+    def __init__(self, *, kind: str, timeout_s: float) -> None:
+        self.kind = kind
+        self.timeout_s = timeout_s
+        super().__init__(f"{kind}_timeout")
 
 class SequenceRunner:
     def __init__(
@@ -57,44 +62,36 @@ class SequenceRunner:
                 steps=(
                     SequenceStep("set_mode", "mode", "set", {"name": "listen"}),
 
-                    # If tv was on
                     SequenceStep(
                         "ble_return_home",
                         "ble",
                         "return_home",
-                        when="tv_was_on",
+                        when="tv_was_on", # If tv was on
                         mode="dispatch",
                     ),
                     SequenceStep(
                         "wait_1",
                         "system",
                         "sleep",
-                        {"seconds": 2.5},
-                        when="tv_was_on",
+                        {"seconds": 2.0},
+                        when="tv_was_on", # If tv was on
                     ),
                     SequenceStep(
                         "tv_power_off",
                         "tv",
                         "power_off",
-                        when="tv_was_on",
+                        when="tv_was_on", # If tv was on
                         mode="dispatch",
                     ),
                     SequenceStep(
                         "wait_2",
                         "system",
                         "sleep",
-                        {"seconds": 1.0},
+                        {"seconds": 1.0}, # If tv was on
                         when="tv_was_on",
                     ),
 
                     # If tv not on
-                    SequenceStep(
-                        "speaker_preset",
-                        "speaker",
-                        "preset",
-                        {"preset": LISTEN_PRESET},
-                        mode="dispatch",
-                    ),
                     SequenceStep(
                         "speaker_volume",
                         "speaker",
@@ -102,14 +99,20 @@ class SequenceRunner:
                         {"volume": LISTEN_VOLUME_PCT},
                         mode="dispatch",
                     ),
+                    SequenceStep(
+                        "speaker_preset",
+                        "speaker",
+                        "preset",
+                        {"preset": LISTEN_PRESET},
+                        mode="dispatch",
+                    ),
 
-                    # Only if tv was on
                     SequenceStep(
                         "wait_tv_off",
                         "wait",
                         "tv_off",
                         {"timeout_s": 20.0},
-                        when="tv_was_on",
+                        when="tv_was_on", # If tv was on
                     ),
                 ),
             ),
@@ -141,9 +144,23 @@ class SequenceRunner:
                     ),
                     SequenceStep(
                         "wait_2",
-                        "wait",
-                        "tv_on",
-                        {"timeout_s": 2.0},
+                        "system",
+                        "sleep",
+                        {"seconds": 1.0},
+                        when="tv_was_off",
+                    ),
+                    SequenceStep(
+                        "speaker_volume",
+                        "speaker",
+                        "set_volume",
+                        {"volume": WATCH_VOLUME_PCT},
+                        mode="dispatch",
+                    ),
+                    SequenceStep(
+                        "wait_3",
+                        "system",
+                        "sleep",
+                        {"seconds": 0.5},
                         when="tv_was_off",
                     ),
                     SequenceStep(
@@ -153,12 +170,13 @@ class SequenceRunner:
                         {"source": SPEAKER_WATCH_SOURCE},
                         mode="dispatch",
                     ),
+
                     SequenceStep(
-                        "speaker_volume",
-                        "speaker",
-                        "set_volume",
-                        {"volume": WATCH_VOLUME_PCT},
-                        mode="dispatch",
+                        "wait_tv_on",
+                        "wait",
+                        "tv_on",
+                        {"timeout_s": 20.0},
+                        when="tv_was_off",
                     ),
                 ),
             ),
@@ -168,7 +186,6 @@ class SequenceRunner:
                 steps=(
                     SequenceStep("set_mode", "mode", "set", {"name": "listen"}),
 
-                    # If tv was on
                     SequenceStep(
                         "ble_return_home",
                         "ble",
@@ -180,7 +197,7 @@ class SequenceRunner:
                         "wait_1",
                         "system",
                         "sleep",
-                        {"seconds": 2.5},
+                        {"seconds": 2.0},
                         when="tv_was_on",
                     ),
                     SequenceStep(
@@ -190,6 +207,13 @@ class SequenceRunner:
                         when="tv_was_on",
                         mode="dispatch",
                     ),
+                    SequenceStep(
+                        "wait_tv_off",
+                        "wait",
+                        "tv_off",
+                        {"timeout_s": 20.0},
+                        when="tv_was_on",
+                    ),
                 ),
             ),
 
@@ -197,13 +221,18 @@ class SequenceRunner:
                 name="watch_signal",
                 steps=(
                     SequenceStep("set_mode", "mode", "set", {"name": "watch"}),
-
                     SequenceStep(
-                        "wait_1",
+                        "speaker_volume",
+                        "speaker",
+                        "set_volume",
+                        {"volume": WATCH_VOLUME_PCT},
+                        mode="dispatch",
+                    ),
+                    SequenceStep(
+                        "wait",
                         "wait",
                         "tv_on",
-                        {"timeout_s": 4.0},
-                        when="tv_was_off",
+                        {"timeout_s": 0.5},
                     ),
                     SequenceStep(
                         "speaker_set_hdmi",
@@ -213,18 +242,10 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "wait_2",
+                        "wait_tv_on",
                         "wait",
                         "tv_on",
-                        {"timeout_s": 0.5},
-                        when="tv_was_off",
-                    ),
-                    SequenceStep(
-                        "speaker_volume",
-                        "speaker",
-                        "set_volume",
-                        {"volume": WATCH_VOLUME_PCT},
-                        mode="dispatch",
+                        {"timeout_s": 20.0},
                     ),
                 ),
             ),
@@ -246,7 +267,7 @@ class SequenceRunner:
                         "wait_1",
                         "system",
                         "sleep",
-                        {"seconds": 2.0},
+                        {"seconds": 2.5},
                         when="tv_was_on",
                     ),
                     SequenceStep(
@@ -507,31 +528,36 @@ class SequenceRunner:
         except Exception:
             return ""
 
-    async def _wait_for_tv_on(self, *, timeout_s: float) -> bool:
+    async def _wait_for_tv_on(self, *, timeout_s: float) -> None:
         if self._tv is None:
-            return False
+            raise FlowWaitTimeout(kind="tv_on", timeout_s=timeout_s)
+
         deadline = asyncio.get_running_loop().time() + timeout_s
         while asyncio.get_running_loop().time() < deadline:
             try:
                 if self._tv.snapshot().presence_on is True:
-                    return True
+                    return
             except Exception:
                 pass
             await asyncio.sleep(0.2)
-        return False
 
-    async def _wait_for_tv_off(self, *, timeout_s: float) -> bool:
+        raise FlowWaitTimeout(kind="tv_on", timeout_s=timeout_s)
+
+    async def _wait_for_tv_off(self, *, timeout_s: float) -> None:
         if self._tv is None:
-            return False
+            raise FlowWaitTimeout(kind="tv_off", timeout_s=timeout_s)
+
         deadline = asyncio.get_running_loop().time() + timeout_s
         while asyncio.get_running_loop().time() < deadline:
             try:
                 if self._tv.snapshot().presence_on is False:
-                    return True
+                    return
             except Exception:
                 pass
             await asyncio.sleep(0.2)
-        return False
+
+        raise FlowWaitTimeout(kind="tv_off", timeout_s=timeout_s)
+
 
 
 class FlowRunner:

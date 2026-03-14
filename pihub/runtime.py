@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
-from .flows import FlowRunner
+from .flows import FlowRunner, FlowWaitTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +224,24 @@ class RuntimeEngine:
                     "source": source,
                 }
 
+            except FlowWaitTimeout as exc:
+                logger.warning(
+                    "sequence wait timeout name=%s trigger=%s source=%s error=%s",
+                    name,
+                    trigger,
+                    source,
+                    str(exc),
+                )
+                return {
+                    "ok": False,
+                    "domain": "flow",
+                    "action": "run",
+                    "name": name,
+                    "trigger": trigger,
+                    "source": source,
+                    "error": str(exc),
+                }
+
             except Exception as exc:
                 logger.exception("sequence failed name=%s trigger=%s source=%s", name, trigger, source)
                 return {
@@ -235,6 +253,7 @@ class RuntimeEngine:
                     "source": source,
                     "error": str(exc),
                 }
+
             finally:
                 self._active_sequence_task = None
                 self._flow_running = False
