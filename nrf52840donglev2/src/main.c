@@ -523,11 +523,17 @@ static bool cmd_handle_bin_kb(void)
     uint8_t report8[8];
 
     if (!cmd_uart_read_exact(report8, sizeof(report8), CMD_BIN_READ_TIMEOUT_MS)) {
+        cmd_evt_err(true);
         cmd_uart_send_line("EVT BINERR kb timeout");
         return false;
     }
 
     int rc = send_keyboard_report(report8);
+
+    /* Parser/transport recovered enough to parse a full frame again. */
+    if (error_state) {
+        cmd_evt_err(false);
+    }
 
     /* Hot path is fire-and-forget: no per-frame ASCII ACKs. */
     if (rc != 0 && rc != -EBUSY && rc != -EAGAIN && rc != -ENOMEM) {
@@ -540,16 +546,23 @@ static bool cmd_handle_bin_kb(void)
 }
 
 
+
 static bool cmd_handle_bin_cc(void)
 {
     uint8_t report2[2];
 
     if (!cmd_uart_read_exact(report2, sizeof(report2), CMD_BIN_READ_TIMEOUT_MS)) {
+        cmd_evt_err(true);
         cmd_uart_send_line("EVT BINERR cc timeout");
         return false;
     }
 
     int rc = send_consumer_report(report2);
+
+    /* Parser/transport recovered enough to parse a full frame again. */
+    if (error_state) {
+        cmd_evt_err(false);
+    }
 
     /* Hot path is fire-and-forget: no per-frame ASCII ACKs. */
     if (rc != 0 && rc != -EBUSY && rc != -EAGAIN && rc != -ENOMEM) {
@@ -560,6 +573,7 @@ static bool cmd_handle_bin_cc(void)
 
     return true;
 }
+
 
 
 /* Command RX thread */
@@ -839,11 +853,29 @@ static ssize_t write_protocol_mode(struct bt_conn *conn, const struct bt_gatt_at
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
 
-    protocol_mode = ((const uint8_t *)buf)[0] ? 1 : 0;
-    LOG_INF("Protocol Mode set: 0x%02x (%s)", protocol_mode,
-            protocol_mode ? "Report" : "Boot");
+    uint8_t new_mode = ((const uint8_t *)buf)[0] ? 1 : 0;
+
+    if (new_mode != protocol_mode) {
+        protocol_mode = new_mode;
+
+        LOG_INF("Protocol Mode set: 0x%02x (%s)",
+                protocol_mode,
+                protocol_mode ? "Report" : "Boot");
+
+        cmd_evt_proto(protocol_mode);
+
+        /* Keyboard path changes with protocol mode, so READY may change too. */
+        update_link_ready("proto_mode");
+    } else {
+        protocol_mode = new_mode;
+        LOG_INF("Protocol Mode unchanged: 0x%02x (%s)",
+                protocol_mode,
+                protocol_mode ? "Report" : "Boot");
+    }
+
     return len;
 }
+
 
 static void kb_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
@@ -1221,21 +1253,30 @@ static void hid_release_all_best_effort(void)
         return;
     }
 
-    /* Best-effort “all keys up” on both Keyboard + Consumer.
-     * Ignore errors: link may be busy, not ready, or notifications disabled.
-     */
     uint8_t zeros8[8] = { 0 };
     uint8_t zeros2[2] = { 0 };
 
-    (void)send_keyboard_report(zeros8);
-    (void)send_consumer_report(zeros2);
+    int kb_rc1 = send_keyboard_report(zeros8);
+    int cc_rc1 = send_consumer_report(zeros2);
 
-    /* Optional tiny gap to let the notify path drain */
+    /* Tiny gap to let notify path drain. */
     k_msleep(10);
 
-    (void)send_keyboard_report(zeros8);
-    (void)send_consumer_report(zeros2);
+    int kb_rc2 = send_keyboard_report(zeros8);
+    int cc_rc2 = send_consumer_report(zeros2);
+
+    /* Best-effort only: just log if both attempts failed for a path. */
+    if (kb_rc1 != 0 && kb_rc2 != 0) {
+        LOG_WRN("release-all keyboard failed twice (proto=%u rc1=%d rc2=%d)",
+                (unsigned)protocol_mode, kb_rc1, kb_rc2);
+    }
+
+    if (cc_rc1 != 0 && cc_rc2 != 0) {
+        LOG_WRN("release-all consumer failed twice (rc1=%d rc2=%d)",
+                cc_rc1, cc_rc2);
+    }
 }
+
 
 static void cmd_handle_line(char *line)
 {
@@ -1451,6 +1492,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
     notify_boot_enabled = false;
     current_sec_level = BT_SECURITY_L1;
     hid_suspended = false;
+    cmd_evt_err(false);
     update_link_ready("connected");
 
     k_timer_stop(&blink_timer);
@@ -1495,6 +1537,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     notify_boot_enabled = false;
     current_sec_level = 0;
     hid_suspended = false;
+    cmd_evt_err(false);
     update_link_ready("disconnected");
 
     set_leds_adv();
@@ -1532,6 +1575,7 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
     }
 
     current_sec_level = level;
+    cmd_evt_err(false);
     update_link_ready("security");
     LOG_INF("Security changed: level %u", level);
 
