@@ -31,7 +31,7 @@ class Config:
     def load() -> "Config":
         """Build a Config from environment (compose env)."""
         # HID dongle
-        ble_serial_device = os.getenv("BLE_SERIAL_DEVICE", "/dev/ttyACM0")
+        ble_serial_device = (os.getenv("BLE_SERIAL_DEVICE", "auto") or "auto").strip()
         ble_serial_baud = int(os.getenv("BLE_SERIAL_BAUD", "115200"))
 
         health_host = os.getenv("HEALTH_HOST", "0.0.0.0")

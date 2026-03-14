@@ -143,7 +143,7 @@ class BleDongleLink:
         self._hid_cc: Dict[str, int] = {}
         self._load_hid_keymap()
 
-        logger.info("initialised port=%s baud=%s", self._serial_port_cfg, self._baud)
+        logger.info("initialised serial_port_cfg=%s baud=%s", self._serial_port_cfg, self._baud)
 
     # ---------- lifecycle ----------
 
@@ -811,20 +811,43 @@ class BleDongleLink:
         return ok
 
     def _find_port(self) -> Optional[str]:
-        cfg = self._serial_port_cfg
-        if cfg and cfg != "auto":
+        cfg = (self._serial_port_cfg or "auto").strip()
+
+        # Explicit path or glob-like pattern wins.
+        if cfg and cfg.lower() != "auto":
+            if any(ch in cfg for ch in "*?[]"):
+                import glob
+                matches = sorted(glob.glob(cfg))
+                for p in matches:
+                    if os.path.exists(p):
+                        return p
+                return None
             return cfg if os.path.exists(cfg) else None
 
-        # Prefer stable by-id if present
+        # Prefer stable by-id names first.
         byid = "/dev/serial/by-id"
         if os.path.isdir(byid):
             try:
+                preferred: list[str] = []
+                fallback: list[str] = []
+
                 for name in sorted(os.listdir(byid)):
                     p = os.path.join(byid, name)
-                    if os.path.islink(p) or os.path.exists(p):
-                        # Heuristic: ZEPHYR_USB-DEV / PiHub / nrf
-                        if "ZEPHYR" in name or "USB-DEV" in name or "PiHub" in name:
-                            return p
+                    if not (os.path.islink(p) or os.path.exists(p)):
+                        continue
+
+                    upper = name.upper()
+                    if "ZEPHYR" in upper and "USB-DEV" in upper:
+                        preferred.append(p)
+                    elif "ZEPHYR" in upper or "USB-DEV" in upper or "NORDIC" in upper or "NRF" in upper:
+                        fallback.append(p)
+                    else:
+                        fallback.append(p)
+
+                if preferred:
+                    return preferred[0]
+                if fallback:
+                    return fallback[0]
             except Exception:
                 pass
 
@@ -834,9 +857,6 @@ class BleDongleLink:
             if os.path.exists(p):
                 return p
 
-        envp = os.getenv("BLE_SERIAL_DEVICE") or os.getenv("PIHUB_SERIAL_PORT")
-        if envp and os.path.exists(envp):
-            return envp
         return None
 
     async def _handshake_once(self, *, timeout_s: float = 1.2) -> bool:

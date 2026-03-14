@@ -101,7 +101,7 @@ docker push a1exm/pihub-nrf:latest
 
 | Variable | Description | Default / Notes |
 | --- | --- | --- |
-| `BLE_SERIAL_DEVICE` | CDC ACM device for the BLE dongle | `/dev/ttyACM0` |
+| `BLE_SERIAL_DEVICE` | CDC ACM device for the BLE dongle | `auto` (prefers `/dev/serial/by-id`, then falls back to `/dev/ttyACM*`) |
 | `BLE_SERIAL_BAUD` | BLE serial baud rate | `115200` |
 | `HEALTH_HOST` | Bind address for the HTTP endpoint | `0.0.0.0` |
 | `HEALTH_PORT` | Port for health and local commands | `9123` |
