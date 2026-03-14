@@ -287,43 +287,6 @@ class RuntimeEngine:
             args=payload,
         )
 
-    def _route_device_state_change(self, snapshot: dict[str, Any]) -> dict[str, Any]:
-        tv_on = snapshot.get("tv_on") is True
-        speaker_playback = str(snapshot.get("speaker_playback") or "").strip().lower()
-        speaker_source = str(snapshot.get("speaker_source") or "").strip().lower()
-        listen_signal = speaker_playback in {"play", "load"} and speaker_source in {"airplay", "wifi", "multiroom-secondary"}
-        watch_signal = tv_on
-
-        if not watch_signal and not listen_signal:
-            return {"reason": "no_signal"}
-
-        if watch_signal and not listen_signal:
-            candidate = "watch"
-        elif listen_signal and not watch_signal:
-            candidate = "listen"
-        else:
-            if self._last_flow in {"watch", "listen"}:
-                candidate = self._last_flow
-            elif self._mode in {"watch", "listen"}:
-                candidate = self._mode
-            else:
-                return {"reason": "ambiguous"}
-
-        if self._mode == candidate and self._last_flow == candidate:
-            return {"reason": "already_aligned"}
-
-        if candidate == "listen":
-            return {
-                "name": "listen",
-                "args": {"override": True},
-                "reason": "listen_signal",
-            }
-        return {
-            "name": candidate,
-            "args": {},
-            "reason": "watch_signal",
-        }
-
     async def on_cmd(self, payload: dict[str, Any]) -> dict[str, Any]:
         domain = str(payload.get("domain") or "").strip().lower()
         action = str(payload.get("action") or "").strip().lower()

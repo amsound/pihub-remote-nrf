@@ -21,7 +21,7 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 * **TV control** via Samsung WebSocket + SSDP discovery
 * **Speaker control** via LinkPlay TCP + HTTP
 * **Flows**: local named flows such as `watch`, `listen`, `power_off`
-* **Overrides**: passive state-driven mode correction (currently **mode-only**, no flow execution)
+* **Device-state signals**: passive state-driven routing from TV/speaker changes into local runtime behavior
 * **Precise edges**: explicit **down/up**; filters kernel auto-repeat
 * **Long-press** via `min_hold_ms`
 * **No queueing**: drops actions when offline/unavailable; reconnects locally as needed
@@ -56,7 +56,6 @@ services:
       TV_IP: "192.168.90.43"
       TV_MAC: "28:07:08:97:42:c8"
       SPEAKER_IP: "192.168.70.43"
-      # OVERRIDE_APPLY_MODE: off   # optional: still detect/log overrides, but do not change mode
       # DEBUG: 1                   # optional for debug chatter
     volumes:
       - /dev/input:/dev/input:ro
@@ -112,7 +111,6 @@ docker push a1exm/pihub-nrf:latest
 | `TV_NAME` | Name presented to the Samsung TV | `PiHub Remote` |
 | `SPEAKER_IP` | LinkPlay/WiiM speaker IP address | optional |
 | `SPEAKER_HTTP_SCHEME` | Speaker HTTP scheme | `https` |
-| `OVERRIDE_APPLY_MODE` | Disable override mode changes while keeping detection/logging active | set to `off`, `0`, `false`, or `no` to suppress mode changes |
 | `DEBUG` | Debug knob | defaults to INFO/WARN |
 
 Keymap is bundled with the application and loaded from packaged assets in production; it is not configurable at runtime.
@@ -121,7 +119,8 @@ Keymap is bundled with the application and loaded from packaged assets in produc
 
 * **mode** = current active keymap / button behavior set
 * **flow** = named blocking orchestration, e.g. `watch`, `listen`, `power_off`
-* **override** = external state-driven mode correction
+* **device-state signal** = a live edge emitted by a domain (for example TV on, or speaker entering a listen-capable source/playback state)
+* **device-state flow** = a flow triggered from a device-state signal rather than an explicit remote intent
 * **last_trigger** = sticky record of the most recent runtime trigger source
 
 ---
@@ -187,7 +186,7 @@ Example response:
       "connected": true,
       "last_disc_reason": null,
       "conn_params": {
-        "interval_ms": 15.0,
+        "interval_ms": 15,
         "latency": 0,
         "timeout_ms": 3000
       }
@@ -346,7 +345,7 @@ Keymap concepts:
 
 ---
 
-## 🔀 Startup and override behavior
+## 🔀 Startup and device-state behavior
 
 ### Startup
 
@@ -376,28 +375,34 @@ Later passive updates may overwrite the source with:
 * `presence_source: "ssdp_alive"`
 * `presence_source: "ssdp_byebye"`
 
-### Overrides
+### Device-state signals
 
-Overrides currently:
+PiHub also reacts to live device-state signals emitted by domains.
 
-* observe TV + speaker state
-* arbitrate desired mode
-* change **mode only**
-* do **not** run flows
+Current signal sources:
 
-Current claims:
+* TV logical off → on emits a `watch` device-state signal
+* speaker entering a listen-capable state emits a `listen` device-state signal
 
-* TV on → candidate `watch`
-* speaker playing on `airplay`, `wifi`, or `multiroom-secondary` → candidate `listen`
+Current listen-capable speaker sources:
 
-Conflict rule:
+* `airplay`
+* `wifi`
+* `multiroom-secondary`
 
-* equal-weight conflict uses most recent meaningful transition
-* if still ambiguous, stay put
+These signals are edge-triggered and intended to behave more like live state changes than periodic polling.
 
-Testing switch:
+Routing behavior:
 
-* `OVERRIDE_APPLY_MODE=off` keeps detection/logging active but suppresses mode changes
+* explicit remote intent flows remain authoritative and may always be run again
+* device-state signals are routed through runtime and may trigger dedicated device-state flows
+* device-state signals are suppressed while another sequence is already running
+* device-state idempotence is based on the last logical flow, to avoid flapping / “howling around”
+
+Logical activity normalization:
+
+* `listen` and `listen_signal` both normalize to logical last flow `listen`
+* `watch` and `watch_signal` both normalize to logical last flow `watch`
 
 ---
 
@@ -434,19 +439,17 @@ Current intent:
 * wait 3 seconds
 * if TV was on, power TV off
 
-These are the normal explicit flows. Overrides currently do **not** run them.
+These are the normal explicit intent flows. Separate device-state flows may also exist for signal-driven behavior such as `listen_signal` or `watch_signal`.
 
 ---
 
 ## 🧪 Troubleshooting
 
 * **No input events?** Look for `/dev/input/by-id/*event-kbd` (often `usb-Logitech_USB_Receiver-*event-kbd`). Ensure the relevant `/dev/input` paths are bind-mounted read-only into the container.
-* **TV already on at boot but mode stays `power_off`?** Check `/health` for `tv.details.presence_on` and `presence_source`. If TV later becomes known, override should promote mode to `watch`.
+* **TV already on at boot but mode stays `power_off`?** Check `/health` for `tv.details.presence_on` and `presence_source`. Startup remains conservative until an explicit flow or later device-state signal acts.
 * **TV discovery confusion?** `presence_source` shows the most recent TV discovery source, not the current mode source of truth.
-* **Override too risky while testing?** Set `OVERRIDE_APPLY_MODE=off`.
-* **Speaker connected but not influencing mode?** Current startup is always conservative; mode changes come from overrides or explicit flows.
-* **No flow action from override?** That is expected. Overrides are currently mode-only.
-* **Mode changed but `last_flow` is null?** That is expected when mode changed by startup reconcile or override rather than by an explicit flow.
+* **No device-state flow action?** Check whether the same logical flow already ran recently, or whether another sequence was already active and the signal was ignored as busy.
+* **Mode changed but `last_flow` is null?** That is expected when mode changed by startup reconcile or direct mode set rather than by a successfully completed flow.
 
 ---
 
@@ -459,4 +462,3 @@ These are the normal explicit flows. Overrides currently do **not** run them.
   * last flow
   * sticky last trigger
 * Dispatcher owns key bindings and hot-path action dispatch
-* Override engine is polling-based internally but behaves edge-driven from a policy point of view

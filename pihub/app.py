@@ -1,4 +1,4 @@
-"""Application entry point wiring BLE, Home Assistant and USB input."""
+"""Application entry point wiring Bluetooth HID Dongle, Unifying USB Dongle, Samung TV and Audio Pro Speaker."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ async def main() -> None:
     """Run the PiHub control loop until interrupted."""
     cfg = Config.load()
 
-    started = []
+    cleanup_hooks = []
 
     tv: TvController | None = None
     tv_discovery_tasks: list[asyncio.Task] = []
@@ -59,10 +59,10 @@ async def main() -> None:
         )
         await tv.start()
 
-        stop = asyncio.Event()
+        shutdown_event = asyncio.Event()
 
         def _monitor_tv_task(task: asyncio.Task) -> None:
-            if stop.is_set() or tv is None:
+            if shutdown_event.is_set() or tv is None:
                 return
 
             name = task.get_name()
@@ -99,10 +99,10 @@ async def main() -> None:
         async def _stop_tv_discovery() -> None:
             await stop_discovery_tasks(tv_discovery_tasks)
 
-        started.append(("tv_discovery", _stop_tv_discovery))
-        started.append(("tv", tv.stop))
+        cleanup_hooks.append(("tv_discovery", _stop_tv_discovery))
+        cleanup_hooks.append(("tv", tv.stop))
     else:
-        stop = asyncio.Event()
+        shutdown_event = asyncio.Event()
 
     speaker: AudioProSpeaker | None = None
     if cfg.speaker_ip:
@@ -112,9 +112,9 @@ async def main() -> None:
             volume_step_pct=cfg.speaker_volume_step_pct,
         )
         await speaker.start()
-        started.append(("speaker", speaker.stop))
+        cleanup_hooks.append(("speaker", speaker.stop))
 
-    bt = BleDongleLink(
+    ble = BleDongleLink(
         serial_port=cfg.ble_serial_device,
         baud=cfg.ble_serial_baud,
     )
@@ -122,7 +122,7 @@ async def main() -> None:
     runtime = RuntimeEngine(
         tv=tv,
         speaker=speaker,
-        ble=bt,
+        ble=ble,
         initial_mode="power_off",
     )
 
@@ -142,28 +142,28 @@ async def main() -> None:
     if speaker is not None:
         speaker._state_change_callback = _on_domain_state_change
 
-    DispatcherRef = Dispatcher(
+    dispatcher = Dispatcher(
         cfg=cfg,
-        bt_le=bt,
+        ble=ble,
         tv=tv,
         speaker=speaker,
         run_flow=runtime.run_flow,
     )
 
-    runtime.attach_dispatcher(DispatcherRef)
+    runtime.attach_dispatcher(dispatcher)
 
     await runtime.start()
 
     reader = UnifyingReader(
-        scancode_map=DispatcherRef.scancode_map,
-        on_edge=DispatcherRef.on_usb_edge,
-        on_disconnect=DispatcherRef.on_usb_disconnect,
+        scancode_map=dispatcher.scancode_map,
+        on_edge=dispatcher.on_usb_edge,
+        on_disconnect=dispatcher.on_usb_disconnect,
     )
 
     health = HealthServer(
         host=cfg.health_host,
         port=cfg.health_port,
-        bt=bt,
+        ble=ble,
         reader=reader,
         tv=tv,
         speaker=speaker,
@@ -171,25 +171,25 @@ async def main() -> None:
     )
 
     try:
-        await bt.start()
-        started.append(("bt", bt.stop))
+        await ble.start()
+        cleanup_hooks.append(("ble", ble.stop))
 
         await reader.start()
-        started.append(("reader", reader.stop))
+        cleanup_hooks.append(("reader", reader.stop))
 
         await health.start()
-        started.append(("health", health.stop))
+        cleanup_hooks.append(("health", health.stop))
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(Exception):
-                asyncio.get_running_loop().add_signal_handler(sig, stop.set)
+                asyncio.get_running_loop().add_signal_handler(sig, shutdown_event.set)
 
-        await stop.wait()
+        await shutdown_event.wait()
 
     finally:
-        stop.set()
+        shutdown_event.set()
 
-        for _name, stopper in reversed(started):
+        for _name, stopper in reversed(cleanup_hooks):
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await stopper()
 

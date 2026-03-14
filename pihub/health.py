@@ -26,7 +26,7 @@ class HealthServer:
         *,
         host: str,
         port: int,
-        bt: BleDongleLink,
+        ble: BleDongleLink,
         reader: UnifyingReader,
         tv: Optional[TvController] = None,
         speaker: Optional[AudioProSpeaker] = None,
@@ -34,7 +34,7 @@ class HealthServer:
     ) -> None:
         self._host = host
         self._port = port
-        self._bt = bt
+        self._ble = ble
         self._reader = reader
         self._tv = tv
         self._speaker = speaker
@@ -182,7 +182,7 @@ class HealthServer:
         }
         degraded_reasons.extend(usb_reasons)
 
-        ble_raw = self._bt.status
+        ble_raw = self._ble.status
         conn_params = ble_raw.get("conn_params") or {}
 
         ble_present = bool(ble_raw.get("adapter_present"))

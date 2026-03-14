@@ -64,13 +64,13 @@ class Dispatcher:
     def __init__(
         self,
         cfg: Any,
-        bt_le: Any,
+        ble: Any,
         tv: Any = None,
         speaker: Any = None,
         run_flow: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self._cfg = cfg
-        self._bt = bt_le
+        self._ble = ble
         self._tv = tv
         self._speaker = speaker
         self._run_flow = run_flow
@@ -168,7 +168,7 @@ class Dispatcher:
             if not isinstance(mapping, dict):
                 continue
             try:
-                frames = self._bt.compile_ble_frames(mapping)
+                frames = self._ble.compile_ble_frames(mapping)
             except Exception:
                 logger.debug("ble compile failed for mode=%s", mode, exc_info=True)
                 continue
@@ -243,7 +243,7 @@ class Dispatcher:
         await self._cancel_all_hold_tasks()
         self._pressed_at.clear()
         with suppress(Exception):
-            self._bt.release_all()
+            self._ble.release_all()
 
     # ---- Repeat helpers (forced by physical key: rem_vol_up/rem_vol_down) ----
     async def _start_repeat(self, rem_key: str) -> None:
@@ -378,16 +378,16 @@ class Dispatcher:
         frames = self._active_ble_frames
         if frames is not None:
             if edge == "down":
-                self._bt.compiled_key_down(frames, usage=usage, code=code)
+                self._ble.compiled_key_down(frames, usage=usage, code=code)
             elif edge == "up":
-                self._bt.compiled_key_up(frames, usage=usage, code=code)
+                self._ble.compiled_key_up(frames, usage=usage, code=code)
             return
 
         # Fallback: encode on-demand (should be rare once compiled)
         if edge == "down":
-            self._bt.key_down(usage=usage, code=code)
+            self._ble.key_down(usage=usage, code=code)
         elif edge == "up":
-            self._bt.key_up(usage=usage, code=code)
+            self._ble.key_up(usage=usage, code=code)
 
     async def _handle_speaker_action(
         self,
