@@ -367,16 +367,26 @@ static void cmd_evt_phy(uint8_t tx_phy, uint8_t rx_phy)
     cmd_uart_send_line(b);
 }
 
+static bool compute_link_ready(void)
+{
+    bool kb_path_ready = notify_kb_enabled || notify_boot_enabled;
+    bool cc_path_ready = notify_cc_enabled;
+
+    return (current_conn != NULL) &&
+           (current_sec_level >= BT_SECURITY_L2) &&
+           !hid_suspended &&
+           kb_path_ready &&
+           cc_path_ready;
+}
+
+
 static void cmd_emit_status_snapshot(void)
 {
     /* Recompute readiness on demand so a PiHub restart can resync state even
      * if READY transitioned earlier (or if notifications were enabled after
      * connect/security).
      */
-    bool now_ready = (current_conn != NULL) &&
-                     (current_sec_level >= BT_SECURITY_L2) &&
-                     !hid_suspended &&
-                     (notify_kb_enabled || notify_boot_enabled);
+    bool now_ready = compute_link_ready();
 
     /* Keep the cached flag in sync for future change detection. */
     link_ready = now_ready;
@@ -435,10 +445,7 @@ static void cmd_emit_status_line(void)
 
 static void update_link_ready(const char *why)
 {
-    bool now = (current_conn != NULL) &&
-               (current_sec_level >= BT_SECURITY_L2) &&
-               (!hid_suspended) &&
-               (notify_kb_enabled || notify_boot_enabled);
+    bool now = compute_link_ready();
 
     if (now != link_ready) {
         link_ready = now;
@@ -446,6 +453,7 @@ static void update_link_ready(const char *why)
         LOG_INF("READY %d (%s)", now ? 1 : 0, why ? why : "");
     }
 }
+
 
 
 static const char *phy_to_str(uint8_t phy)
@@ -490,21 +498,34 @@ static void cmd_handle_line(char *line);
 #define PIHUB_BIN_KB 0x01
 #define PIHUB_BIN_CC 0x02
 
-static bool cmd_uart_read_exact(uint8_t *dst, size_t n, int sleep_ms)
+#define CMD_BIN_READ_TIMEOUT_MS 30
+#define CMD_ASCII_MAX_LEN       95
+
+static bool cmd_uart_read_exact(uint8_t *dst, size_t n, uint32_t timeout_ms)
 {
-    /* Non-blocking UART backend: poll until we get n bytes. */
+    int64_t deadline = k_uptime_get() + (int64_t)timeout_ms;
+
     for (size_t i = 0; i < n; i++) {
         while (uart_poll_in(cmd_uart, &dst[i]) != 0) {
-            k_msleep(sleep_ms);
+            if (k_uptime_get() >= deadline) {
+                return false;
+            }
+            k_msleep(1);
         }
     }
+
     return true;
 }
 
-static void cmd_handle_bin_kb(void)
+
+static bool cmd_handle_bin_kb(void)
 {
     uint8_t report8[8];
-    (void)cmd_uart_read_exact(report8, sizeof(report8), 1);
+
+    if (!cmd_uart_read_exact(report8, sizeof(report8), CMD_BIN_READ_TIMEOUT_MS)) {
+        cmd_uart_send_line("EVT BINERR kb timeout");
+        return false;
+    }
 
     int rc = send_keyboard_report(report8);
 
@@ -514,12 +535,19 @@ static void cmd_handle_bin_kb(void)
         snprintk(b, sizeof(b), "EVT BINERR kb %d", rc);
         cmd_uart_send_line(b);
     }
+
+    return true;
 }
 
-static void cmd_handle_bin_cc(void)
+
+static bool cmd_handle_bin_cc(void)
 {
     uint8_t report2[2];
-    (void)cmd_uart_read_exact(report2, sizeof(report2), 1);
+
+    if (!cmd_uart_read_exact(report2, sizeof(report2), CMD_BIN_READ_TIMEOUT_MS)) {
+        cmd_uart_send_line("EVT BINERR cc timeout");
+        return false;
+    }
 
     int rc = send_consumer_report(report2);
 
@@ -529,7 +557,10 @@ static void cmd_handle_bin_cc(void)
         snprintk(b, sizeof(b), "EVT BINERR cc %d", rc);
         cmd_uart_send_line(b);
     }
+
+    return true;
 }
+
 
 /* Command RX thread */
 #define CMD_RX_STACK 1536
@@ -537,9 +568,29 @@ static void cmd_handle_bin_cc(void)
 K_THREAD_STACK_DEFINE(cmd_rx_stack, CMD_RX_STACK);
 static struct k_thread cmd_rx_thread;
 
+static void cmd_rx_resync_to_newline(void)
+{
+    int64_t deadline = k_uptime_get() + 50; /* short flush window */
+    uint8_t ch;
+
+    while (k_uptime_get() < deadline) {
+        if (uart_poll_in(cmd_uart, &ch) != 0) {
+            k_msleep(1);
+            continue;
+        }
+
+        if (ch == '\n') {
+            break;
+        }
+    }
+}
+
+
 static void cmd_rx_thread_fn(void *a, void *b, void *c)
 {
-    ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+    ARG_UNUSED(a);
+    ARG_UNUSED(b);
+    ARG_UNUSED(c);
 
     if (cmd_uart == NULL) {
         return;
@@ -578,11 +629,20 @@ static void cmd_rx_thread_fn(void *a, void *b, void *c)
 
         /* BIN hot-path: a single byte opcode + fixed payload. */
         if (ch == PIHUB_BIN_KB) {
-            cmd_handle_bin_kb();
+            bool ok = cmd_handle_bin_kb();
+            if (!ok) {
+                n = 0;
+                cmd_rx_resync_to_newline();
+            }
             continue;
         }
+
         if (ch == PIHUB_BIN_CC) {
-            cmd_handle_bin_cc();
+            bool ok = cmd_handle_bin_cc();
+            if (!ok) {
+                n = 0;
+                cmd_rx_resync_to_newline();
+            }
             continue;
         }
 
@@ -590,6 +650,7 @@ static void cmd_rx_thread_fn(void *a, void *b, void *c)
         if (ch == '\r') {
             continue;
         }
+
         if (ch == '\n') {
             line[n] = '\0';
             if (n > 0) {
@@ -602,11 +663,14 @@ static void cmd_rx_thread_fn(void *a, void *b, void *c)
         if (n < (sizeof(line) - 1)) {
             line[n++] = (char)ch;
         } else {
-            /* Overflow: drop line. */
+            /* Overflow: report and drop until next newline. */
+            cmd_uart_send_line("ERR -E2BIG");
             n = 0;
+            cmd_rx_resync_to_newline();
         }
     }
 }
+
 
 static void cmd_uart_init(void)
 {
