@@ -1,14 +1,4 @@
-"""
-Audio Pro/LinkPlay/WiiM speaker controller (TCP API only).
-
-Policy:
-- State refresh primitive: always MCU+PINFGET (no MEA / no SONGGET)
-- Connected gating: connected=True only after first successful PINFGET parse
-- Mute safety: always MUT+GET before changing mute
-- Polling: only on Wi-Fi-ish sources; 10s play/load / 30s pause / 60s idle; physical inputs 60s liveness
-- After commands/hints: always PINFGET converge pull
-- Health details should be minimal (this file provides snapshot() accordingly)
-"""
+"""Audio Pro/LinkPlay/WiiM speaker controller (TCP API only)."""
 
 from __future__ import annotations
 
@@ -672,8 +662,7 @@ class AudioProSpeaker:
 
     async def set_source(self, source: str) -> None:
         """
-        Best-effort: many firmwares accept MCU+PLM+<mode> to switch input.
-        Your device sources: wifi, hdmi, optical, line-in, bluetooth.
+        Device sources: wifi, hdmi, optical, line-in, bluetooth.
         """
         src = (source or "").strip().lower()
         want_mode: str | None = None

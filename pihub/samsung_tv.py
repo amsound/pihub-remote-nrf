@@ -1,3 +1,5 @@
+"""Handle Connection with Samsung TV."""
+
 from __future__ import annotations
 
 import asyncio
