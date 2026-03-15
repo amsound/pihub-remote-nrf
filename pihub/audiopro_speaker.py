@@ -237,6 +237,7 @@ class AudioProSpeaker:
 
     async def _runner(self) -> None:
         attempt = 0
+        read_task: asyncio.Task | None = None
 
         while self._enabled and not self._stop_evt.is_set():
             try:
@@ -255,12 +256,16 @@ class AudioProSpeaker:
                     name=f"linkplay_poll[{self._speaker_ip}]",
                 )
 
-                # Initial handshake pull; ready=True flips after first valid PINFGET parse
+                read_task = asyncio.create_task(
+                    self._read_loop(),
+                    name=f"linkplay_read[{self._speaker_ip}]",
+                )
+
                 await self._pinfget()
                 await self._wait_ready()
 
                 attempt = 0
-                await self._read_loop()
+                await read_task
 
             except asyncio.CancelledError:
                 break
@@ -268,11 +273,18 @@ class AudioProSpeaker:
                 logger.warning("TCP loop error speaker_ip=%s err=%r", self._speaker_ip, e)
                 self._mark_down(str(e))
             finally:
+                if read_task:
+                    read_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await read_task
+                read_task = None
+
                 if self._poll_task:
                     self._poll_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await self._poll_task
                 self._poll_task = None
+
                 await self._disconnect()
 
             if self._enabled and not self._stop_evt.is_set():
@@ -300,20 +312,22 @@ class AudioProSpeaker:
         logger.info("audio pro tcp connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
 
     async def _disconnect(self) -> None:
-        # Reset flags; keep last_error as-is for inspection
         self._state.reachable = False
         self._state.connected = False
         self._state.ready = False
         self._state.last_update_ts = _now()
         self._wake_poll_loop()
 
-        if self._writer:
+        writer = self._writer
+        self._reader, self._writer = None, None
+
+        if writer:
             try:
-                self._writer.close()
-                await self._writer.wait_closed()
+                writer.close()
+                with contextlib.suppress(Exception, asyncio.TimeoutError):
+                    await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
             except Exception:
                 pass
-        self._reader, self._writer = None, None
 
     def _mark_down(self, err: str | None) -> None:
         self._state.reachable = False
