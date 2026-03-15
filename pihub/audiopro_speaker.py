@@ -273,6 +273,7 @@ class AudioProSpeaker:
                 logger.warning("TCP loop error speaker_ip=%s err=%r", self._speaker_ip, e)
                 self._mark_down(str(e))
             finally:
+                logger.info("speaker runner cleanup starting speaker_ip=%s", self._speaker_ip)
                 if read_task:
                     if not read_task.done():
                         read_task.cancel()
@@ -301,6 +302,7 @@ class AudioProSpeaker:
                     self._speaker_ip,
                     self._reconnect_s,
                 )
+                logger.info("speaker reconnect sleep starting speaker_ip=%s reconnect_s=%.1f", self._speaker_ip, self._reconnect_s)
                 await asyncio.sleep(self._reconnect_s)
 
     async def _connect(self) -> None:
