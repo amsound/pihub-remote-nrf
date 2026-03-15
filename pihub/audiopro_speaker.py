@@ -284,9 +284,13 @@ class AudioProSpeaker:
                 read_task = None
 
                 if self._poll_task:
-                    self._poll_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await self._poll_task
+                    if not self._poll_task.done():
+                        self._poll_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await self._poll_task
+                    else:
+                        with contextlib.suppress(Exception):
+                            self._poll_task.result()
                 self._poll_task = None
 
                 await self._disconnect()
@@ -626,7 +630,11 @@ class AudioProSpeaker:
                 await asyncio.wait_for(self._poll_wake_evt.wait(), timeout=float(interval))
                 continue
             except asyncio.TimeoutError:
-                await self._pinfget()
+                try:
+                    await self._pinfget()
+                except Exception as e:
+                    logger.debug("speaker poll loop exiting after pinfget failure speaker_ip=%s err=%r", self._speaker_ip, e)
+                    return
 
     def _listen_signal_active(self) -> bool:
         source = (self._state.source or "").strip().lower()
