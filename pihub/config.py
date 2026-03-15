@@ -5,6 +5,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 @dataclass(frozen=True)
 class Config:
@@ -22,14 +27,27 @@ class Config:
     tv_token_file: str
     tv_name: str
 
-    # LinkPlay/WiiM Speaker
+    # Audio Pro/Arylic/LinkPlay/WiiM Speaker
     speaker_ip: str
     speaker_http_scheme: str  # https (self-signed)
     speaker_volume_step_pct: int  # MUST be 2%
 
+    # Domain toggles
+    ble_enabled: bool
+    usb_enabled: bool
+    tv_enabled: bool
+    speaker_enabled: bool
+
+
     @staticmethod
     def load() -> "Config":
         """Build a Config from environment (compose env)."""
+        # Domain toggles
+        ble_enabled = _env_bool("BLE_ENABLED", True)
+        usb_enabled = _env_bool("USB_ENABLED", True)
+        tv_enabled = _env_bool("TV_ENABLED", True)
+        speaker_enabled = _env_bool("SPEAKER_ENABLED", True)
+
         # HID dongle
         ble_serial_device = (os.getenv("BLE_SERIAL_DEVICE", "auto") or "auto").strip()
         ble_serial_baud = int(os.getenv("BLE_SERIAL_BAUD", "115200"))
@@ -50,10 +68,14 @@ class Config:
         speaker_http_scheme = (os.getenv("SPEAKER_HTTP_SCHEME", "https") or "https").strip().lower()
         if speaker_http_scheme not in {"http", "https"}:
             speaker_http_scheme = "https"
-        
+
         speaker_volume_step_pct = 2
 
         return Config(
+            ble_enabled=ble_enabled,
+            usb_enabled=usb_enabled,
+            tv_enabled=tv_enabled,
+            speaker_enabled=speaker_enabled,
             ble_serial_device=ble_serial_device,
             ble_serial_baud=ble_serial_baud,
             health_host=health_host,

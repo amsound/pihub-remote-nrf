@@ -93,8 +93,8 @@ def _mk_packet(payload_text: str) -> bytes:
 @dataclass
 class SpeakerState:
     reachable: bool = False
-    subscribed: bool = False        # TCP socket is up
-    connected: bool = False         # becomes true only after first successful PINFGET parse
+    connected: bool = False             # TCP socket is up
+    ready: bool = False                 # becomes true only after first successful PINFGET parse
     last_error: str | None = None
 
     playback_status: str | None = None  # play/pause/stop/load/... (wifi-ish only; physical inputs => None)
@@ -180,7 +180,9 @@ class AudioProSpeaker:
         last_i = None if s.last_update_ts is None else int(s.last_update_ts)
         age_i = None if last_i is None else max(0, now_i - last_i)
         return {
+            "reachable": bool(s.reachable),
             "connected": bool(s.connected),
+            "ready": bool(s.ready),
             "playback_status": s.playback_status,
             "volume_pct": None if s.volume is None else int(round(s.volume * 100)),
             "muted": s.muted,
@@ -239,7 +241,7 @@ class AudioProSpeaker:
                 # Start polling loop alongside read loop
                 self._poll_task = asyncio.create_task(self._poll_loop(), name=f"linkplay_poll[{self._speaker_ip}]")
 
-                # Initial handshake pull (this is what flips connected=True after parse)
+                # Initial handshake pull (this is what flips ready=True after parse)
                 await self._pinfget()
 
                 await self._read_loop()
@@ -262,25 +264,25 @@ class AudioProSpeaker:
 
     async def _connect(self) -> None:
         self._state.last_error = None
-        self._state.subscribed = False
         self._state.reachable = False
         self._state.connected = False
+        self._state.ready = False
         self._log_drop_once = False
         self._poll_wake_evt.clear()
 
         reader, writer = await asyncio.open_connection(self._speaker_ip, self._tcp_port)
         self._reader, self._writer = reader, writer
         self._state.reachable = True
-        self._state.subscribed = True
+        self._state.connected = True
         self._state.last_update_ts = _now()
         self._wake_poll_loop()
         logger.info("audio pro tcp connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
 
     async def _disconnect(self) -> None:
         # Reset flags; keep last_error as-is for inspection
-        self._state.subscribed = False
         self._state.reachable = False
         self._state.connected = False
+        self._state.ready = False
         self._state.last_update_ts = _now()
         self._wake_poll_loop()
 
@@ -294,8 +296,8 @@ class AudioProSpeaker:
 
     def _mark_down(self, err: str | None) -> None:
         self._state.reachable = False
-        self._state.subscribed = False
         self._state.connected = False
+        self._state.ready = False
         self._state.last_error = err
         self._state.last_update_ts = _now()
         self._wake_poll_loop()
@@ -303,7 +305,7 @@ class AudioProSpeaker:
     # ---------- send / receive ----------
 
     async def _send(self, payload: str) -> None:
-        """Low-level send (does not apply the connected gate)."""
+        """Low-level send (does not apply the ready gate)."""
         if not self._writer:
             raise ConnectionError("not connected")
 
@@ -326,12 +328,12 @@ class AudioProSpeaker:
 
     async def _send_control(self, payload: str) -> bool:
         """
-        Control-plane sends. Drop until connected=True (handshake complete).
+        Control-plane sends. Drop until ready=True (handshake complete).
         Returns True if sent, False if dropped.
         """
-        if not self._state.connected:
+        if not self._state.ready:
             if not self._log_drop_once:
-                logger.info("speaker not connected yet; dropping command=%s", payload)
+                logger.info("speaker link not ready yet; dropping command=%s", payload)
                 self._log_drop_once = True
             return False
         try:
@@ -343,7 +345,7 @@ class AudioProSpeaker:
             return False
 
     async def _pinfget(self) -> None:
-        """Single truth pull (allowed even before connected gate)."""
+        """Single truth pull (allowed even before ready gate)."""
         if not self._writer:
             return
         with contextlib.suppress(Exception):
@@ -400,12 +402,12 @@ class AudioProSpeaker:
 
         old_source = self._state.source
         old_status = self._state.playback_status
-        old_connected = self._state.connected
+        old_ready = self._state.ready
 
         def _listen_active(source: str | None, status: str | None) -> bool:
             src = (source or "").strip().lower()
             st = (status or "").strip().lower()
-            return src in {"wifi", "airplay"} and st in {"load", "play"}
+            return src in {"wifi", "airplay", "multiroom-secondary"} and st in {"load", "play"}
 
         old_listen_active = _listen_active(old_source, old_status)
 
@@ -460,12 +462,12 @@ class AudioProSpeaker:
                 try:
                     data = json.loads(j)
 
-                    # Gate: first valid PINFGET parse makes us "connected"
-                    was_ready = self._state.connected
-                    self._state.connected = True
+                    # Gate: first valid PINFGET parse makes us "ready"
+                    was_ready = self._state.ready
+                    self._state.ready = True
                     if not was_ready:
                         logger.info(
-                            "audio pro tcp ready speaker_ip=%s (initial PINFGET received)",
+                            "audio pro tcp link ready speaker_ip=%s (initial status received)",
                             self._speaker_ip,
                         )
 
@@ -523,7 +525,7 @@ class AudioProSpeaker:
         if (
             self._state.source != old_source
             or self._state.playback_status != old_status
-            or self._state.connected != old_connected
+            or self._state.ready != old_ready
         ):
             self._wake_poll_loop()
 
@@ -603,11 +605,11 @@ class AudioProSpeaker:
     async def set_muted(self, target: bool) -> None:
         # Always GET before SET (mute may have changed elsewhere)
         self._mute_evt.clear()
-        # MUT+GET is safe even pre-connected; but _send_control will drop before connected.
-        if self._state.connected:
+        # MUT+GET is safe even pre-ready; but _send_control will drop before ready.
+        if self._state.ready:
             await self._send_control("MCU+MUT+GET")
         else:
-            # If we're not connected yet, just drop (consistent with gating) and let handshake establish state
+            # If link not ready yet, just drop (consistent with gating) and let handshake establish state
             await self._send_control("MCU+MUT+GET")
             return
 

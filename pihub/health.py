@@ -26,8 +26,8 @@ class HealthServer:
         *,
         host: str,
         port: int,
-        ble: BleDongleLink,
-        reader: UnifyingReader,
+        ble: Optional[BleDongleLink] = None,
+        reader: Optional[UnifyingReader] = None,
         tv: Optional[TvController] = None,
         speaker: Optional[AudioProSpeaker] = None,
         runtime: Optional[RuntimeEngine] = None,
@@ -280,20 +280,20 @@ class HealthServer:
             speaker_enabled = True
             snap = self._speaker.snapshot()
             sstate = getattr(self._speaker, "state", None)
-            subscribed = bool(getattr(sstate, "subscribed", False))
             reachable = bool(getattr(sstate, "reachable", False))
             connected = bool(getattr(sstate, "connected", False))
+            ready = bool(getattr(sstate, "ready", False))
 
-            sp_link_up = subscribed
-            sp_link_ready = connected
-            sp_error = speaker_enabled and (not reachable)
+            sp_link_up = connected
+            sp_link_ready = ready
+            sp_error = bool(getattr(sstate, "last_error", None))
 
             sp_reasons: list[str] = []
-            if not subscribed:
-                sp_reasons.append("speaker.not_subscribed")
-            if subscribed and not reachable:
+            if not reachable:
                 sp_reasons.append("speaker.not_reachable")
-            if subscribed and reachable and not connected:
+            if reachable and not connected:
+                sp_reasons.append("speaker.not_connected")
+            if connected and not ready:
                 sp_reasons.append("speaker.not_ready")
 
             speaker_state = {

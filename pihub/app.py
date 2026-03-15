@@ -15,6 +15,7 @@ try:
 except Exception:
     pass
 
+from typing import Any
 from .config import Config
 from .dispatcher import Dispatcher
 from .health import HealthServer
@@ -50,7 +51,7 @@ async def main() -> None:
     tv: TvController | None = None
     tv_discovery_tasks: list[asyncio.Task] = []
 
-    if cfg.tv_ip and cfg.tv_mac:
+    if cfg.tv_enabled and cfg.tv_ip and cfg.tv_mac:
         tv = TvController(
             tv_ip=cfg.tv_ip,
             tv_mac=cfg.tv_mac,
@@ -105,7 +106,8 @@ async def main() -> None:
         shutdown_event = asyncio.Event()
 
     speaker: AudioProSpeaker | None = None
-    if cfg.speaker_ip:
+    
+    if cfg.speaker_enabled and cfg.speaker_ip:
         speaker = AudioProSpeaker(
             speaker_ip=cfg.speaker_ip,
             http_scheme=cfg.speaker_http_scheme,
@@ -114,10 +116,12 @@ async def main() -> None:
         await speaker.start()
         cleanup_hooks.append(("speaker", speaker.stop))
 
-    ble = BleDongleLink(
-        serial_port=cfg.ble_serial_device,
-        baud=cfg.ble_serial_baud,
-    )
+    ble: BleDongleLink | None = None
+    if cfg.ble_enabled:
+        ble = BleDongleLink(
+            serial_port=cfg.ble_serial_device,
+            baud=cfg.ble_serial_baud,
+        )
 
     runtime = RuntimeEngine(
         tv=tv,
@@ -154,11 +158,13 @@ async def main() -> None:
 
     await runtime.start()
 
-    reader = UnifyingReader(
-        scancode_map=dispatcher.scancode_map,
-        on_edge=dispatcher.on_usb_edge,
-        on_disconnect=dispatcher.on_usb_disconnect,
-    )
+    reader: UnifyingReader | None = None
+    if cfg.usb_enabled:
+        reader = UnifyingReader(
+            scancode_map=dispatcher.scancode_map,
+            on_edge=dispatcher.on_usb_edge,
+            on_disconnect=dispatcher.on_usb_disconnect,
+        )
 
     health = HealthServer(
         host=cfg.health_host,
@@ -171,11 +177,13 @@ async def main() -> None:
     )
 
     try:
-        await ble.start()
-        cleanup_hooks.append(("ble", ble.stop))
+        if ble is not None:
+            await ble.start()
+            cleanup_hooks.append(("ble", ble.stop))
 
-        await reader.start()
-        cleanup_hooks.append(("reader", reader.stop))
+        if reader is not None:
+            await reader.start()
+            cleanup_hooks.append(("reader", reader.stop))
 
         await health.start()
         cleanup_hooks.append(("health", health.stop))
