@@ -91,7 +91,7 @@ class SequenceRunner:
                         when="tv_was_on",
                     ),
 
-                    # If tv not on
+                    # If tv not on proceed anyway
                     SequenceStep(
                         "speaker_volume",
                         "speaker",
@@ -221,6 +221,12 @@ class SequenceRunner:
                 name="watch_signal",
                 steps=(
                     SequenceStep("set_mode", "mode", "set", {"name": "watch"}),
+                    SequenceStep(
+                        "wait_1",
+                        "wait",
+                        "tv_on",
+                        {"timeout_s": 3.0},
+                    ),
                     SequenceStep(
                         "speaker_volume",
                         "speaker",
