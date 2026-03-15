@@ -16,6 +16,8 @@ import aiohttp
 logger = logging.getLogger(__name__)
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
+HANDSHAKE_TIMEOUT_S = 8.0
+
 _TCP_DEFAULT_PORT = 8899
 _TCP_HEADER = b"\x18\x96\x18\x20"  # 0x18 0x96 0x18 0x20
 
@@ -234,17 +236,32 @@ class AudioProSpeaker:
         self._session = None
 
     async def _runner(self) -> None:
+        attempt = 0
+
         while self._enabled and not self._stop_evt.is_set():
             try:
+                attempt += 1
+                logger.info(
+                    "speaker tcp connect attempt speaker_ip=%s attempt=%s reconnect_s=%s",
+                    self._speaker_ip,
+                    attempt,
+                    self._reconnect_s,
+                )
+
                 await self._connect()
 
-                # Start polling loop alongside read loop
-                self._poll_task = asyncio.create_task(self._poll_loop(), name=f"linkplay_poll[{self._speaker_ip}]")
+                self._poll_task = asyncio.create_task(
+                    self._poll_loop(),
+                    name=f"linkplay_poll[{self._speaker_ip}]",
+                )
 
-                # Initial handshake pull (this is what flips ready=True after parse)
+                # Initial handshake pull; ready=True flips after first valid PINFGET parse
                 await self._pinfget()
+                await self._wait_ready()
 
+                attempt = 0
                 await self._read_loop()
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -258,7 +275,6 @@ class AudioProSpeaker:
                 self._poll_task = None
                 await self._disconnect()
 
-            # backoff before reconnect
             if self._enabled and not self._stop_evt.is_set():
                 await asyncio.sleep(self._reconnect_s)
 
@@ -302,6 +318,21 @@ class AudioProSpeaker:
         self._state.last_update_ts = _now()
         self._wake_poll_loop()
 
+    async def _fail_link(self, reason: str) -> None:
+        self._mark_down(reason)
+        await self._disconnect()
+        raise ConnectionError(reason)
+
+    async def _wait_ready(self, timeout_s: float = HANDSHAKE_TIMEOUT_S) -> None:
+        deadline = time.monotonic() + timeout_s
+        while self._enabled and not self._stop_evt.is_set():
+            if self._state.ready:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ConnectionError("handshake timeout")
+            await asyncio.sleep(min(0.1, remaining))
+
     # ---------- send / receive ----------
 
     async def _send(self, payload: str) -> None:
@@ -313,18 +344,23 @@ class AudioProSpeaker:
             payload = payload + "&"
 
         packet = _mk_packet(payload)
+        send_error: Exception | None = None
 
         async with self._send_lock:
-            # enforce >=200ms between commands (doc requirement)
             now_m = time.monotonic()
             dt = now_m - self._last_send_monotonic
             if dt < self._command_interval_s:
                 await asyncio.sleep(self._command_interval_s - dt)
 
-            self._writer.write(packet)
-            await self._writer.drain()
+            try:
+                self._writer.write(packet)
+                await self._writer.drain()
+                self._last_send_monotonic = time.monotonic()
+                return
+            except Exception as e:
+                send_error = e
 
-            self._last_send_monotonic = time.monotonic()
+        await self._fail_link(f"send failed: {send_error}")
 
     async def _send_control(self, payload: str) -> bool:
         """
@@ -347,9 +383,8 @@ class AudioProSpeaker:
     async def _pinfget(self) -> None:
         """Single truth pull (allowed even before ready gate)."""
         if not self._writer:
-            return
-        with contextlib.suppress(Exception):
-            await self._send("MCU+PINFGET")
+            raise ConnectionError("not connected")
+        await self._send("MCU+PINFGET")
 
     async def _delayed_pinfget(self, delay_s: float = HINT_PINFGET_DELAY_S) -> None:
         await asyncio.sleep(delay_s)
