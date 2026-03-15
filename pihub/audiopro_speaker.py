@@ -264,7 +264,7 @@ class AudioProSpeaker:
                 attempt = 0
 
                 # Either background task dying means this connection cycle is over.
-                done, pending = await asyncio.wait(
+                done, _ = await asyncio.wait(
                     {read_task, poll_task},
                     return_when=asyncio.FIRST_COMPLETED,
                 )
@@ -282,10 +282,12 @@ class AudioProSpeaker:
                 logger.warning("TCP loop error speaker_ip=%s err=%r", self._speaker_ip, e)
                 self._mark_down(str(e))
             finally:
+                # Tear down transport first so any in-flight read/drain wakes up quickly.
+                await self._disconnect()
+
                 await self._cancel_task(read_task, name="read_task")
                 await self._cancel_task(poll_task, name="poll_task")
                 self._poll_task = None
-                await self._disconnect()
 
             if self._enabled and not self._stop_evt.is_set():
                 logger.info(
