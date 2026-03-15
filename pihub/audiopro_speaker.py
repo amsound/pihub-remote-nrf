@@ -238,7 +238,7 @@ class AudioProSpeaker:
 
             try:
                 attempt += 1
-                logger.info(
+                logger.debug(
                     "speaker tcp connect attempt speaker_ip=%s attempt=%s reconnect_s=%s",
                     self._speaker_ip,
                     attempt,
@@ -369,7 +369,7 @@ class AudioProSpeaker:
         except asyncio.CancelledError:
             pass
         except asyncio.TimeoutError:
-            logger.warning(
+            logger.debug(
                 "speaker task cancel timed out speaker_ip=%s task=%s",
                 self._speaker_ip,
                 name,
