@@ -352,11 +352,11 @@ class TvController:
 
     def notify_msearch(self, *, location: str | None) -> bool:
         if location and "/dmr" not in location:
-            logger.info("tv msearch rejected location=%s", location)
+            logger.warning("tv msearch rejected location=%s", location)
             return False
 
         changed = self._commit_presence(True, source="msearch")
-        logger.info(
+        logger.debug(
             "tv msearch accepted changed=%s location=%s presence_on=%s presence_source=%s",
             "true" if changed else "false",
             location,

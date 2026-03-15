@@ -274,27 +274,16 @@ class AudioProSpeaker:
                 self._mark_down(str(e))
             finally:
                 logger.info("speaker runner cleanup starting speaker_ip=%s", self._speaker_ip)
-                if read_task:
-                    if not read_task.done():
-                        read_task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await read_task
-                    else:
-                        with contextlib.suppress(Exception):
-                            read_task.result()
+
+                await self._cancel_task(read_task, name="read_task")
                 read_task = None
 
-                if self._poll_task:
-                    if not self._poll_task.done():
-                        self._poll_task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await self._poll_task
-                    else:
-                        with contextlib.suppress(Exception):
-                            self._poll_task.result()
+                await self._cancel_task(self._poll_task, name="poll_task")
                 self._poll_task = None
 
+                logger.info("speaker runner disconnect starting speaker_ip=%s", self._speaker_ip)
                 await self._disconnect()
+                logger.info("speaker runner cleanup finished speaker_ip=%s", self._speaker_ip)
 
             if self._enabled and not self._stop_evt.is_set():
                 logger.info(
@@ -302,7 +291,11 @@ class AudioProSpeaker:
                     self._speaker_ip,
                     self._reconnect_s,
                 )
-                logger.info("speaker reconnect sleep starting speaker_ip=%s reconnect_s=%.1f", self._speaker_ip, self._reconnect_s)
+                logger.info(
+                    "speaker reconnect sleep starting speaker_ip=%s reconnect_s=%.1f",
+                    self._speaker_ip,
+                    self._reconnect_s,
+                )
                 await asyncio.sleep(self._reconnect_s)
 
     async def _connect(self) -> None:
@@ -361,6 +354,34 @@ class AudioProSpeaker:
             if remaining <= 0:
                 raise ConnectionError("handshake timeout")
             await asyncio.sleep(min(0.1, remaining))
+
+    async def _cancel_task(self, task: asyncio.Task | None, *, name: str, timeout_s: float = 1.0) -> None:
+        if task is None:
+            return
+
+        if task.done():
+            with contextlib.suppress(Exception):
+                task.result()
+            return
+
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=timeout_s)
+        except asyncio.CancelledError:
+            pass
+        except asyncio.TimeoutError:
+            logger.warning(
+                "speaker task cancel timed out speaker_ip=%s task=%s",
+                self._speaker_ip,
+                name,
+            )
+        except Exception as e:
+            logger.debug(
+                "speaker task finished with error during cancel speaker_ip=%s task=%s err=%r",
+                self._speaker_ip,
+                name,
+                e,
+            )
 
     # ---------- send / receive ----------
 
