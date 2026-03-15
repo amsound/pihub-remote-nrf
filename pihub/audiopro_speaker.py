@@ -219,13 +219,13 @@ class AudioProSpeaker:
 
         if self._task:
             self._task.cancel()
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
         self._task = None
 
         if self._poll_task:
             self._poll_task.cancel()
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._poll_task
         self._poll_task = None
 
@@ -270,12 +270,17 @@ class AudioProSpeaker:
             finally:
                 if self._poll_task:
                     self._poll_task.cancel()
-                    with contextlib.suppress(Exception):
+                    with contextlib.suppress(asyncio.CancelledError):
                         await self._poll_task
                 self._poll_task = None
                 await self._disconnect()
 
             if self._enabled and not self._stop_evt.is_set():
+                logger.info(
+                    "speaker reconnect scheduled speaker_ip=%s in %.1fs",
+                    self._speaker_ip,
+                    self._reconnect_s,
+                )
                 await asyncio.sleep(self._reconnect_s)
 
     async def _connect(self) -> None:
