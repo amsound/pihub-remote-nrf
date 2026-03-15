@@ -633,8 +633,12 @@ class AudioProSpeaker:
                 try:
                     await self._pinfget()
                 except Exception as e:
-                    logger.debug("speaker poll loop exiting after pinfget failure speaker_ip=%s err=%r", self._speaker_ip, e)
-                    return
+                    logger.warning(
+                        "speaker poll detected broken link speaker_ip=%s err=%r; forcing reconnect",
+                        self._speaker_ip,
+                        e,
+                    )
+                    await self._fail_link(f"poll pinfget failed: {e}")
 
     def _listen_signal_active(self) -> bool:
         source = (self._state.source or "").strip().lower()
