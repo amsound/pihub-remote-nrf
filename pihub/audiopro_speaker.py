@@ -217,16 +217,10 @@ class AudioProSpeaker:
         self._stop_evt.set()
         self._poll_wake_evt.set()
 
-        if self._task:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+        await self._cancel_task(self._task, name="runner_task")
         self._task = None
 
-        if self._poll_task:
-            self._poll_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._poll_task
+        await self._cancel_task(self._poll_task, name="poll_task")
         self._poll_task = None
 
         await self._disconnect()
@@ -237,9 +231,11 @@ class AudioProSpeaker:
 
     async def _runner(self) -> None:
         attempt = 0
-        read_task: asyncio.Task | None = None
 
         while self._enabled and not self._stop_evt.is_set():
+            read_task: asyncio.Task | None = None
+            poll_task: asyncio.Task | None = None
+
             try:
                 attempt += 1
                 logger.info(
@@ -251,21 +247,34 @@ class AudioProSpeaker:
 
                 await self._connect()
 
-                self._poll_task = asyncio.create_task(
+                poll_task = asyncio.create_task(
                     self._poll_loop(),
                     name=f"linkplay_poll[{self._speaker_ip}]",
                 )
+                self._poll_task = poll_task
 
                 read_task = asyncio.create_task(
                     self._read_loop(),
                     name=f"linkplay_read[{self._speaker_ip}]",
                 )
 
+                # Initial truth pull / readiness gate.
                 await self._pinfget()
                 await self._wait_ready()
-
                 attempt = 0
-                await read_task
+
+                # Either background task dying means this connection cycle is over.
+                done, pending = await asyncio.wait(
+                    {read_task, poll_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                for task in done:
+                    exc = task.exception()
+                    if exc is not None:
+                        raise exc
+
+                raise ConnectionError("speaker task exited unexpectedly")
 
             except asyncio.CancelledError:
                 break
@@ -273,26 +282,14 @@ class AudioProSpeaker:
                 logger.warning("TCP loop error speaker_ip=%s err=%r", self._speaker_ip, e)
                 self._mark_down(str(e))
             finally:
-                logger.info("speaker runner cleanup starting speaker_ip=%s", self._speaker_ip)
-
                 await self._cancel_task(read_task, name="read_task")
-                read_task = None
-
-                await self._cancel_task(self._poll_task, name="poll_task")
+                await self._cancel_task(poll_task, name="poll_task")
                 self._poll_task = None
-
-                logger.info("speaker runner disconnect starting speaker_ip=%s", self._speaker_ip)
                 await self._disconnect()
-                logger.info("speaker runner cleanup finished speaker_ip=%s", self._speaker_ip)
 
             if self._enabled and not self._stop_evt.is_set():
                 logger.info(
                     "speaker reconnect scheduled speaker_ip=%s in %.1fs",
-                    self._speaker_ip,
-                    self._reconnect_s,
-                )
-                logger.info(
-                    "speaker reconnect sleep starting speaker_ip=%s reconnect_s=%.1f",
                     self._speaker_ip,
                     self._reconnect_s,
                 )
@@ -630,15 +627,18 @@ class AudioProSpeaker:
         Gentle polling to catch out-of-band changes (app/CEC/stream stalls).
 
         Rules:
-        - Wi-Fi source: 10s play/load, 30s pause, 60s idle/stop/unknown
+        - Wi-Fi source: 10s play/load, 15s pause, 60s idle/stop/unknown
         - Physical sources: 60s liveness poll
+
+        This task only does timed state refresh. It does not own reconnect logic.
+        Any send/read failure should bubble out to the runner.
         """
         while self._enabled and not self._stop_evt.is_set():
             src = self._state.source or "unknown"
 
             if src in {"wifi", "airplay", "multiroom-secondary"}:
                 st = (self._state.playback_status or "").lower()
-                if st in ("play", "load"):
+                if st in {"play", "load"}:
                     interval = POLL_WIFI_PLAYING_S
                 elif st == "pause":
                     interval = POLL_WIFI_PAUSED_S
@@ -650,18 +650,15 @@ class AudioProSpeaker:
             self._poll_wake_evt.clear()
 
             try:
-                await asyncio.wait_for(self._poll_wake_evt.wait(), timeout=float(interval))
+                await asyncio.wait_for(
+                    self._poll_wake_evt.wait(),
+                    timeout=float(interval),
+                )
                 continue
             except asyncio.TimeoutError:
-                try:
-                    await self._pinfget()
-                except Exception as e:
-                    logger.warning(
-                        "speaker poll detected broken link speaker_ip=%s err=%r; forcing reconnect",
-                        self._speaker_ip,
-                        e,
-                    )
-                    await self._fail_link(f"poll pinfget failed: {e}")
+                pass
+
+            await self._pinfget()
 
     def _listen_signal_active(self) -> bool:
         source = (self._state.source or "").strip().lower()
