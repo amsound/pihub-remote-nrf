@@ -274,9 +274,13 @@ class AudioProSpeaker:
                 self._mark_down(str(e))
             finally:
                 if read_task:
-                    read_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await read_task
+                    if not read_task.done():
+                        read_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await read_task
+                    else:
+                        with contextlib.suppress(Exception):
+                            read_task.result()
                 read_task = None
 
                 if self._poll_task:
