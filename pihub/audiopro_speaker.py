@@ -687,13 +687,20 @@ class AudioProSpeaker:
     # -------------- HTTP API --------------
 
     async def power_off(self) -> None:
-        """Turn the speaker off/standby via HTTP API."""
+        """Best-effort courtesy amplifier off via HTTP API."""
         cmd = getattr(self, "_http_poweroff_cmd", DEFAULT_HTTP_POWEROFF_CMD)
+        task = asyncio.create_task(self._http_cmd(cmd))
+        task.add_done_callback(self._log_http_poweroff_result)
+
+
+    def _log_http_poweroff_result(self, task: asyncio.Task[None]) -> None:
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._http_cmd(cmd))
-        except RuntimeError:
-            asyncio.run(self._http_cmd(cmd))
+            task.result()
+        except Exception as e:
+            self._state.last_error = f"httpapi power_off failed: {e}"
+            self._state.last_update_ts = _now()
+            logger.warning("speaker courtesy power_off failed: %s", e)
+
 
     async def play_url(self, url: str) -> None:
         """
@@ -720,7 +727,15 @@ class AudioProSpeaker:
             self._state.last_update_ts = _now()
             raise
         finally:
-            asyncio.create_task(self._pinfget())
+            task = asyncio.create_task(self._pinfget())
+            task.add_done_callback(self._log_pinfget_result)
+
+
+    def _log_pinfget_result(self, task: asyncio.Task[None]) -> None:
+        try:
+            task.result()
+        except Exception as e:
+            logger.debug("speaker pinfget refresh failed: %s", e)
 
     async def _http_cmd(self, cmd: str) -> None:
         if not self._session:

@@ -24,7 +24,7 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 * **Device-state signals**: passive state-driven routing from TV/speaker changes into local runtime behavior
 * **Precise edges**: explicit **down/up**; filters kernel auto-repeat
 * **Long-press** via `min_hold_ms`
-* **No queueing**: drops actions when offline/unavailable; reconnects locally as needed
+* **Bounded local queueing on hot paths**: with reconnect and best-effort recovery; unavailable domains may still drop actions
 
 ---
 
@@ -34,8 +34,8 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 * Logitech Unifying receiver (model U-0007 recommended)
 * Nordic nRF52840 Dongle  
   `https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle`
-* Samsung TV on the local network
-* LinkPlay / WiiM speaker on the local network (optional)
+* Samsung TV - same VLAN recommended
+* Audio Pro Speaker (LinkPlay / Aryrlic / WiiM may work) - will work across VLANs
 
 ---
 
@@ -118,10 +118,18 @@ Keymap is bundled with the application and loaded from packaged assets in produc
 ### Current terminology
 
 * **mode** = current active keymap / button behavior set
-* **flow** = named blocking orchestration, e.g. `watch`, `listen`, `power_off`
+* **flow** = named local sequence of steps; some steps block (sleep, wait), while dispatch steps are fire-and-continue requests
 * **device-state signal** = a live edge emitted by a domain (for example TV on, or speaker entering a listen-capable source/playback state)
 * **device-state flow** = a flow triggered from a device-state signal rather than an explicit remote intent
 * **last_trigger** = sticky record of the most recent runtime trigger source
+
+### Flow semantics
+* a flow takes one snapshot at the start
+* when= predicates are evaluated against that start snapshot only
+* dispatch means “request/send and continue”
+* wait.tv_on / wait.tv_off are the authoritative confirmation steps
+* mode is set at the start of the flow
+* last_flow is only updated after successful completion
 
 ---
 
@@ -397,7 +405,7 @@ Routing behavior:
 * explicit remote intent flows remain authoritative and may always be run again
 * device-state signals are routed through runtime and may trigger dedicated device-state flows
 * device-state signals are suppressed while another sequence is already running
-* device-state idempotence is based on the last logical flow, to avoid flapping / “howling around”
+* device-state idempotence is based on the last logical flow, to avoid flapping / “howling around”. Device-state signals compare against the last successful logical flow (last_flow), not merely the current mode.
 
 Logical activity normalization:
 
@@ -417,29 +425,37 @@ Current named flows:
 Current intent:
 
 ### `watch`
-* set mode `watch`
-* if TV was off, power it on
-* wait for TV on, then allow extra settle time for CEC handshake
-* power on BLE target
-* set speaker source to HDMI
-* set speaker volume to 30
+* set mode watch
+* if TV was off at start, request TV power on
+* if TV was off at start, sleep 2.0s
+* if TV was off at start, request BLE power on
+* if TV was off at start, sleep 1.0s
+* request speaker volume
+* if TV was off at start, sleep 0.5s
+* request speaker HDMI source
+* if TV was off at start, wait up to 20s for TV on
 
 ### `listen`
-* capture whether TV was on
-* set mode `listen`
-* if TV was on, power it off
-* if TV was on, return BLE target home
-* set speaker preset 1
-* set speaker volume to 20
+* set mode listen
+* if TV was on at start, request BLE return home
+* if TV was on at start, sleep 2.0s
+* if TV was on at start, request TV power off
+* if TV was on at start, sleep 1.0s
+* request speaker volume
+* request speaker preset 1
+* if TV was on at start, wait up to 20s for TV off
 
 ### `power_off`
-* capture whether TV was on
-* set mode `power_off`
-* if TV was on, return BLE target home
-* wait 3 seconds
-* if TV was on, power TV off
+* set mode power_off
+* if TV was on at start, request BLE return home
+* if TV was on at start, sleep 2.5s
+* if TV was on at start, request TV power off
+* if TV was on at start, wait up to 20s for TV off
+* if speaker source at start was wifi, airplay, or multiroom-secondary, request speaker stop, sleep 0.5s, then request * speaker power off
 
 These are the normal explicit intent flows. Separate device-state flows may also exist for signal-driven behavior such as `listen_signal` or `watch_signal`.
+
+A flow can return `ok: false` with `tv_on_timeout` or `tv_off_timeout` when a required TV wait step does not converge in time.
 
 ---
 
