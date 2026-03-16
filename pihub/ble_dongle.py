@@ -112,6 +112,8 @@ class BleDongleLink:
         self.state = DongleState()
         self._transport_evt = asyncio.Event()
 
+        self._last_error: str | None = None
+
         self._reader_task: Optional[asyncio.Task] = None
         self._writer_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
@@ -193,7 +195,7 @@ class BleDongleLink:
             "suspend": self.state.suspend,
             "notify": dict(self.state.notify) if self.state.notify else None,
             "error": self.state.error,
-            "last_error": None,
+            "last_error": self._last_error,
             "conn_params": vars(self.state.conn_params) if self.state.conn_params else None,
             "phy": vars(self.state.phy) if self.state.phy else None,
             "last_disc_reason": self.state.last_disc_reason,
@@ -789,6 +791,7 @@ class BleDongleLink:
         self.state = DongleState()
         self._pong_counter = 0
         self._transport_evt.clear()
+        self._last_error = None
         # Avoid stale/fragmented telemetry across reconnects.
         self._rx_buf.clear()
         with contextlib.suppress(Exception):
@@ -871,6 +874,7 @@ class BleDongleLink:
 
     async def _force_reconnect(self, reason: str) -> None:
         logger.debug("forcing serial reconnect (%s)", reason)
+        self._last_error = reason
         await self._close_serial()
         self.state = DongleState()
         self._transport_evt.clear()
@@ -910,6 +914,7 @@ class BleDongleLink:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self._last_error = f"writer_error: {exc}"
                 logger.warning("writer error, reconnecting: %r", exc)
                 await self._force_reconnect("writer_error")
                 await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
@@ -929,6 +934,7 @@ class BleDongleLink:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self._last_error = f"reader_error: {exc}"
                 logger.warning("reader error, reconnecting: %r", exc)
                 await self._force_reconnect("reader_error")
                 await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
@@ -974,6 +980,7 @@ class BleDongleLink:
 
         if line.startswith("ERR"):
             self.state.error = True
+            self._last_error = line
             logger.warning("dongle error line: %s", line)
             return
 
@@ -1037,6 +1044,10 @@ class BleDongleLink:
         elif src == "ERR" and len(parts) >= 3:
             try:
                 self.state.error = int(parts[2]) == 1
+                if self.state.error:
+                    self._last_error = "evt_err"
+                else:
+                    self._last_error = None
             except ValueError:
                 pass
 

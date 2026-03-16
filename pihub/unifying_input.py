@@ -59,6 +59,7 @@ class UnifyingReader:
         self._receiver_present = False
         self._paired_remote = False
         self._disconnect_notified = False
+        self._last_error: Optional[str] = None
 
     # ── Public API ───────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -113,6 +114,7 @@ class UnifyingReader:
             "input_open": self._input_open,
             "input_path": self._last_input_path,
             "grabbed": self._last_grabbed,
+            "last_error": self._last_error,
         }
 
     # ── Internals ───────────────────────────────────────────────────────────
@@ -144,6 +146,7 @@ class UnifyingReader:
             if not path:
                 # device not present; wait and retry (jittered)
                 self._input_open = False
+                self._last_error = "no_input_device"
                 no_device_failures += 1
                 open_failures = 0
                 sleep_for = _jittered(backoff)
@@ -182,8 +185,9 @@ class UnifyingReader:
             # Try to open the device
             try:
                 dev, grabbed = self._open_device(path)
-            except Exception:
+            except Exception as exc:
                 self._input_open = False
+                self._last_error = f"open_failed: {exc}"
                 open_failures += 1
                 sleep_for = _jittered(backoff)
                 if open_failures == 1 or open_failures % warn_every == 0:
@@ -201,6 +205,8 @@ class UnifyingReader:
             self._last_input_path = path
             self._last_grabbed = grabbed
             self._disconnect_notified = False
+
+            self._last_error = None
     
             if wait_state != "ready":
                 wait_state = "ready"
@@ -264,10 +270,12 @@ class UnifyingReader:
                 err = getattr(exc, "errno", None)
                 if err in (19, 5):  # ENODEV/EIO
                     disconnect_seen = True
+                    self._last_error = f"device_disconnected errno={err}"
                     await self._notify_disconnect()
                     await asyncio.sleep(_jittered(backoff))
                     backoff = min(backoff * 2, 10.0)
                 else:
+                    self._last_error = f"io_error: {exc}"
                     await asyncio.sleep(_jittered(1.0))
 
             except asyncio.CancelledError:
@@ -275,6 +283,7 @@ class UnifyingReader:
                 break
 
             except Exception as exc:
+                self._last_error = f"reader_error: {exc}"
                 logger.warning("reader error: %r", exc)
                 await asyncio.sleep(_jittered(1.0))
 
