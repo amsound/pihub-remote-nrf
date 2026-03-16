@@ -232,6 +232,28 @@ class AudioProSpeaker:
             await self._session.close()
         self._session = None
 
+    async def request_refresh(self) -> None:
+        """
+        Best-effort immediate state refresh.
+
+        This is intentionally lightweight. The speaker domain already owns its own
+        reconnect lifecycle; this method just nudges an immediate converge pull when
+        the app wants one.
+        """
+        if not self.enabled:
+            return
+
+        try:
+            self._wake_poll_loop()
+        except Exception:
+            logger.debug("speaker request_refresh wake failed", exc_info=True)
+
+        if self._state.connected:
+            try:
+                await self._pinfget()
+            except Exception:
+                logger.debug("speaker request_refresh pinfget failed", exc_info=True)
+
     async def _runner(self) -> None:
         attempt = 0
 
