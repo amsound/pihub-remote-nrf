@@ -59,6 +59,7 @@ class HttpServer:
         app.add_routes(
             [
                 web.get("/health", self._handle_health),
+                web.get("/dashboard", self._handle_dashboard),
                 web.get("/tools", self._handle_tools),
 
                 web.post("/flow/run/{name}", self._handle_flow_run),
@@ -124,6 +125,257 @@ class HttpServer:
         result = await self._runtime.on_cmd(payload)
         status = 200 if result.get("ok") else 409 if result.get("reason") == "runner_busy" else 400
         return web.json_response(result, status=status)
+
+    def _status_badge_html(self, status: str) -> str:
+        safe = self._html_escape(status)
+        cls = {
+            "ok": "status-ok",
+            "degraded": "status-degraded",
+            "disabled": "status-disabled",
+        }.get(status, "status-error")
+        return f'<span class="status-badge {cls}">{safe}</span>'
+
+    @staticmethod
+    def _html_escape(value: object) -> str:
+        import html
+        return html.escape(str(value))
+
+    def _nav_html(self, *, current: str, hostname: str) -> str:
+        def link(label: str, href: str, key: str) -> str:
+            cls = "nav-link active" if current == key else "nav-link"
+            return f'<a class="{cls}" href="{href}">{label}</a>'
+
+        return f"""
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">PiHub — {self._html_escape(hostname)}</div>
+    <nav class="nav">
+      {link("Dashboard", "/dashboard", "dashboard")}
+      {link("Tools", "/tools", "tools")}
+      {link("Raw Health", "/health", "health")}
+    </nav>
+  </div>
+</header>
+"""
+
+    def _shared_dark_css(self) -> str:
+        return """
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1d2330;
+  --border: #2b3342;
+  --text: #e8ecf3;
+  --muted: #aab4c3;
+  --link: #8ab4ff;
+  --ok-bg: #123222;
+  --ok-fg: #86efac;
+  --deg-bg: #3b2d12;
+  --deg-fg: #fcd34d;
+  --dis-bg: #2a2f39;
+  --dis-fg: #cbd5e1;
+  --err-bg: #3b1717;
+  --err-fg: #fca5a5;
+  --accent: #60a5fa;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(15, 17, 21, 0.94);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-inner {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0.9rem 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.brand {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.nav {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.nav-link {
+  display: inline-block;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+}
+.nav-link.active {
+  border-color: var(--accent);
+  background: #162236;
+}
+
+.page {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.section {
+  margin-bottom: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 1rem;
+}
+
+.section h1, .section h2, .section h3 {
+  margin-top: 0;
+}
+
+.grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.grid.summary {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.grid.domains {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.grid.system {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.card {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1rem;
+  min-width: 0;
+}
+
+.card h3 {
+  margin: 0 0 0.7rem 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.status-badge,
+.small-badge {
+  display: inline-block;
+  padding: 0.22rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.status-ok { background: var(--ok-bg); color: var(--ok-fg); border-color: #1d4d32; }
+.status-degraded { background: var(--deg-bg); color: var(--deg-fg); border-color: #6b4f1d; }
+.status-disabled { background: var(--dis-bg); color: var(--dis-fg); border-color: #465063; }
+.status-error { background: var(--err-bg); color: var(--err-fg); border-color: #6c2525; }
+
+.kv {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem 0.75rem;
+  font-size: 0.96rem;
+}
+.kv .k { color: var(--muted); }
+.kv .v { text-align: right; word-break: break-word; }
+
+.muted {
+  color: var(--muted);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.chip {
+  display: inline-block;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  background: #242b38;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.error-line {
+  margin-top: 0.8rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: 10px;
+  background: #2a1818;
+  border: 1px solid #5b2727;
+  color: #fecaca;
+  font-size: 0.92rem;
+  word-break: break-word;
+}
+
+pre.json {
+  margin: 0;
+  background: #0b0e13;
+  color: #e5e7eb;
+  padding: 1rem;
+  border-radius: 12px;
+  overflow-x: auto;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  white-space: pre;
+  border: 1px solid var(--border);
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 0.75rem;
+  }
+  .section {
+    padding: 0.85rem;
+  }
+  .kv {
+    grid-template-columns: 1fr;
+  }
+  .kv .v {
+    text-align: left;
+  }
+}
+"""
 
     async def _handle_tools(self, request: web.Request) -> web.Response:
         host = request.host or "localhost"
@@ -332,6 +584,222 @@ class HttpServer:
 </html>
 """
         return web.Response(text=html, content_type="text/html")
+
+    async def _handle_dashboard(self, request: web.Request) -> web.Response:
+        import json
+
+        snapshot = self.snapshot()
+        hostname = snapshot.get("pihub_id") or socket.gethostname()
+        runtime = snapshot.get("runtime") or {}
+        system = snapshot.get("system") or {}
+
+        def kv_row(key: str, value: object) -> str:
+            return (
+                f'<div class="k">{self._html_escape(key)}</div>'
+                f'<div class="v">{self._html_escape(self._fmt_value(value))}</div>'
+            )
+
+        def chips(items: list[object]) -> str:
+            if not items:
+                return '<span class="muted">None</span>'
+            return "".join(
+                f'<span class="chip">{self._html_escape(item)}</span>'
+                for item in items
+            )
+
+        def domain_card(title: str, data: dict, details_keys: list[str]) -> str:
+            status = str(data.get("status") or "unknown")
+            details = data.get("details") or {}
+            rows = [
+                kv_row("Configured", data.get("configured")),
+                kv_row("Enabled", data.get("enabled")),
+                kv_row("Present", data.get("present")),
+                kv_row("Link up", data.get("link_up")),
+                kv_row("Link ready", data.get("link_ready")),
+            ]
+
+            if data.get("path") is not None:
+                rows.append(kv_row("Path", data.get("path")))
+
+            for key in details_keys:
+                if key in details:
+                    rows.append(kv_row(key.replace("_", " ").title(), details.get(key)))
+
+            error_html = ""
+            if data.get("last_error"):
+                error_html = (
+                    f'<div class="error-line"><strong>Last error:</strong> '
+                    f'{self._html_escape(data.get("last_error"))}</div>'
+                )
+
+            reasons_html = chips(data.get("reasons") or [])
+
+            return f"""
+<div class="card">
+  <h3>
+    <span>{self._html_escape(title)}</span>
+    {self._status_badge_html(status)}
+  </h3>
+  <div class="kv">
+    {''.join(rows)}
+  </div>
+  <div style="margin-top:0.85rem;">
+    <div class="muted" style="margin-bottom:0.35rem;">Reasons</div>
+    <div class="chips">{reasons_html}</div>
+  </div>
+  {error_html}
+</div>
+"""
+
+        runtime_error_html = ""
+        if runtime.get("last_error"):
+            runtime_error_html = (
+                f'<div class="error-line"><strong>Last error:</strong> '
+                f'{self._html_escape(runtime.get("last_error"))}</div>'
+            )
+
+        pretty_json = json.dumps(snapshot, indent=2)
+
+        html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PiHub Dashboard — {self._html_escape(hostname)}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+{self._shared_dark_css()}
+  </style>
+</head>
+<body>
+  {self._nav_html(current="dashboard", hostname=str(hostname))}
+  <main class="page">
+
+    <section class="section">
+      <h1>Dashboard</h1>
+      <div class="grid summary">
+        <div class="card">
+          <h3><span>Overall status</span>{self._status_badge_html(str(snapshot.get("status") or "unknown"))}</h3>
+          <div class="muted">App-wide health after non-critical reasons are filtered.</div>
+        </div>
+        <div class="card">
+          <h3>Current mode</h3>
+          <div class="kv">
+            {kv_row("Mode", runtime.get("mode"))}
+            {kv_row("Last flow", runtime.get("last_flow"))}
+            {kv_row("Flow running", runtime.get("flow_running"))}
+          </div>
+        </div>
+        <div class="card">
+          <h3>Runtime</h3>
+          <div class="kv">
+            {kv_row("Last trigger", runtime.get("last_trigger"))}
+            {kv_row("Last result", runtime.get("last_result"))}
+            {kv_row("Error", runtime.get("error"))}
+          </div>
+          {runtime_error_html}
+        </div>
+        <div class="card">
+          <h3>PiHub uptime</h3>
+          <div class="kv">
+            {kv_row("Process uptime", system.get("process_uptime_human"))}
+            {kv_row("System uptime", system.get("system_uptime_human"))}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Domains</h2>
+      <div class="grid domains">
+        {domain_card("USB", snapshot.get("usb") or {{}}, ["paired_remote", "reader_running", "input_open", "grabbed"])}
+        {domain_card("BLE", snapshot.get("ble") or {{}}, ["transport_open", "advertising", "connected", "proto_report", "last_disc_reason"])}
+        {domain_card("TV", snapshot.get("tv") or {{}}, ["initialized", "presence_on", "presence_source", "last_change_age_s", "ws_connected", "token_present"])}
+        {domain_card("Speaker", snapshot.get("speaker") or {{}}, ["reachable", "connected", "ready", "playback_status", "source", "volume_pct", "muted", "update_age_s"])}
+        <div class="card">
+          <h3>
+            <span>Runtime</span>
+            {self._status_badge_html("degraded" if runtime.get("error") else "ok")}
+          </h3>
+          <div class="kv">
+            {kv_row("Mode", runtime.get("mode"))}
+            {kv_row("Last flow", runtime.get("last_flow"))}
+            {kv_row("Flow running", runtime.get("flow_running"))}
+            {kv_row("Last trigger", runtime.get("last_trigger"))}
+            {kv_row("Last result", runtime.get("last_result"))}
+            {kv_row("Error", runtime.get("error"))}
+          </div>
+          {runtime_error_html}
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>System</h2>
+      <div class="grid system">
+        <div class="card">
+          <h3>Load average</h3>
+          <div class="kv">
+            {kv_row("1m", (system.get("load") or {{}}).get("1m"))}
+            {kv_row("5m", (system.get("load") or {{}}).get("5m"))}
+            {kv_row("15m", (system.get("load") or {{}}).get("15m"))}
+          </div>
+        </div>
+        <div class="card">
+          <h3>Memory</h3>
+          <div class="kv">
+            {kv_row("Used", (system.get("memory") or {{}}).get("used_human"))}
+            {kv_row("Available", (system.get("memory") or {{}}).get("available_human"))}
+            {kv_row("Total", (system.get("memory") or {{}}).get("total_human"))}
+          </div>
+        </div>
+        <div class="card">
+          <h3>Disk</h3>
+          <div class="kv">
+            {kv_row("Path", (system.get("disk") or {{}}).get("path"))}
+            {kv_row("Used", (system.get("disk") or {{}}).get("used_human"))}
+            {kv_row("Free", (system.get("disk") or {{}}).get("free_human"))}
+            {kv_row("Total", (system.get("disk") or {{}}).get("total_human"))}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Attention</h2>
+      <div class="muted" style="margin-bottom:0.5rem;">App-wide degraded reasons</div>
+      <div class="chips">{chips(snapshot.get("degraded_reasons") or [])}</div>
+    </section>
+
+    <section class="section">
+      <h2>Health snapshot</h2>
+      <p><a href="/health">Open raw /health</a></p>
+      <pre class="json">{self._html_escape(pretty_json)}</pre>
+    </section>
+
+  </main>
+</body>
+</html>
+"""
+        return web.Response(text=html, content_type="text/html")
+
+    def _status_badge_html(self, status: str) -> str:
+        safe = self._html_escape(status)
+        cls = {
+            "ok": "status-ok",
+            "degraded": "status-degraded",
+            "disabled": "status-disabled",
+        }.get(status, "status-error")
+        return f'<span class="status-badge {cls}">{safe}</span>'
+
+    @staticmethod
+    def _fmt_value(value: object) -> str:
+        if value is True:
+            return "true"
+        if value is False:
+            return "false"
+        if value is None:
+            return "null"
+        return str(value)
 
     async def _handle_refresh_tv(self, _: web.Request) -> web.Response:
         if self._tv is None:
