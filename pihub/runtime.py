@@ -28,6 +28,9 @@ class RuntimeEngine:
         self._last_flow: str | None = None
         self._flow_running = False
         self._last_trigger: str | None = None
+        self._error = False
+        self._last_error: str | None = None
+        self._last_result: str | None = None
         self._startup_reconciled = False
         self._lock = asyncio.Lock()
         self._active_sequence_task: asyncio.Task | None = None
@@ -55,7 +58,20 @@ class RuntimeEngine:
             "last_flow": self._last_flow,
             "flow_running": self._flow_running,
             "last_trigger": self._last_trigger,
+            "error": self._error,
+            "last_error": self._last_error,
+            "last_result": self._last_result,
         }
+
+    def _set_runtime_ok(self, result: str = "ok") -> None:
+        self._error = False
+        self._last_error = None
+        self._last_result = result
+
+    def _set_runtime_error(self, error: str, *, result: str) -> None:
+        self._error = True
+        self._last_error = (error or "").strip() or None
+        self._last_result = result
 
     def attach_dispatcher(self, dispatcher: Any) -> None:
         self._dispatcher = dispatcher
@@ -74,13 +90,17 @@ class RuntimeEngine:
     async def set_mode(self, name: str, *, trigger: str = "internal") -> dict[str, Any]:
         name = (name or "").strip()
         if not name:
+            self._set_runtime_error("mode_name_required", result="invalid")
             return {"ok": False, "error": "mode name required"}
+
         if self._dispatcher is None:
+            self._set_runtime_error("dispatcher_unavailable", result="failed")
             return {"ok": False, "error": "dispatcher unavailable"}
 
         current_task = asyncio.current_task()
         if self._flow_running and current_task is not self._active_sequence_task:
             logger.info("mode ignored name=%s trigger=%s reason=sequence_running", name, trigger)
+            self._set_runtime_error("sequence_running", result="busy")
             return {
                 "ok": False,
                 "domain": "mode",
@@ -99,6 +119,7 @@ class RuntimeEngine:
                 trigger,
                 sorted(valid_modes),
             )
+            self._set_runtime_error("invalid_mode", result="invalid")
             return {
                 "ok": False,
                 "domain": "mode",
@@ -119,6 +140,7 @@ class RuntimeEngine:
         else:
             logger.info("mode unchanged %s trigger=%s", name, trigger)
 
+        self._set_runtime_ok("ok")
         return {
             "ok": True,
             "domain": "mode",
@@ -152,6 +174,7 @@ class RuntimeEngine:
         name = (name or "").strip()
         source = (source or "").strip() or "intent"
         if not name:
+            self._set_runtime_error("flow_name_required", result="invalid")
             return {"ok": False, "error": "flow name required"}
 
         if self._lock.locked():
@@ -161,6 +184,7 @@ class RuntimeEngine:
                 trigger,
                 source,
             )
+            self._set_runtime_error("runner_busy", result="busy")
             return {
                 "ok": False,
                 "domain": "flow",
@@ -201,7 +225,9 @@ class RuntimeEngine:
                         "watch_signal": "watch",
                     }.get(name, name)
                     self._last_flow = logical_name
+                    self._set_runtime_ok("ok")
                 else:
+                    self._set_runtime_error("flow_failed", result="failed")
                     return {
                         "ok": False,
                         "domain": "flow",
@@ -232,6 +258,7 @@ class RuntimeEngine:
                     source,
                     str(exc),
                 )
+                self._set_runtime_error(str(exc), result="failed")
                 return {
                     "ok": False,
                     "domain": "flow",
@@ -244,6 +271,7 @@ class RuntimeEngine:
 
             except Exception as exc:
                 logger.exception("sequence failed name=%s trigger=%s source=%s", name, trigger, source)
+                self._set_runtime_error(str(exc), result="failed")
                 return {
                     "ok": False,
                     "domain": "flow",
@@ -263,6 +291,7 @@ class RuntimeEngine:
         payload = payload or {}
 
         if not name:
+            self._set_runtime_error("state_change_name_required", result="invalid")
             return {"ok": False, "error": "state change name required"}
 
         if self._lock.locked():
@@ -271,6 +300,7 @@ class RuntimeEngine:
                 name,
                 name,
             )
+            self._set_runtime_error("runner_busy", result="busy")
             return {
                 "ok": False,
                 "name": name,
@@ -293,6 +323,7 @@ class RuntimeEngine:
         }.get(name)
 
         if not sequence_name:
+            self._set_runtime_error("unknown_device_state_change", result="invalid")
             return {
                 "ok": False,
                 "name": name,
@@ -311,6 +342,7 @@ class RuntimeEngine:
         action = str(payload.get("action") or "").strip().lower()
         args = payload.get("args") or {}
         if not isinstance(args, dict):
+            self._set_runtime_error("args_must_be_object", result="invalid")
             return {"ok": False, "error": "args must be an object"}
         if domain == "flow" and action == "run":
             return await self.run_flow(
@@ -323,6 +355,7 @@ class RuntimeEngine:
                 str(args.get("name") or ""),
                 trigger=str(args.get("trigger") or "http.command"),
             )
+        self._set_runtime_error("unsupported_command", result="invalid")
         return {
             "ok": False,
             "error": "unsupported_command",

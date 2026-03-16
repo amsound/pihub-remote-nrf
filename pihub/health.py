@@ -280,9 +280,9 @@ class HealthServer:
                     "transport_open": ble_transport_up,
                     "advertising": ble_advertising,
                     "connected": ble_connected,
+                    "proto_report": ble_raw.get("proto_report"),
                     "last_disc_reason": ble_raw.get("last_disc_reason"),
                     "conn_params": conn_params or None,
-                    "proto_report": ble_raw.get("proto_report"),
                 },
             }
 
@@ -351,7 +351,10 @@ class HealthServer:
             }
 
         if tv_state["status"] == "degraded":
-            degraded_reasons.extend(tv_state["reasons"])
+            degraded_reasons.extend(
+                reason for reason in tv_state["reasons"]
+                if reason != "tv.presence_unknown"
+            )
 
         # ---------------- Speaker ----------------
         if self._speaker is None or not getattr(self._speaker, "enabled", False):
