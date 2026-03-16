@@ -120,7 +120,13 @@ class SequenceRunner:
                 name="watch",
                 steps=(
                     SequenceStep("set_mode", "mode", "set", {"name": "watch"}),
-
+                    SequenceStep(
+                        "speaker_stop",
+                        "speaker",
+                        "stop_playback",
+                        when="speaker_source_listen",
+                        mode="dispatch",
+                    ),
                     SequenceStep(
                         "tv_power_on",
                         "tv",
