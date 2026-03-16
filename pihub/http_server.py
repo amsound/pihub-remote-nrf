@@ -20,7 +20,7 @@ def _norm_error(value: object) -> str | None:
     text = str(value or "").strip()
     return text or None
 
-class HealthServer:
+class HttpServer:
     """Expose a simple JSON health snapshot for scrapers and system logic."""
 
     def __init__(
@@ -53,9 +53,17 @@ class HealthServer:
         app.add_routes(
             [
                 web.get("/health", self._handle_health),
+                web.get("/tools", self._handle_tools),
+
                 web.post("/flow/run/{name}", self._handle_flow_run),
                 web.post("/mode/set/{name}", self._handle_mode_set),
                 web.post("/command", self._handle_command),
+
+                web.post("/refresh/tv", self._handle_refresh_tv),
+                web.post("/refresh/speaker", self._handle_refresh_speaker),
+                web.post("/refresh/networked", self._handle_refresh_networked),
+
+                web.post("/admin/restart", self._handle_restart),
             ]
         )
 
@@ -110,6 +118,161 @@ class HealthServer:
         result = await self._runtime.on_cmd(payload)
         status = 200 if result.get("ok") else 409 if result.get("reason") == "runner_busy" else 400
         return web.json_response(result, status=status)
+
+    async def _handle_tools(self, request: web.Request) -> web.Response:
+        host = request.host or "localhost"
+        html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PiHub Tools</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {{
+      font-family: sans-serif;
+      margin: 2rem;
+      max-width: 720px;
+    }}
+    h1, h2 {{
+      margin-bottom: 0.5rem;
+    }}
+    .section {{
+      margin-bottom: 1.5rem;
+      padding: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+    }}
+    .row {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+    }}
+    form {{
+      margin: 0;
+    }}
+    button {{
+      padding: 0.7rem 1rem;
+      font-size: 1rem;
+      cursor: pointer;
+    }}
+    .danger button {{
+      border-color: #b00;
+    }}
+    code {{
+      background: #f5f5f5;
+      padding: 0.1rem 0.3rem;
+      border-radius: 4px;
+    }}
+  </style>
+</head>
+<body>
+  <h1>PiHub Tools</h1>
+  <p><a href="http://{host}/health">View /health</a></p>
+
+  <div class="section">
+    <h2>Flows</h2>
+    <div class="row">
+      <form method="post" action="/flow/run/watch">
+        <button type="submit">Run watch</button>
+      </form>
+      <form method="post" action="/flow/run/listen">
+        <button type="submit">Run listen</button>
+      </form>
+      <form method="post" action="/flow/run/power_off">
+        <button type="submit">Run power_off</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Modes</h2>
+    <div class="row">
+      <form method="post" action="/mode/set/watch">
+        <button type="submit">Set mode watch</button>
+      </form>
+      <form method="post" action="/mode/set/listen">
+        <button type="submit">Set mode listen</button>
+      </form>
+      <form method="post" action="/mode/set/power_off">
+        <button type="submit">Set mode power_off</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Refresh</h2>
+    <div class="row">
+      <form method="post" action="/refresh/tv">
+        <button type="submit">Refresh TV</button>
+      </form>
+      <form method="post" action="/refresh/speaker">
+        <button type="submit">Refresh Speaker</button>
+      </form>
+      <form method="post" action="/refresh/networked">
+        <button type="submit">Refresh Networked</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="section danger">
+    <h2>Admin</h2>
+    <div class="row">
+      <form method="post" action="/admin/restart">
+        <button type="submit">Restart PiHub</button>
+      </form>
+    </div>
+    <p>This exits the process and relies on Docker <code>restart: unless-stopped</code> to bring it back.</p>
+  </div>
+</body>
+</html>
+"""
+        return web.Response(text=html, content_type="text/html")
+
+    async def _handle_refresh_tv(self, _: web.Request) -> web.Response:
+        if self._tv is None:
+            return web.json_response({"ok": False, "error": "tv unavailable"}, status=503)
+
+        await self._tv.reconcile_presence()
+        return web.json_response({"ok": True, "domain": "tv", "action": "refresh"})
+
+    async def _handle_refresh_speaker(self, _: web.Request) -> web.Response:
+        if self._speaker is None or not getattr(self._speaker, "enabled", False):
+            return web.json_response({"ok": False, "error": "speaker unavailable"}, status=503)
+
+        await self._speaker.request_refresh()
+        return web.json_response({"ok": True, "domain": "speaker", "action": "refresh"})
+
+    async def _handle_refresh_networked(self, _: web.Request) -> web.Response:
+        result = {
+            "ok": True,
+            "action": "refresh_networked",
+            "tv": None,
+            "speaker": None,
+        }
+
+        if self._tv is not None:
+            await self._tv.reconcile_presence()
+            result["tv"] = {"ok": True}
+        else:
+            result["tv"] = {"ok": False, "error": "tv unavailable"}
+
+        if self._speaker is not None and getattr(self._speaker, "enabled", False):
+            await self._speaker.request_refresh()
+            result["speaker"] = {"ok": True}
+        else:
+            result["speaker"] = {"ok": False, "error": "speaker unavailable"}
+
+        return web.json_response(result)
+
+    async def _handle_restart(self, _: web.Request) -> web.Response:
+        async def _delayed_exit() -> None:
+            await asyncio.sleep(0.25)
+            import os
+            os._exit(0)
+
+        asyncio.create_task(_delayed_exit(), name="pihub_restart")
+        return web.json_response({"ok": True, "action": "restart"})
 
     async def _maybe_json(self, request: web.Request) -> dict | None:
         if request.content_length in (None, 0):

@@ -18,7 +18,7 @@ except Exception:
 from typing import Any
 from .config import Config
 from .dispatcher import Dispatcher
-from .health import HealthServer
+from .http_server import HttpServer
 from .runtime import RuntimeEngine
 
 from .unifying_input import UnifyingReader
