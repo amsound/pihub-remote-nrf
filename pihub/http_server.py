@@ -5,6 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import socket
+import os
+import shutil
+import time
+import json
 from typing import Optional
 
 from aiohttp import web
@@ -44,6 +48,8 @@ class HttpServer:
 
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
+
+        self._process_start_monotonic = time.monotonic()
 
     async def start(self) -> None:
         if self._runner is not None:
@@ -120,6 +126,8 @@ class HttpServer:
         return web.json_response(result, status=status)
 
     async def _handle_tools(self, request: web.Request) -> web.Response:
+        snapshot = self.snapshot()
+        pretty_json = json.dumps(snapshot, indent=2)
         host = request.host or "localhost"
         html = f"""<!doctype html>
 <html lang="en">
@@ -164,6 +172,32 @@ class HttpServer:
       padding: 0.1rem 0.3rem;
       border-radius: 4px;
     }}
+    pre.json {{
+      background: #111827;
+      color: #e5e7eb;
+      padding: 1rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.92rem;
+      line-height: 1.4;
+      white-space: pre;
+    }}
+    .meta {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+    }}
+    .card {{
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 0.75rem;
+      background: #fafafa;
+    }}
+    .muted {{
+      color: #555;
+      font-size: 0.95rem;
+    }}
   </style>
 </head>
 <body>
@@ -182,6 +216,32 @@ class HttpServer:
       <form method="post" action="/flow/run/power_off">
         <button type="submit">Run power_off</button>
       </form>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>System</h2>
+    <div class="meta">
+      <div class="card">
+        <strong>System uptime</strong><br>
+        <span class="muted">{snapshot["system"]["system_uptime_human"] or "unknown"}</span>
+      </div>
+      <div class="card">
+        <strong>PiHub uptime</strong><br>
+        <span class="muted">{snapshot["system"]["process_uptime_human"]}</span>
+      </div>
+      <div class="card">
+        <strong>Load average</strong><br>
+        <span class="muted">{snapshot["system"]["load"]["1m"]} / {snapshot["system"]["load"]["5m"]} / {snapshot["system"]["load"]["15m"]}</span>
+      </div>
+      <div class="card">
+        <strong>Memory used</strong><br>
+        <span class="muted">{snapshot["system"]["memory"]["used_human"]} / {snapshot["system"]["memory"]["total_human"]}</span>
+      </div>
+      <div class="card">
+        <strong>Disk used</strong><br>
+        <span class="muted">{snapshot["system"]["disk"]["used_human"]} / {snapshot["system"]["disk"]["total_human"]}</span>
+      </div>
     </div>
   </div>
 
@@ -224,6 +284,13 @@ class HttpServer:
     </div>
     <p>This exits the process and relies on Docker <code>restart: unless-stopped</code> to bring it back.</p>
   </div>
+
+  <div class="section">
+    <h2>Health snapshot</h2>
+    <p><a href="http://{host}/health">Open raw /health</a></p>
+    <pre class="json">{pretty_json}</pre>
+  </div>
+  
 </body>
 </html>
 """
@@ -288,9 +355,110 @@ class HttpServer:
         if not configured or not enabled:
             return "disabled"
         return "degraded" if degraded else "ok"
+    
+    @staticmethod
+    def _read_system_uptime_s() -> float | None:
+        try:
+            with open("/proc/uptime", "r", encoding="utf-8") as f:
+                first = f.read().strip().split()[0]
+            return float(first)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _format_duration(seconds: float | int | None) -> str | None:
+        if seconds is None:
+            return None
+        total = int(seconds)
+        days, rem = divmod(total, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, secs = divmod(rem, 60)
+        if days:
+            return f"{days}d {hours:02}:{minutes:02}:{secs:02}"
+        return f"{hours:02}:{minutes:02}:{secs:02}"
+
+    @staticmethod
+    def _read_meminfo() -> dict[str, int]:
+        out: dict[str, int] = {}
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    if ":" not in line:
+                        continue
+                    key, rest = line.split(":", 1)
+                    parts = rest.strip().split()
+                    if not parts:
+                        continue
+                    try:
+                        out[key] = int(parts[0]) * 1024  # kB -> bytes
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return out
+
+    @staticmethod
+    def _fmt_bytes(n: int | None) -> str | None:
+        if n is None:
+            return None
+        value = float(n)
+        for unit in ["B", "KB", "MB", "GB", "TB"]:
+            if value < 1024.0 or unit == "TB":
+                return f"{value:.1f} {unit}"
+            value /= 1024.0
+        return None
+
+    def _system_snapshot(self) -> dict:
+        system_uptime_s = self._read_system_uptime_s()
+        process_uptime_s = time.monotonic() - self._process_start_monotonic
+
+        try:
+            load1, load5, load15 = os.getloadavg()
+            load = {"1m": round(load1, 2), "5m": round(load5, 2), "15m": round(load15, 2)}
+        except Exception:
+            load = {"1m": None, "5m": None, "15m": None}
+
+        meminfo = self._read_meminfo()
+        mem_total = meminfo.get("MemTotal")
+        mem_available = meminfo.get("MemAvailable")
+        mem_used = (mem_total - mem_available) if (mem_total is not None and mem_available is not None) else None
+
+        try:
+            disk = shutil.disk_usage("/")
+            disk_total = disk.total
+            disk_used = disk.used
+            disk_free = disk.free
+        except Exception:
+            disk_total = disk_used = disk_free = None
+
+        return {
+            "system_uptime_s": int(system_uptime_s) if system_uptime_s is not None else None,
+            "system_uptime_human": self._format_duration(system_uptime_s),
+            "process_uptime_s": int(process_uptime_s),
+            "process_uptime_human": self._format_duration(process_uptime_s),
+            "load": load,
+            "memory": {
+                "total_bytes": mem_total,
+                "available_bytes": mem_available,
+                "used_bytes": mem_used,
+                "total_human": self._fmt_bytes(mem_total),
+                "available_human": self._fmt_bytes(mem_available),
+                "used_human": self._fmt_bytes(mem_used),
+            },
+            "disk": {
+                "path": "/",
+                "total_bytes": disk_total,
+                "used_bytes": disk_used,
+                "free_bytes": disk_free,
+                "total_human": self._fmt_bytes(disk_total),
+                "used_human": self._fmt_bytes(disk_used),
+                "free_human": self._fmt_bytes(disk_free),
+            },
+        }
 
     def snapshot(self) -> dict:
         pihub_id = socket.gethostname()
+        system_state = self._system_snapshot()
 
         runtime_state = (
             self._runtime.snapshot()
@@ -602,4 +770,5 @@ class HttpServer:
             "ble": ble_state,
             "tv": tv_state,
             "speaker": speaker_state,
+            "system": system_state,
         }
