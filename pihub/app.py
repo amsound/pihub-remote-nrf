@@ -91,25 +91,49 @@ async def main() -> None:
                     break
             else:
                 tv_discovery_tasks.append(replacement)
+
             logger.warning("restarted tv:ssdp task")
 
         tv_discovery_tasks = start_discovery_tasks(tv)
         for task in tv_discovery_tasks:
             task.add_done_callback(_monitor_tv_task)
-        # One-shot active presence survey for startup.
-        # The passive SSDP listener remains the long-lived truth source.
-        await tv.reconcile_presence()
+
+        # One-shot active presence reconcile for startup.
+        # Run in the background so TV bootstrap does not block overall app startup.
+        tv_reconcile_task = asyncio.create_task(
+            tv.reconcile_presence(),
+            name="tv:reconcile_startup",
+        )
+
+        def _monitor_tv_reconcile(task: asyncio.Task) -> None:
+            if shutdown_event.is_set():
+                return
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("tv:reconcile_startup crashed")
+
+        tv_reconcile_task.add_done_callback(_monitor_tv_reconcile)
+
+        async def _stop_tv_reconcile() -> None:
+            if not tv_reconcile_task.done():
+                tv_reconcile_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await tv_reconcile_task
 
         async def _stop_tv_discovery() -> None:
             await stop_discovery_tasks(tv_discovery_tasks)
 
+        cleanup_hooks.append(("tv_reconcile", _stop_tv_reconcile))
         cleanup_hooks.append(("tv_discovery", _stop_tv_discovery))
         cleanup_hooks.append(("tv", tv.stop))
     else:
         shutdown_event = asyncio.Event()
 
     speaker: AudioProSpeaker | None = None
-    
+
     if cfg.speaker_enabled and cfg.speaker_ip:
         speaker = AudioProSpeaker(
             speaker_ip=cfg.speaker_ip,
