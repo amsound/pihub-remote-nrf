@@ -133,7 +133,7 @@ async def main() -> None:
     async def _on_domain_state_change(name: str, payload: dict[str, Any]) -> None:
         result = await runtime.on_device_state_change(name, payload)
         if not result.get("ok") and result.get("reason"):
-            logger.info(
+            logger.debug(
                 "device state change deferred name=%s reason=%s payload=%s",
                 name,
                 result.get("reason"),
