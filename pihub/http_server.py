@@ -126,13 +126,18 @@ class HttpServer:
         return web.json_response(result, status=status)
 
     async def _handle_tools(self, request: web.Request) -> web.Response:
+        host = request.host or "localhost"
+
         snapshot = self.snapshot()
+        hostname = snapshot.get("pihub_id") or socket.gethostname()
+        pretty_json = json.dumps(snapshot, indent=2)
+
         runtime = snapshot.get("runtime") or {}
         current_mode = str(runtime.get("mode") or "")
         current_flow = str(runtime.get("last_flow") or "")
-        pretty_json = json.dumps(snapshot, indent=2)
-        hostname = snapshot.get("pihub_id") or socket.gethostname()
-        host = request.host or "localhost"
+
+        def active_class(value: str, current: str) -> str:
+            return "active" if value == current else ""
         html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -327,9 +332,6 @@ class HttpServer:
 </html>
 """
         return web.Response(text=html, content_type="text/html")
-    
-        def active_class(value: str, current: str) -> str:
-            return "active" if value == current else ""
 
     async def _handle_refresh_tv(self, _: web.Request) -> web.Response:
         if self._tv is None:
