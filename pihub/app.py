@@ -193,9 +193,9 @@ async def main() -> None:
             on_disconnect=dispatcher.on_usb_disconnect,
         )
 
-    health = HealthServer(
-        host=cfg.health_host,
-        port=cfg.health_port,
+    http_server = HttpServer(
+        host=cfg.http_server_host,
+        port=cfg.http_server_port,
         ble=ble,
         reader=reader,
         tv=tv,
@@ -212,8 +212,8 @@ async def main() -> None:
             await reader.start()
             cleanup_hooks.append(("reader", reader.stop))
 
-        await health.start()
-        cleanup_hooks.append(("health", health.stop))
+        await http_server.start()
+        cleanup_hooks.append(("http_server", http_server.stop))
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(Exception):

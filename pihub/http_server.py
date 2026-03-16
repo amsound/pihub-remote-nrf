@@ -1,4 +1,4 @@
-"""Lightweight HTTP health/status endpoint for external monitoring."""
+"""Lightweight HTTP status and control endpoint."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def _norm_error(value: object) -> str | None:
     return text or None
 
 class HttpServer:
-    """Expose a simple JSON health snapshot for scrapers and system logic."""
+    """Expose a small HTTP control plane."""
 
     def __init__(
         self,

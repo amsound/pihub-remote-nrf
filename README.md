@@ -118,8 +118,8 @@ docker push a1exm/pihub-nrf:latest
 | `BLE_SERIAL_DEVICE` | CDC ACM device for the BLE dongle | `auto` (prefers `/dev/serial/by-id`, then falls back to `/dev/ttyACM*`) |
 | `BLE_SERIAL_BAUD` | BLE serial baud rate | `115200` |
 | `BLE_ENABLED` | enable BLE dongle domain | default `true` |
-| `HEALTH_HOST` | Bind address for the HTTP endpoint | `0.0.0.0` |
-| `HEALTH_PORT` | Port for health and local commands | `9123` |
+| `HTTP_SERVER_HOST` | Bind address for the HTTP endpoint | `0.0.0.0` |
+| `HTTP_SERVER_PORT` | Port for the HTTP endpoint and local commands | `9123` |
 | `TV_IP` | Samsung TV IP address | required for TV support |
 | `TV_MAC` | Samsung TV MAC address | required for Wake-on-LAN / power-on path |
 | `TV_TOKEN_FILE` | Samsung TV token path | `/data/samsungtv-token.txt` |

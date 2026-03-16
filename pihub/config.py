@@ -17,9 +17,9 @@ class Config:
     ble_serial_device: str
     ble_serial_baud: int
 
-    # Health endpoint
-    health_host: str
-    health_port: int
+    # HTTP endpoint
+    http_server_host: str
+    http_server_port: int
 
     # Samsung TV
     tv_ip: str
@@ -52,11 +52,11 @@ class Config:
         ble_serial_device = (os.getenv("BLE_SERIAL_DEVICE", "auto") or "auto").strip()
         ble_serial_baud = int(os.getenv("BLE_SERIAL_BAUD", "115200"))
 
-        health_host = os.getenv("HEALTH_HOST", "0.0.0.0")
+        http_server_host = os.getenv("http_server_host", "0.0.0.0")
         try:
-            health_port = int(os.getenv("HEALTH_PORT", "9123"))
+            http_server_port = int(os.getenv("http_server_port", "9123"))
         except ValueError:
-            health_port = 9123
+            http_server_port = 9123
 
         tv_ip = (os.getenv("TV_IP", "") or "").strip()
         tv_mac = (os.getenv("TV_MAC", "") or "").strip()
@@ -78,8 +78,8 @@ class Config:
             speaker_enabled=speaker_enabled,
             ble_serial_device=ble_serial_device,
             ble_serial_baud=ble_serial_baud,
-            health_host=health_host,
-            health_port=health_port,
+            http_server_host=http_server_host,
+            http_server_port=http_server_port,
             tv_ip=tv_ip,
             tv_mac=tv_mac,
             tv_token_file=tv_token_file,
