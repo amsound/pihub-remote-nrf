@@ -103,8 +103,18 @@ class TvWsState:
 
 class TvWsClient:
     """
-    Maintains a websocket connection while TV is on.
-    Sends KEY_* messages quickly with no reconnect per key.
+    Maintains the Samsung websocket control channel.
+
+    Important design note:
+    This websocket is a control path, not the primary source of truth for TV
+    presence. Presence truth comes from SSDP alive/byebye, startup/recovery
+    M-SEARCH, and HTTP fallback probing.
+
+    Also important:
+    Do NOT automatically close the websocket merely because presence becomes
+    false or unknown. In practice the TV may keep the websocket usable across
+    power-state transitions, and PiHub relies on that behavior for recovery and
+    power-toggle handling (see the RECOVERY_WINDOW logic in power_on()).
     """
 
     def __init__(self, *, tv_ip: str, token_file: str, name: str) -> None:
@@ -302,6 +312,13 @@ class TvController:
         self.tv_mac = tv_mac
         self.token_file = token_file
         self.name = name
+
+        # The websocket is intentionally managed as a reusable control channel.
+        # It is NOT tightly coupled to cached presence state, and must not be
+        # auto-closed just because presence becomes false/unknown. Real devices can
+        # keep the socket usable across transitions, which is important for recovery
+        # and post-power-off power-toggle behavior.
+
         self.ws = TvWsClient(tv_ip=tv_ip, token_file=token_file, name=name)
 
         logger.info(
@@ -328,6 +345,10 @@ class TvController:
         sess, self._session = self._session, None
         if sess:
             await sess.close()
+
+    # Presence cache is the local truth used for watch/listen logic and health.
+    # Updating presence here must not implicitly tear down the websocket control
+    # channel. Presence and websocket usability are related but not identical.
 
     def _commit_presence(self, on: bool, *, source: str) -> bool:
         prev_on = self._presence_cached is True
@@ -435,6 +456,9 @@ class TvController:
         now = asyncio.get_running_loop().time()
         self._last_power_off_request_ts = now
 
+        # KEY_POWER is a toggle, and the websocket may remain usable across transitions.
+        # Do not couple socket lifetime to immediate presence updates here.
+
         ok = await self.ws.send_key("KEY_POWER")
         if not ok:
             await self.ws.connect(self._session)
@@ -466,6 +490,13 @@ class TvController:
             loop = asyncio.get_running_loop()
             deadline = loop.time() + timeout_s
             start = loop.time()
+
+            # Recovery-window behavior:
+            # After a recent power-off request, the Samsung websocket may still remain
+            # usable even if passive presence has not yet settled back to "on". We exploit
+            # that intentionally here: do not "clean up" the websocket based only on
+            # presence state, and do not assume presence false/unknown means the control
+            # channel is gone.
 
             RECOVERY_WINDOW_S = 30.0
             WOL_FAST_INTERVAL_S = 0.25
