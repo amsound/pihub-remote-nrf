@@ -128,6 +128,7 @@ class HttpServer:
     async def _handle_tools(self, request: web.Request) -> web.Response:
         snapshot = self.snapshot()
         pretty_json = json.dumps(snapshot, indent=2)
+        hostname = snapshot.get("pihub_id") or socket.gethostname()
         host = request.host or "localhost"
         html = f"""<!doctype html>
 <html lang="en">
@@ -201,23 +202,7 @@ class HttpServer:
   </style>
 </head>
 <body>
-  <h1>PiHub Tools</h1>
-  <p><a href="http://{host}/health">View /health</a></p>
-
-  <div class="section">
-    <h2>Flows</h2>
-    <div class="row">
-      <form method="post" action="/flow/run/watch">
-        <button type="submit">Run watch</button>
-      </form>
-      <form method="post" action="/flow/run/listen">
-        <button type="submit">Run listen</button>
-      </form>
-      <form method="post" action="/flow/run/power_off">
-        <button type="submit">Run power_off</button>
-      </form>
-    </div>
-  </div>
+  <h1>PiHub Tools — {hostname}</h1>
 
   <div class="section">
     <h2>System</h2>
@@ -242,6 +227,22 @@ class HttpServer:
         <strong>Disk used</strong><br>
         <span class="muted">{snapshot["system"]["disk"]["used_human"]} / {snapshot["system"]["disk"]["total_human"]}</span>
       </div>
+    </div>
+  </div>
+
+
+  <div class="section">
+    <h2>Flows</h2>
+    <div class="row">
+      <form method="post" action="/flow/run/watch">
+        <button type="submit">Run watch</button>
+      </form>
+      <form method="post" action="/flow/run/listen">
+        <button type="submit">Run listen</button>
+      </form>
+      <form method="post" action="/flow/run/power_off">
+        <button type="submit">Run power_off</button>
+      </form>
     </div>
   </div>
 
