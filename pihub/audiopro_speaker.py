@@ -129,6 +129,7 @@ class AudioProSpeaker:
         volume_step_pct: int = 2,
         command_interval_s: float = 0.2,
         reconnect_s: float = 3.0,
+        connect_timeout_s: float = 3.0,
         state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._speaker_ip = speaker_ip.strip()
@@ -139,7 +140,9 @@ class AudioProSpeaker:
 
         self._volume_step_pct = _clamp_int(int(volume_step_pct), 1, 25)
         self._command_interval_s = max(0.2, float(command_interval_s))  # doc says >=200ms
+        
         self._reconnect_s = max(1.0, float(reconnect_s))
+        self._connect_timeout_s = max(1.0, float(connect_timeout_s))
 
         self._state = SpeakerState()
 
@@ -305,13 +308,22 @@ class AudioProSpeaker:
         self._log_drop_once = False
         self._poll_wake_evt.clear()
 
-        reader, writer = await asyncio.open_connection(self._speaker_ip, self._tcp_port)
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self._speaker_ip, self._tcp_port),
+                timeout=self._connect_timeout_s,
+            )
+        except asyncio.TimeoutError as e:
+            raise ConnectionError(
+                f"connect timeout after {self._connect_timeout_s:.1f}s"
+            ) from e
+
         self._reader, self._writer = reader, writer
         self._state.reachable = True
         self._state.connected = True
         self._state.last_update_ts = _now()
         self._wake_poll_loop()
-        logger.info("audio pro tcp connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
+        logger.info("speaker tcp connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
 
     async def _disconnect(self) -> None:
         self._state.reachable = False
@@ -551,7 +563,7 @@ class AudioProSpeaker:
                     self._state.ready = True
                     if not was_ready:
                         logger.info(
-                            "audio pro tcp link ready speaker_ip=%s (initial status received)",
+                            "speaker tcp link ready speaker_ip=%s (initial status received)",
                             self._speaker_ip,
                         )
 
