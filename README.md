@@ -170,21 +170,19 @@ Example response:
 ```json
 {
   "pihub_id": "test-pihub",
-  "status": "degraded",
-  "degraded_reasons": [
-    "tv.off"
-  ],
+  "status": "ok",
+  "degraded_reasons": [],
   "domains": {
     "usb": "ok",
     "ble": "ok",
-    "tv": "degraded",
+    "tv": "ok",
     "speaker": "ok"
   },
   "runtime": {
-    "mode": "listen",
-    "last_flow": "listen",
+    "mode": "watch",
+    "last_flow": "watch",
     "flow_running": false,
-    "last_trigger": "flow.listen",
+    "last_trigger": "flow.watch",
     "error": false,
     "last_error": null,
     "last_result": "ok"
@@ -232,22 +230,20 @@ Example response:
     }
   },
   "tv": {
-    "status": "degraded",
+    "status": "ok",
     "configured": true,
     "enabled": true,
-    "reasons": [
-      "tv.off"
-    ],
+    "reasons": [],
     "present": true,
-    "link_up": false,
-    "link_ready": false,
+    "link_up": true,
+    "link_ready": true,
     "error": false,
     "last_error": null,
     "details": {
       "initialized": true,
-      "presence_on": false,
-      "presence_source": "ssdp_byebye",
-      "last_change_age_s": 1210,
+      "presence_on": true,
+      "presence_source": "ssdp_alive",
+      "last_change_age_s": 9,
       "ws_connected": true,
       "token_present": true
     }
@@ -266,12 +262,12 @@ Example response:
       "reachable": true,
       "connected": true,
       "ready": true,
-      "playback_status": "play",
-      "volume_pct": 22,
+      "playback_status": null,
+      "volume_pct": 30,
       "muted": false,
-      "source": "wifi",
-      "last_update_ts": 1773667721,
-      "update_age_s": 10
+      "source": "hdmi",
+      "last_update_ts": 1773669131,
+      "update_age_s": 6
     }
   }
 }
