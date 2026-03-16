@@ -660,6 +660,18 @@ pre.json {
 
         pretty_json = json.dumps(snapshot, indent=2)
 
+        degraded_reasons = snapshot.get("degraded_reasons") or []
+
+        attention_html = ""
+        if degraded_reasons:
+            attention_html = f"""
+    <section class="section">
+      <h2>Attention</h2>
+      <div class="muted" style="margin-bottom:0.5rem;">App-wide degraded reasons</div>
+      <div class="chips">{chips(degraded_reasons)}</div>
+    </section>
+"""
+
         html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -711,25 +723,10 @@ pre.json {
     <section class="section">
       <h2>Domains</h2>
       <div class="grid domains">
-        {domain_card("USB", snapshot.get("usb") or {{}}, ["paired_remote", "reader_running", "input_open", "grabbed"])}
-        {domain_card("BLE", snapshot.get("ble") or {{}}, ["transport_open", "advertising", "connected", "proto_report", "last_disc_reason"])}
-        {domain_card("TV", snapshot.get("tv") or {{}}, ["initialized", "presence_on", "presence_source", "last_change_age_s", "ws_connected", "token_present"])}
-        {domain_card("Speaker", snapshot.get("speaker") or {{}}, ["reachable", "connected", "ready", "playback_status", "source", "volume_pct", "muted", "update_age_s"])}
-        <div class="card">
-          <h3>
-            <span>Runtime</span>
-            {self._status_badge_html("degraded" if runtime.get("error") else "ok")}
-          </h3>
-          <div class="kv">
-            {kv_row("Mode", runtime.get("mode"))}
-            {kv_row("Last flow", runtime.get("last_flow"))}
-            {kv_row("Flow running", runtime.get("flow_running"))}
-            {kv_row("Last trigger", runtime.get("last_trigger"))}
-            {kv_row("Last result", runtime.get("last_result"))}
-            {kv_row("Error", runtime.get("error"))}
-          </div>
-          {runtime_error_html}
-        </div>
+        {domain_card("USB", snapshot.get("usb") or {}, ["paired_remote", "reader_running", "input_open", "grabbed"])}
+        {domain_card("BLE", snapshot.get("ble") or {}, ["transport_open", "advertising", "connected", "proto_report", "last_disc_reason"])}
+        {domain_card("TV", snapshot.get("tv") or {}, ["initialized", "presence_on", "presence_source", "last_change_age_s", "ws_connected", "token_present"])}
+        {domain_card("Speaker", snapshot.get("speaker") or {}, ["reachable", "connected", "ready", "playback_status", "source", "volume_pct", "muted", "update_age_s"])}
       </div>
     </section>
 
@@ -764,11 +761,7 @@ pre.json {
       </div>
     </section>
 
-    <section class="section">
-      <h2>Attention</h2>
-      <div class="muted" style="margin-bottom:0.5rem;">App-wide degraded reasons</div>
-      <div class="chips">{chips(snapshot.get("degraded_reasons") or [])}</div>
-    </section>
+    {attention_html}
 
     <section class="section">
       <h2>Health snapshot</h2>
