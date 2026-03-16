@@ -119,14 +119,14 @@ class HealthServer:
         return data if isinstance(data, dict) else None
 
     @staticmethod
-    def _domain_status(*, enabled: bool, degraded: bool) -> str:
-        if not enabled:
+    def _domain_status(*, configured: bool, enabled: bool, degraded: bool) -> str:
+        if not configured or not enabled:
             return "disabled"
         return "degraded" if degraded else "ok"
 
     def snapshot(self) -> dict:
         pihub_id = socket.gethostname()
-    
+
         runtime_state = (
             self._runtime.snapshot()
             if self._runtime is not None
@@ -140,93 +140,146 @@ class HealthServer:
 
         degraded_reasons: list[str] = []
 
-        usb_raw = self._reader.status
-        usb_present = bool(usb_raw.get("receiver_present"))
-        usb_path = usb_raw.get("input_path")
-        usb_link_up = bool(usb_raw.get("input_open"))
-        usb_link_ready = bool(
-            usb_raw.get("input_open")
-            and usb_raw.get("reader_running")
-            and usb_raw.get("grabbed")
-            and usb_raw.get("paired_remote")
-        )
-
-        usb_reasons: list[str] = []
-        if not usb_present:
-            usb_reasons.append("usb.receiver_not_detected")
-        if not bool(usb_raw.get("paired_remote")):
-            usb_reasons.append("usb.no_paired_remote")
-        if not bool(usb_raw.get("reader_running")):
-            usb_reasons.append("usb.reader_not_running")
-        if not bool(usb_raw.get("input_open")):
-            usb_reasons.append("usb.input_not_open")
-        if not bool(usb_raw.get("grabbed")):
-            usb_reasons.append("usb.not_grabbed")
-
-        usb_error = bool(usb_raw.get("error")) if "error" in usb_raw else (not usb_link_up)
-
-        usb_state = {
-            "status": self._domain_status(enabled=True, degraded=bool(usb_reasons)),
-            "reasons": usb_reasons,
-            "present": usb_present,
-            "path": usb_path,
-            "link_up": usb_link_up,
-            "link_ready": usb_link_ready,
-            "error": usb_error,
-            "details": {
-                "paired_remote": bool(usb_raw.get("paired_remote")),
-                "reader_running": bool(usb_raw.get("reader_running")),
-                "input_open": bool(usb_raw.get("input_open")),
-                "grabbed": bool(usb_raw.get("grabbed")),
-            },
-        }
-        degraded_reasons.extend(usb_reasons)
-
-        ble_raw = self._ble.status
-        conn_params = ble_raw.get("conn_params") or {}
-
-        ble_present = bool(ble_raw.get("adapter_present"))
-        ble_path = ble_raw.get("active_port") or ble_raw.get("device")
-        ble_connected = bool(ble_raw.get("connected"))
-        ble_advertising = bool(ble_raw.get("advertising"))
-        ble_link_ready = bool(ble_raw.get("ready"))
-        ble_transport_up = ble_present
-        ble_link_up = ble_connected
-
-        ble_reasons: list[str] = []
-        if not ble_present:
-            ble_reasons.append("ble.adapter_missing")
-        elif ble_link_ready:
-            pass
-        elif ble_connected:
-            ble_reasons.append("ble.connected_not_ready")
-        elif ble_advertising:
-            ble_reasons.append("ble.advertising")
+        # ---------------- USB ----------------
+        if self._reader is None:
+            usb_state = {
+                "status": "disabled",
+                "configured": False,
+                "enabled": False,
+                "reasons": [],
+                "present": False,
+                "path": None,
+                "link_up": False,
+                "link_ready": False,
+                "error": False,
+                "details": {},
+            }
         else:
-            ble_reasons.append("ble.idle")
+            usb_raw = self._reader.status
+            usb_configured = True
+            usb_enabled = True
+            usb_present = bool(usb_raw.get("receiver_present"))
+            usb_path = usb_raw.get("input_path")
+            usb_link_up = bool(usb_raw.get("input_open"))
+            usb_link_ready = bool(
+                usb_raw.get("input_open")
+                and usb_raw.get("reader_running")
+                and usb_raw.get("grabbed")
+                and usb_raw.get("paired_remote")
+            )
 
-        ble_state = {
-            "status": self._domain_status(enabled=True, degraded=bool(ble_reasons)),
-            "reasons": ble_reasons,
-            "present": ble_present,
-            "path": ble_path,
-            "link_up": ble_link_up,
-            "link_ready": ble_link_ready,
-            "error": bool(ble_raw.get("error")),
-            "details": {
-                "transport_up": ble_transport_up,
-                "advertising": ble_advertising,
-                "connected": ble_connected,
-                "last_disc_reason": ble_raw.get("last_disc_reason"),
-                "conn_params": conn_params or None,
-            },
-        }
+            usb_reasons: list[str] = []
+            if not usb_present:
+                usb_reasons.append("usb.receiver_not_detected")
+            if not bool(usb_raw.get("paired_remote")):
+                usb_reasons.append("usb.no_paired_remote")
+            if not bool(usb_raw.get("reader_running")):
+                usb_reasons.append("usb.reader_not_running")
+            if not bool(usb_raw.get("input_open")):
+                usb_reasons.append("usb.input_not_open")
+            if not bool(usb_raw.get("grabbed")):
+                usb_reasons.append("usb.not_grabbed")
 
-        degraded_reasons.extend(ble_reasons)
+            usb_error = bool(usb_raw.get("error")) if "error" in usb_raw else (not usb_link_up)
 
+            usb_state = {
+                "status": self._domain_status(
+                    configured=usb_configured,
+                    enabled=usb_enabled,
+                    degraded=bool(usb_reasons),
+                ),
+                "configured": usb_configured,
+                "enabled": usb_enabled,
+                "reasons": usb_reasons,
+                "present": usb_present,
+                "path": usb_path,
+                "link_up": usb_link_up,
+                "link_ready": usb_link_ready,
+                "error": usb_error,
+                "details": {
+                    "paired_remote": bool(usb_raw.get("paired_remote")),
+                    "reader_running": bool(usb_raw.get("reader_running")),
+                    "input_open": bool(usb_raw.get("input_open")),
+                    "grabbed": bool(usb_raw.get("grabbed")),
+                },
+            }
+
+        if usb_state["status"] == "degraded":
+            degraded_reasons.extend(usb_state["reasons"])
+
+        # ---------------- BLE ----------------
+        if self._ble is None:
+            ble_state = {
+                "status": "disabled",
+                "configured": False,
+                "enabled": False,
+                "reasons": [],
+                "present": False,
+                "path": None,
+                "link_up": False,
+                "link_ready": False,
+                "error": False,
+                "details": {},
+            }
+        else:
+            ble_raw = self._ble.status
+            conn_params = ble_raw.get("conn_params") or {}
+
+            ble_configured = True
+            ble_enabled = True
+            ble_present = bool(ble_raw.get("adapter_present"))
+            ble_path = ble_raw.get("active_port") or ble_raw.get("device")
+            ble_transport_up = bool(ble_raw.get("is_open"))
+            ble_connected = bool(ble_raw.get("connected"))
+            ble_advertising = bool(ble_raw.get("advertising"))
+            ble_link_ready = bool(ble_raw.get("ready"))
+
+            ble_reasons: list[str] = []
+            if not ble_present:
+                ble_reasons.append("ble.adapter_missing")
+            elif not ble_transport_up:
+                ble_reasons.append("ble.transport_down")
+            elif ble_link_ready:
+                pass
+            elif ble_connected:
+                ble_reasons.append("ble.connected_not_ready")
+            elif ble_advertising:
+                ble_reasons.append("ble.advertising")
+            else:
+                ble_reasons.append("ble.idle")
+
+            ble_state = {
+                "status": self._domain_status(
+                    configured=ble_configured,
+                    enabled=ble_enabled,
+                    degraded=bool(ble_reasons),
+                ),
+                "configured": ble_configured,
+                "enabled": ble_enabled,
+                "reasons": ble_reasons,
+                "present": ble_present,
+                "path": ble_path,
+                "link_up": ble_transport_up,
+                "link_ready": ble_link_ready,
+                "error": bool(ble_raw.get("error")),
+                "details": {
+                    "advertising": ble_advertising,
+                    "connected": ble_connected,
+                    "last_disc_reason": ble_raw.get("last_disc_reason"),
+                    "conn_params": conn_params or None,
+                    "proto_report": ble_raw.get("proto_report"),
+                },
+            }
+
+        if ble_state["status"] == "degraded":
+            degraded_reasons.extend(ble_state["reasons"])
+
+        # ---------------- TV ----------------
         if self._tv is None:
             tv_state = {
                 "status": "disabled",
+                "configured": False,
+                "enabled": False,
                 "reasons": [],
                 "present": False,
                 "link_up": False,
@@ -236,21 +289,36 @@ class HealthServer:
             }
         else:
             s = self._tv.snapshot()
-            tv_enabled = bool(s.token_present)
-            tv_link_up = bool(s.presence_on)
-            tv_link_ready = bool(s.ws_connected and s.presence_on)
+
+            tv_configured = True
+            tv_enabled = True
+            tv_present = s.presence_on is not None
+            tv_link_up = bool(s.presence_on is True)
+            tv_link_ready = bool(s.ws_connected and s.presence_on is True)
             tv_error = bool(s.last_error)
 
             tv_reasons: list[str] = []
-            if not s.token_present:
+            if not bool(s.token_present):
                 tv_reasons.append("tv.token_missing")
+            if not tv_present:
+                tv_reasons.append("tv.presence_unknown")
+            elif not tv_link_up:
+                tv_reasons.append("tv.off")
+            elif not tv_link_ready:
+                tv_reasons.append("tv.ws_not_ready")
             if tv_error:
                 tv_reasons.append("tv.error")
 
             tv_state = {
-                "status": self._domain_status(enabled=tv_enabled, degraded=bool(tv_reasons)),
+                "status": self._domain_status(
+                    configured=tv_configured,
+                    enabled=tv_enabled,
+                    degraded=bool(tv_reasons),
+                ),
+                "configured": tv_configured,
+                "enabled": tv_enabled,
                 "reasons": tv_reasons,
-                "present": tv_enabled,
+                "present": tv_present,
                 "link_up": tv_link_up,
                 "link_ready": tv_link_ready,
                 "error": tv_error,
@@ -264,11 +332,16 @@ class HealthServer:
                     "last_error": s.last_error,
                 },
             }
-        degraded_reasons.extend(tv_state["reasons"])
 
+        if tv_state["status"] == "degraded":
+            degraded_reasons.extend(tv_state["reasons"])
+
+        # ---------------- Speaker ----------------
         if self._speaker is None or not getattr(self._speaker, "enabled", False):
             speaker_state = {
                 "status": "disabled",
+                "configured": bool(self._speaker is not None),
+                "enabled": False,
                 "reasons": [],
                 "present": False,
                 "link_up": False,
@@ -277,35 +350,52 @@ class HealthServer:
                 "details": {},
             }
         else:
-            speaker_enabled = True
             snap = self._speaker.snapshot()
             sstate = getattr(self._speaker, "state", None)
+
             reachable = bool(getattr(sstate, "reachable", False))
             connected = bool(getattr(sstate, "connected", False))
             ready = bool(getattr(sstate, "ready", False))
+            last_error = getattr(sstate, "last_error", None)
 
+            speaker_configured = True
+            speaker_enabled = True
+            sp_present = reachable
             sp_link_up = connected
             sp_link_ready = ready
-            sp_error = bool(getattr(sstate, "last_error", None))
+            sp_error = bool(last_error)
 
             sp_reasons: list[str] = []
             if not reachable:
                 sp_reasons.append("speaker.not_reachable")
-            if reachable and not connected:
+            elif not connected:
                 sp_reasons.append("speaker.not_connected")
-            if connected and not ready:
+            elif not ready:
                 sp_reasons.append("speaker.not_ready")
+            if sp_error:
+                sp_reasons.append("speaker.error")
+
+            details = dict(snap)
+            details["last_error"] = last_error
 
             speaker_state = {
-                "status": self._domain_status(enabled=speaker_enabled, degraded=bool(sp_reasons)),
+                "status": self._domain_status(
+                    configured=speaker_configured,
+                    enabled=speaker_enabled,
+                    degraded=bool(sp_reasons),
+                ),
+                "configured": speaker_configured,
+                "enabled": speaker_enabled,
                 "reasons": sp_reasons,
-                "present": speaker_enabled,
+                "present": sp_present,
                 "link_up": sp_link_up,
                 "link_ready": sp_link_ready,
                 "error": sp_error,
-                "details": snap,
+                "details": details,
             }
-        degraded_reasons.extend(speaker_state["reasons"])
+
+        if speaker_state["status"] == "degraded":
+            degraded_reasons.extend(speaker_state["reasons"])
 
         status = "ok" if not degraded_reasons else "degraded"
         domains = {
@@ -326,3 +416,4 @@ class HealthServer:
             "tv": tv_state,
             "speaker": speaker_state,
         }
+
