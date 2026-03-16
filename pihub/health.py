@@ -176,16 +176,18 @@ class HealthServer:
 
             usb_reasons: list[str] = []
             if not usb_present:
-                usb_reasons.append("usb.receiver_not_detected")
-            if not bool(usb_raw.get("paired_remote")):
-                usb_reasons.append("usb.no_paired_remote")
-            if not bool(usb_raw.get("reader_running")):
-                usb_reasons.append("usb.reader_not_running")
-            if not bool(usb_raw.get("input_open")):
-                usb_reasons.append("usb.input_not_open")
-            if not bool(usb_raw.get("grabbed")):
-                usb_reasons.append("usb.not_grabbed")
-            if usb_error:
+                usb_reasons.append("usb.receiver_missing")
+            else:
+                if not bool(usb_raw.get("paired_remote")):
+                    usb_reasons.append("usb.no_paired_remote")
+                if not bool(usb_raw.get("reader_running")):
+                    usb_reasons.append("usb.reader_not_running")
+                if not bool(usb_raw.get("input_open")):
+                    usb_reasons.append("usb.input_not_open")
+                if not bool(usb_raw.get("grabbed")):
+                    usb_reasons.append("usb.not_grabbed")
+
+            if usb_error and usb_last_error:
                 usb_reasons.append("usb.error")
 
             usb_state = {
@@ -247,18 +249,20 @@ class HealthServer:
 
             ble_reasons: list[str] = []
             if not ble_present:
-                ble_reasons.append("ble.adapter_missing")
-            elif ble_link_ready:
-                pass
-            elif not ble_transport_up:
-                ble_reasons.append("ble.transport_down")
-            elif ble_connected:
-                ble_reasons.append("ble.connected_not_ready")
-            elif ble_advertising:
-                ble_reasons.append("ble.advertising")
+                ble_reasons.append("ble.dongle_missing")
             else:
-                ble_reasons.append("ble.idle")
-            if ble_error:
+                if ble_link_ready:
+                    pass
+                elif not ble_transport_up:
+                    ble_reasons.append("ble.transport_down")
+                elif ble_connected:
+                    ble_reasons.append("ble.connected_not_ready")
+                elif ble_advertising:
+                    ble_reasons.append("ble.advertising")
+                else:
+                    ble_reasons.append("ble.idle")
+
+            if ble_error and ble_last_error:
                 ble_reasons.append("ble.error")
 
             ble_state = {
