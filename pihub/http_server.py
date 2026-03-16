@@ -127,6 +127,9 @@ class HttpServer:
 
     async def _handle_tools(self, request: web.Request) -> web.Response:
         snapshot = self.snapshot()
+        runtime = snapshot.get("runtime") or {}
+        current_mode = str(runtime.get("mode") or "")
+        current_flow = str(runtime.get("last_flow") or "")
         pretty_json = json.dumps(snapshot, indent=2)
         hostname = snapshot.get("pihub_id") or socket.gethostname()
         host = request.host or "localhost"
@@ -199,6 +202,28 @@ class HttpServer:
       color: #555;
       font-size: 0.95rem;
     }}
+    .section-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+    }}
+    .badge {{
+      display: inline-block;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+      font-size: 0.9rem;
+      background: #eef2ff;
+      border: 1px solid #c7d2fe;
+      color: #3730a3;
+      white-space: nowrap;
+    }}
+    form.active button {{
+      border: 2px solid #2563eb;
+      background: #eff6ff;
+      font-weight: 600;
+    }}
   </style>
 </head>
 <body>
@@ -232,30 +257,36 @@ class HttpServer:
 
 
   <div class="section">
-    <h2>Flows</h2>
+    <div class="section-header">
+      <h2>Flows</h2>
+      <span class="badge">Current flow: {current_flow or "none"}</span>
+    </div>
     <div class="row">
-      <form method="post" action="/flow/run/watch">
+      <form method="post" action="/flow/run/watch" class="{active_class('watch', current_flow)}">
         <button type="submit">Run watch</button>
       </form>
-      <form method="post" action="/flow/run/listen">
+      <form method="post" action="/flow/run/listen" class="{active_class('listen', current_flow)}">
         <button type="submit">Run listen</button>
       </form>
-      <form method="post" action="/flow/run/power_off">
+      <form method="post" action="/flow/run/power_off" class="{active_class('power_off', current_flow)}">
         <button type="submit">Run power_off</button>
       </form>
     </div>
   </div>
 
   <div class="section">
-    <h2>Modes</h2>
+    <div class="section-header">
+      <h2>Modes</h2>
+      <span class="badge">Current mode: {current_mode or "none"}</span>
+    </div>
     <div class="row">
-      <form method="post" action="/mode/set/watch">
+      <form method="post" action="/mode/set/watch" class="{active_class('watch', current_mode)}">
         <button type="submit">Set mode watch</button>
       </form>
-      <form method="post" action="/mode/set/listen">
+      <form method="post" action="/mode/set/listen" class="{active_class('listen', current_mode)}">
         <button type="submit">Set mode listen</button>
       </form>
-      <form method="post" action="/mode/set/power_off">
+      <form method="post" action="/mode/set/power_off" class="{active_class('power_off', current_mode)}">
         <button type="submit">Set mode power_off</button>
       </form>
     </div>
@@ -296,6 +327,9 @@ class HttpServer:
 </html>
 """
         return web.Response(text=html, content_type="text/html")
+    
+        def active_class(value: str, current: str) -> str:
+            return "active" if value == current else ""
 
     async def _handle_refresh_tv(self, _: web.Request) -> web.Response:
         if self._tv is None:
