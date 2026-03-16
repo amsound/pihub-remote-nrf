@@ -96,6 +96,9 @@ async def main() -> None:
         tv_discovery_tasks = start_discovery_tasks(tv)
         for task in tv_discovery_tasks:
             task.add_done_callback(_monitor_tv_task)
+        # One-shot active presence survey for startup.
+        # The passive SSDP listener remains the long-lived truth source.
+        await tv.reconcile_presence()
 
         async def _stop_tv_discovery() -> None:
             await stop_discovery_tasks(tv_discovery_tasks)

@@ -415,6 +415,77 @@ class TvController:
             return
         await self.ws.connect(self._session)
 
+    async def reconcile_presence(self, *, bootstrap_timeout_s: float = 3.0) -> None:
+        """
+        One-shot active presence reconcile.
+
+        Ownership / boundaries:
+        - This method does NOT start or stop long-lived discovery tasks.
+        - SSDP alive/byebye remains the primary passive source of truth.
+        - This method is the active survey path for startup and later recovery.
+        - M-SEARCH is tried first.
+        - HTTP /dmr is fallback only if M-SEARCH does not establish presence.
+        - If presence is established as true, websocket connection may be nudged.
+        - Presence changes must never auto-close the websocket.
+
+        Intended uses:
+        - startup bootstrap
+        - post-network-blip resurvey
+        - manual/operator refresh
+        """
+        if not self._session:
+            await self.start()
+        if not self._session:
+            return
+
+        logger.debug(
+            "tv reconcile start tv_ip=%s presence_on=%s presence_source=%s",
+            self.tv_ip,
+            self._presence_cached,
+            self._presence_source,
+        )
+
+        # Primary active survey path: ask the network directly.
+        try:
+            await msearch_bootstrap(self, timeout_s=bootstrap_timeout_s)
+        except Exception:
+            logger.debug("tv reconcile msearch bootstrap failed", exc_info=True)
+
+        # If bootstrap established presence, optionally nudge command-path readiness.
+        if self._presence_cached is True:
+            try:
+                await self.ensure_ws_connected()
+            except Exception:
+                logger.debug("tv reconcile ws connect failed after positive presence", exc_info=True)
+            return
+
+        # Fallback only: use HTTP renderer probe if M-SEARCH did not establish truth.
+        try:
+            if await presence_probe_up(self._session, self.tv_ip):
+                changed = self._commit_presence(True, source="probe_http_up")
+                logger.debug(
+                    "tv reconcile probe_up changed=%s presence_on=%s source=%s",
+                    "true" if changed else "false",
+                    "true" if self._presence_cached is True else "false",
+                    self._presence_source,
+                )
+                try:
+                    await self.ensure_ws_connected()
+                except Exception:
+                    logger.debug("tv reconcile ws connect failed after http fallback", exc_info=True)
+                return
+        except Exception:
+            logger.debug("tv reconcile http probe failed", exc_info=True)
+
+        # No positive signal established. Leave cached presence as-is.
+        # This is intentionally conservative: absence of proof is not forced "off".
+        logger.debug(
+            "tv reconcile complete tv_ip=%s presence_on=%s presence_source=%s",
+            self.tv_ip,
+            self._presence_cached,
+            self._presence_source,
+        )
+
     def snapshot(self) -> TvSnapshot:
         st = self.ws.state
         last_change_age_s: int | None = None
@@ -781,10 +852,9 @@ async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None
 
 
 def start_discovery_tasks(tv: TvController) -> list[asyncio.Task]:
-    """Start passive SSDP listener plus one-shot M-SEARCH bootstrap."""
+    """Start long-lived passive discovery tasks for the TV domain."""
     return [
         asyncio.create_task(ssdp_listener(tv), name="tv:ssdp"),
-        asyncio.create_task(msearch_bootstrap(tv), name="tv:msearch_bootstrap"),
     ]
 
 
