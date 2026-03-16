@@ -377,213 +377,242 @@ pre.json {
 }
 """
 
-    async def _handle_tools(self, request: web.Request) -> web.Response:
-        host = request.host or "localhost"
+async def _handle_tools(self, request: web.Request) -> web.Response:
+    import json
 
-        snapshot = self.snapshot()
-        hostname = snapshot.get("pihub_id") or socket.gethostname()
-        pretty_json = json.dumps(snapshot, indent=2)
+    host = request.host or "localhost"
 
-        runtime = snapshot.get("runtime") or {}
-        current_mode = str(runtime.get("mode") or "")
-        current_flow = str(runtime.get("last_flow") or "")
+    snapshot = self.snapshot()
+    hostname = snapshot.get("pihub_id") or socket.gethostname()
+    pretty_json = json.dumps(snapshot, indent=2)
 
-        def active_class(value: str, current: str) -> str:
-            return "active" if value == current else ""
-        html = f"""<!doctype html>
+    runtime = snapshot.get("runtime") or {}
+    current_mode = str(runtime.get("mode") or "")
+    current_flow = str(runtime.get("last_flow") or "")
+
+    def active_class(value: str, current: str) -> str:
+        return "active" if value == current else ""
+
+    html = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>PiHub Tools</title>
+  <title>PiHub Tools — {self._html_escape(hostname)}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body {{
-      font-family: sans-serif;
-      margin: 2rem;
-      max-width: 720px;
-    }}
-    h1, h2 {{
-      margin-bottom: 0.5rem;
-    }}
-    .section {{
-      margin-bottom: 1.5rem;
-      padding: 1rem;
-      border: 1px solid #ccc;
-      border-radius: 8px;
-    }}
-    .row {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-      margin-top: 0.75rem;
-    }}
-    form {{
-      margin: 0;
-    }}
-    button {{
-      padding: 0.7rem 1rem;
-      font-size: 1rem;
-      cursor: pointer;
-    }}
-    .danger button {{
-      border-color: #b00;
-    }}
-    code {{
-      background: #f5f5f5;
-      padding: 0.1rem 0.3rem;
-      border-radius: 4px;
-    }}
-    pre.json {{
-      background: #111827;
-      color: #e5e7eb;
-      padding: 1rem;
-      border-radius: 8px;
-      overflow-x: auto;
-      font-size: 0.92rem;
-      line-height: 1.4;
-      white-space: pre;
-    }}
-    .meta {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 0.75rem;
-      margin-top: 0.75rem;
-    }}
-    .card {{
-      border: 1px solid #ccc;
-      border-radius: 8px;
-      padding: 0.75rem;
-      background: #fafafa;
-    }}
-    .muted {{
-      color: #555;
-      font-size: 0.95rem;
-    }}
-    .section-header {{
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 1rem;
-      margin-bottom: 0.5rem;
-    }}
-    .badge {{
-      display: inline-block;
-      padding: 0.25rem 0.6rem;
-      border-radius: 999px;
-      font-size: 0.9rem;
-      background: #eef2ff;
-      border: 1px solid #c7d2fe;
-      color: #3730a3;
-      white-space: nowrap;
-    }}
-    form.active button {{
-      border: 2px solid #2563eb;
-      background: #eff6ff;
-      font-weight: 600;
-    }}
+{self._shared_dark_css()}
+
+.row {{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}}
+
+form {{
+  margin: 0;
+}}
+
+button {{
+  padding: 0.8rem 1rem;
+  font-size: 1rem;
+  cursor: pointer;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  min-width: 180px;
+  transition: 0.15s ease;
+}}
+
+button:hover {{
+  border-color: var(--accent);
+  background: #1b2740;
+}}
+
+form.active button {{
+  border: 2px solid var(--accent);
+  background: #162236;
+  font-weight: 700;
+}}
+
+.section-header {{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}}
+
+.badge {{
+  display: inline-block;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  background: #242b38;
+  border: 1px solid var(--border);
+  color: var(--text);
+  white-space: nowrap;
+}}
+
+.tools-grid {{
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}}
+
+.meta-grid {{
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}}
+
+.meta-card {{
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1rem;
+}}
+
+.meta-card h3 {{
+  margin: 0 0 0.4rem 0;
+  font-size: 1rem;
+}}
+
+.meta-value {{
+  font-size: 1.05rem;
+  font-weight: 600;
+}}
+
+pre.json {{
+  margin: 0;
+  background: #0b0e13;
+  color: #e5e7eb;
+  padding: 1rem;
+  border-radius: 12px;
+  overflow-x: auto;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  white-space: pre;
+  border: 1px solid var(--border);
+}}
+
+.danger button {{
+  border-color: #6c2525;
+}}
+.danger button:hover {{
+  background: #2a1818;
+}}
+
+@media (max-width: 640px) {{
+  button {{
+    width: 100%;
+    min-width: 0;
+  }}
+}}
   </style>
 </head>
 <body>
-  <h1>PiHub Tools — {hostname}</h1>
+  {self._nav_html(current="tools", hostname=str(hostname))}
 
-  <div class="section">
-    <h2>System</h2>
-    <div class="meta">
-      <div class="card">
-        <strong>System uptime</strong><br>
-        <span class="muted">{snapshot["system"]["system_uptime_human"] or "unknown"}</span>
+  <main class="page">
+    <section class="section">
+      <h1>Tools</h1>
+      <p class="muted">Direct operator controls for flows, modes, networked-domain refresh, and restart.</p>
+
+      <div class="meta-grid">
+        <div class="meta-card">
+          <h3>Current mode</h3>
+          <div class="meta-value">{self._html_escape(current_mode or "none")}</div>
+        </div>
+        <div class="meta-card">
+          <h3>Current flow</h3>
+          <div class="meta-value">{self._html_escape(current_flow or "none")}</div>
+        </div>
+        <div class="meta-card">
+          <h3>Last trigger</h3>
+          <div class="meta-value">{self._html_escape(runtime.get("last_trigger") or "none")}</div>
+        </div>
+        <div class="meta-card">
+          <h3>Runtime result</h3>
+          <div class="meta-value">{self._html_escape(runtime.get("last_result") or "none")}</div>
+        </div>
       </div>
-      <div class="card">
-        <strong>PiHub uptime</strong><br>
-        <span class="muted">{snapshot["system"]["process_uptime_human"]}</span>
-      </div>
-      <div class="card">
-        <strong>Load average</strong><br>
-        <span class="muted">{snapshot["system"]["load"]["1m"]} / {snapshot["system"]["load"]["5m"]} / {snapshot["system"]["load"]["15m"]}</span>
-      </div>
-      <div class="card">
-        <strong>Memory used</strong><br>
-        <span class="muted">{snapshot["system"]["memory"]["used_human"]} / {snapshot["system"]["memory"]["total_human"]}</span>
-      </div>
-      <div class="card">
-        <strong>Disk used</strong><br>
-        <span class="muted">{snapshot["system"]["disk"]["used_human"]} / {snapshot["system"]["disk"]["total_human"]}</span>
-      </div>
-    </div>
-  </div>
+    </section>
 
+    <div class="tools-grid">
+      <section class="section">
+        <div class="section-header">
+          <h2>Flows</h2>
+          <span class="badge">Current flow: {self._html_escape(current_flow or "none")}</span>
+        </div>
+        <div class="row">
+          <form method="post" action="/flow/run/watch" class="{active_class('watch', current_flow)}">
+            <button type="submit">Run watch</button>
+          </form>
+          <form method="post" action="/flow/run/listen" class="{active_class('listen', current_flow)}">
+            <button type="submit">Run listen</button>
+          </form>
+          <form method="post" action="/flow/run/power_off" class="{active_class('power_off', current_flow)}">
+            <button type="submit">Run power_off</button>
+          </form>
+        </div>
+      </section>
 
-  <div class="section">
-    <div class="section-header">
-      <h2>Flows</h2>
-      <span class="badge">Current flow: {current_flow or "none"}</span>
-    </div>
-    <div class="row">
-      <form method="post" action="/flow/run/watch" class="{active_class('watch', current_flow)}">
-        <button type="submit">Run watch</button>
-      </form>
-      <form method="post" action="/flow/run/listen" class="{active_class('listen', current_flow)}">
-        <button type="submit">Run listen</button>
-      </form>
-      <form method="post" action="/flow/run/power_off" class="{active_class('power_off', current_flow)}">
-        <button type="submit">Run power_off</button>
-      </form>
-    </div>
-  </div>
+      <section class="section">
+        <div class="section-header">
+          <h2>Modes</h2>
+          <span class="badge">Current mode: {self._html_escape(current_mode or "none")}</span>
+        </div>
+        <div class="row">
+          <form method="post" action="/mode/set/watch" class="{active_class('watch', current_mode)}">
+            <button type="submit">Set mode watch</button>
+          </form>
+          <form method="post" action="/mode/set/listen" class="{active_class('listen', current_mode)}">
+            <button type="submit">Set mode listen</button>
+          </form>
+          <form method="post" action="/mode/set/power_off" class="{active_class('power_off', current_mode)}">
+            <button type="submit">Set mode power_off</button>
+          </form>
+        </div>
+      </section>
 
-  <div class="section">
-    <div class="section-header">
-      <h2>Modes</h2>
-      <span class="badge">Current mode: {current_mode or "none"}</span>
-    </div>
-    <div class="row">
-      <form method="post" action="/mode/set/watch" class="{active_class('watch', current_mode)}">
-        <button type="submit">Set mode watch</button>
-      </form>
-      <form method="post" action="/mode/set/listen" class="{active_class('listen', current_mode)}">
-        <button type="submit">Set mode listen</button>
-      </form>
-      <form method="post" action="/mode/set/power_off" class="{active_class('power_off', current_mode)}">
-        <button type="submit">Set mode power_off</button>
-      </form>
-    </div>
-  </div>
+      <section class="section">
+        <h2>Refresh</h2>
+        <div class="row">
+          <form method="post" action="/refresh/tv">
+            <button type="submit">Refresh TV</button>
+          </form>
+          <form method="post" action="/refresh/speaker">
+            <button type="submit">Refresh Speaker</button>
+          </form>
+          <form method="post" action="/refresh/networked">
+            <button type="submit">Refresh Networked</button>
+          </form>
+        </div>
+      </section>
 
-  <div class="section">
-    <h2>Refresh</h2>
-    <div class="row">
-      <form method="post" action="/refresh/tv">
-        <button type="submit">Refresh TV</button>
-      </form>
-      <form method="post" action="/refresh/speaker">
-        <button type="submit">Refresh Speaker</button>
-      </form>
-      <form method="post" action="/refresh/networked">
-        <button type="submit">Refresh Networked</button>
-      </form>
+      <section class="section danger">
+        <h2>Admin</h2>
+        <div class="row">
+          <form method="post" action="/admin/restart">
+            <button type="submit">Restart PiHub</button>
+          </form>
+        </div>
+        <p class="muted">Exits the process and relies on the container restart policy to bring it back.</p>
+      </section>
     </div>
-  </div>
 
-  <div class="section danger">
-    <h2>Admin</h2>
-    <div class="row">
-      <form method="post" action="/admin/restart">
-        <button type="submit">Restart PiHub</button>
-      </form>
-    </div>
-    <p>This exits the process and relies on Docker <code>restart: unless-stopped</code> to bring it back.</p>
-  </div>
-
-  <div class="section">
-    <h2>Health snapshot</h2>
-    <p><a href="http://{host}/health">Open raw /health</a></p>
-    <pre class="json">{pretty_json}</pre>
-  </div>
-  
+    <section class="section">
+      <h2>Health snapshot</h2>
+      <p><a href="/health">Open raw /health</a></p>
+      <pre class="json">{self._html_escape(pretty_json)}</pre>
+    </section>
+  </main>
 </body>
 </html>
 """
-        return web.Response(text=html, content_type="text/html")
+    return web.Response(text=html, content_type="text/html")
 
     async def _handle_dashboard(self, request: web.Request) -> web.Response:
         import json
