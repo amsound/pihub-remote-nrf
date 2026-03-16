@@ -183,6 +183,7 @@ class BleDongleLink:
     def status(self) -> dict:
         return {
             "adapter_present": self.is_open,
+            "transport_open": self.is_open,
             "active_port": self._port,
             "ready": self.state.ready,
             "advertising": self.state.advertising,
@@ -192,6 +193,7 @@ class BleDongleLink:
             "suspend": self.state.suspend,
             "notify": dict(self.state.notify) if self.state.notify else None,
             "error": self.state.error,
+            "last_error": None,
             "conn_params": vars(self.state.conn_params) if self.state.conn_params else None,
             "phy": vars(self.state.phy) if self.state.phy else None,
             "last_disc_reason": self.state.last_disc_reason,

@@ -16,7 +16,9 @@ from .unifying_input import UnifyingReader
 from .audiopro_speaker import AudioProSpeaker
 from .samsung_tv import TvController
 
-
+def _norm_error(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
 class HealthServer:
     """Expose a simple JSON health snapshot for scrapers and system logic."""
@@ -152,6 +154,7 @@ class HealthServer:
                 "link_up": False,
                 "link_ready": False,
                 "error": False,
+                "last_error": None,
                 "details": {},
             }
         else:
@@ -168,6 +171,9 @@ class HealthServer:
                 and usb_raw.get("paired_remote")
             )
 
+            usb_last_error = _norm_error(usb_raw.get("last_error"))
+            usb_error = bool(usb_raw.get("error")) if "error" in usb_raw else bool(usb_last_error)
+
             usb_reasons: list[str] = []
             if not usb_present:
                 usb_reasons.append("usb.receiver_not_detected")
@@ -179,8 +185,8 @@ class HealthServer:
                 usb_reasons.append("usb.input_not_open")
             if not bool(usb_raw.get("grabbed")):
                 usb_reasons.append("usb.not_grabbed")
-
-            usb_error = bool(usb_raw.get("error")) if "error" in usb_raw else (not usb_link_up)
+            if usb_error:
+                usb_reasons.append("usb.error")
 
             usb_state = {
                 "status": self._domain_status(
@@ -196,6 +202,7 @@ class HealthServer:
                 "link_up": usb_link_up,
                 "link_ready": usb_link_ready,
                 "error": usb_error,
+                "last_error": usb_last_error,
                 "details": {
                     "paired_remote": bool(usb_raw.get("paired_remote")),
                     "reader_running": bool(usb_raw.get("reader_running")),
@@ -219,6 +226,7 @@ class HealthServer:
                 "link_up": False,
                 "link_ready": False,
                 "error": False,
+                "last_error": None,
                 "details": {},
             }
         else:
@@ -228,25 +236,30 @@ class HealthServer:
             ble_configured = True
             ble_enabled = True
             ble_present = bool(ble_raw.get("adapter_present"))
-            ble_path = ble_raw.get("active_port") or ble_raw.get("device")
-            ble_transport_up = bool(ble_raw.get("is_open"))
+            ble_path = ble_raw.get("active_port")
+            ble_transport_up = bool(ble_raw.get("transport_open"))
             ble_connected = bool(ble_raw.get("connected"))
             ble_advertising = bool(ble_raw.get("advertising"))
             ble_link_ready = bool(ble_raw.get("ready"))
+            ble_link_up = bool(ble_transport_up or ble_connected or ble_link_ready)
+            ble_last_error = _norm_error(ble_raw.get("last_error"))
+            ble_error = bool(ble_raw.get("error")) or bool(ble_last_error)
 
             ble_reasons: list[str] = []
             if not ble_present:
                 ble_reasons.append("ble.adapter_missing")
-            elif not ble_transport_up:
-                ble_reasons.append("ble.transport_down")
             elif ble_link_ready:
                 pass
+            elif not ble_transport_up:
+                ble_reasons.append("ble.transport_down")
             elif ble_connected:
                 ble_reasons.append("ble.connected_not_ready")
             elif ble_advertising:
                 ble_reasons.append("ble.advertising")
             else:
                 ble_reasons.append("ble.idle")
+            if ble_error:
+                ble_reasons.append("ble.error")
 
             ble_state = {
                 "status": self._domain_status(
@@ -259,10 +272,12 @@ class HealthServer:
                 "reasons": ble_reasons,
                 "present": ble_present,
                 "path": ble_path,
-                "link_up": ble_transport_up,
+                "link_up": ble_link_up,
                 "link_ready": ble_link_ready,
-                "error": bool(ble_raw.get("error")),
+                "error": ble_error,
+                "last_error": ble_last_error,
                 "details": {
+                    "transport_open": ble_transport_up,
                     "advertising": ble_advertising,
                     "connected": ble_connected,
                     "last_disc_reason": ble_raw.get("last_disc_reason"),
@@ -285,6 +300,7 @@ class HealthServer:
                 "link_up": False,
                 "link_ready": False,
                 "error": False,
+                "last_error": None,
                 "details": {},
             }
         else:
@@ -295,7 +311,8 @@ class HealthServer:
             tv_present = s.presence_on is not None
             tv_link_up = bool(s.presence_on is True)
             tv_link_ready = bool(s.ws_connected and s.presence_on is True)
-            tv_error = bool(s.last_error)
+            tv_last_error = _norm_error(s.last_error)
+            tv_error = bool(tv_last_error)
 
             tv_reasons: list[str] = []
             if not bool(s.token_present):
@@ -322,6 +339,7 @@ class HealthServer:
                 "link_up": tv_link_up,
                 "link_ready": tv_link_ready,
                 "error": tv_error,
+                "last_error": tv_last_error,
                 "details": {
                     "initialized": bool(s.initialized),
                     "presence_on": s.presence_on,
@@ -329,7 +347,6 @@ class HealthServer:
                     "last_change_age_s": s.last_change_age_s,
                     "ws_connected": bool(s.ws_connected),
                     "token_present": bool(s.token_present),
-                    "last_error": s.last_error,
                 },
             }
 
@@ -347,6 +364,7 @@ class HealthServer:
                 "link_up": False,
                 "link_ready": False,
                 "error": False,
+                "last_error": None,
                 "details": {},
             }
         else:
@@ -356,14 +374,14 @@ class HealthServer:
             reachable = bool(getattr(sstate, "reachable", False))
             connected = bool(getattr(sstate, "connected", False))
             ready = bool(getattr(sstate, "ready", False))
-            last_error = getattr(sstate, "last_error", None)
+            speaker_last_error = _norm_error(getattr(sstate, "last_error", None))
+            speaker_error = bool(speaker_last_error)
 
             speaker_configured = True
             speaker_enabled = True
             sp_present = reachable
             sp_link_up = connected
             sp_link_ready = ready
-            sp_error = bool(last_error)
 
             sp_reasons: list[str] = []
             if not reachable:
@@ -372,11 +390,8 @@ class HealthServer:
                 sp_reasons.append("speaker.not_connected")
             elif not ready:
                 sp_reasons.append("speaker.not_ready")
-            if sp_error:
+            if speaker_error:
                 sp_reasons.append("speaker.error")
-
-            details = dict(snap)
-            details["last_error"] = last_error
 
             speaker_state = {
                 "status": self._domain_status(
@@ -390,8 +405,9 @@ class HealthServer:
                 "present": sp_present,
                 "link_up": sp_link_up,
                 "link_ready": sp_link_ready,
-                "error": sp_error,
-                "details": details,
+                "error": speaker_error,
+                "last_error": speaker_last_error,
+                "details": dict(snap),
             }
 
         if speaker_state["status"] == "degraded":
@@ -416,4 +432,3 @@ class HealthServer:
             "tv": tv_state,
             "speaker": speaker_state,
         }
-
