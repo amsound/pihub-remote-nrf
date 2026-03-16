@@ -1,4 +1,4 @@
-"""Application entry point wiring Bluetooth HID Dongle, Unifying USB Dongle, Samung TV and Audio Pro Speaker."""
+"""Application entry point wiring Bluetooth HID Dongle, Unifying USB Dongle, Samsung TV and Audio Pro Speaker."""
 
 from __future__ import annotations
 

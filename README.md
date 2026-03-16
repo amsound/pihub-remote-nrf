@@ -35,7 +35,7 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 * Nordic nRF52840 Dongle  
   `https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle`
 * Samsung TV - same VLAN recommended
-* Audio Pro Speaker (LinkPlay / Aryrlic / WiiM may work) - will work across VLANs
+* Audio Pro Speaker (LinkPlay / Arylic / WiiM may work) - will work across VLANs
 
 ---
 
@@ -45,28 +45,41 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 
 ```yaml
 services:
-  pihub-nrf:
+  pihub:
     image: a1exm/pihub-nrf:latest
+    container_name: pihub-nrf
+    init: true
+    cpu_shares: 2048
     network_mode: host
     restart: unless-stopped
-    cpu_shares: 2048
+
     device_cgroup_rules:
-      - 'c 13:* rmw'
+      - 'c 13:* r'
+
     environment:
-      TV_IP: "192.168.90.43"
-      TV_MAC: "28:07:08:97:42:c8"
-      SPEAKER_IP: "192.168.70.43"
-      # DEBUG: 1                   # optional for debug chatter
+      TV_IP: "192.168.xx.xx"
+      TV_MAC: "xx:xx:xx:xx:xx:xx"
+      SPEAKER_IP: "192.168.xx.xx"
+#      DEBUG: 1           # Verbose Logging
+
     volumes:
+      - /home/pi/pihub-data:/data
       - /dev/input:/dev/input:ro
       - /dev/input/by-id:/dev/input/by-id:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
-      - ./data:/data
+
     devices:
       - /dev/serial/by-id/usb-ZEPHYR_USB-DEV_425DAED15E820B58-if00:/dev/ttyACM0
+
     group_add:
       - dialout
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 ```
 
 Start with:
@@ -101,16 +114,20 @@ docker push a1exm/pihub-nrf:latest
 
 | Variable | Description | Default / Notes |
 | --- | --- | --- |
+| `USB_ENABLED` | enable Logitech Unifying input domain | default `true` |
 | `BLE_SERIAL_DEVICE` | CDC ACM device for the BLE dongle | `auto` (prefers `/dev/serial/by-id`, then falls back to `/dev/ttyACM*`) |
 | `BLE_SERIAL_BAUD` | BLE serial baud rate | `115200` |
+| `BLE_ENABLED` | enable BLE dongle domain | default `true` |
 | `HEALTH_HOST` | Bind address for the HTTP endpoint | `0.0.0.0` |
 | `HEALTH_PORT` | Port for health and local commands | `9123` |
 | `TV_IP` | Samsung TV IP address | required for TV support |
 | `TV_MAC` | Samsung TV MAC address | required for Wake-on-LAN / power-on path |
 | `TV_TOKEN_FILE` | Samsung TV token path | `/data/samsungtv-token.txt` |
 | `TV_NAME` | Name presented to the Samsung TV | `PiHub Remote` |
+| `TV_ENABLED` | enable Samsung TV domain | default `true` |
 | `SPEAKER_IP` | LinkPlay/WiiM speaker IP address | optional |
 | `SPEAKER_HTTP_SCHEME` | Speaker HTTP scheme | `https` |
+| `SPEAKER_ENABLED` | enable Audio Pro speaker domain | default `true` |
 | `DEBUG` | Debug knob | defaults to INFO/WARN |
 
 Keymap is bundled with the application and loaded from packaged assets in production; it is not configurable at runtime.
@@ -124,6 +141,7 @@ Keymap is bundled with the application and loaded from packaged assets in produc
 * **last_trigger** = sticky record of the most recent runtime trigger source
 
 ### Flow semantics
+
 * a flow takes one snapshot at the start
 * when= predicates are evaluated against that start snapshot only
 * dispatch means “request/send and continue”
@@ -144,7 +162,7 @@ http://<host>:9123
 ### Health
 
 ```text
-GET /health
+GET http://<host>:9123/health
 ```
 
 Example response:
@@ -152,28 +170,36 @@ Example response:
 ```json
 {
   "pihub_id": "test-pihub",
-  "status": "ok",
-  "degraded_reasons": [],
+  "status": "degraded",
+  "degraded_reasons": [
+    "tv.off"
+  ],
   "domains": {
     "usb": "ok",
     "ble": "ok",
-    "tv": "ok",
+    "tv": "degraded",
     "speaker": "ok"
   },
   "runtime": {
-    "mode": "watch",
-    "last_flow": "watch",
+    "mode": "listen",
+    "last_flow": "listen",
     "flow_running": false,
-    "last_trigger": "http.flow"
+    "last_trigger": "flow.listen",
+    "error": false,
+    "last_error": null,
+    "last_result": "ok"
   },
   "usb": {
     "status": "ok",
+    "configured": true,
+    "enabled": true,
     "reasons": [],
     "present": true,
     "path": "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd",
     "link_up": true,
     "link_ready": true,
     "error": false,
+    "last_error": null,
     "details": {
       "paired_remote": true,
       "reader_running": true,
@@ -183,15 +209,20 @@ Example response:
   },
   "ble": {
     "status": "ok",
+    "configured": true,
+    "enabled": true,
     "reasons": [],
     "present": true,
     "path": "/dev/ttyACM0",
     "link_up": true,
     "link_ready": true,
     "error": false,
+    "last_error": null,
     "details": {
+      "transport_open": true,
       "advertising": false,
       "connected": true,
+      "proto_report": true,
       "last_disc_reason": null,
       "conn_params": {
         "interval_ms": 15,
@@ -201,41 +232,51 @@ Example response:
     }
   },
   "tv": {
-    "status": "ok",
-    "reasons": [],
+    "status": "degraded",
+    "configured": true,
+    "enabled": true,
+    "reasons": [
+      "tv.off"
+    ],
     "present": true,
-    "link_up": true,
-    "link_ready": true,
+    "link_up": false,
+    "link_ready": false,
     "error": false,
+    "last_error": null,
     "details": {
       "initialized": true,
-      "presence_on": true,
-      "presence_source": "msearch",
-      "last_change_age_s": 2,
+      "presence_on": false,
+      "presence_source": "ssdp_byebye",
+      "last_change_age_s": 1210,
       "ws_connected": true,
-      "token_present": true,
-      "last_error": ""
+      "token_present": true
     }
   },
   "speaker": {
     "status": "ok",
+    "configured": true,
+    "enabled": true,
     "reasons": [],
     "present": true,
     "link_up": true,
     "link_ready": true,
     "error": false,
+    "last_error": null,
     "details": {
+      "reachable": true,
       "connected": true,
-      "playback_status": null,
-      "volume_pct": 30,
+      "ready": true,
+      "playback_status": "play",
+      "volume_pct": 22,
       "muted": false,
-      "source": "hdmi",
-      "last_update_ts": 1773052406,
-      "update_age_s": 57
+      "source": "wifi",
+      "last_update_ts": 1773667721,
+      "update_age_s": 10
     }
   }
 }
 ```
+* domain status may be degraded without degrading overall PiHub status if the condition is informational or non-critical (for example TV presence still unknown during startup)
 
 ### Commands accepted over HTTP
 
@@ -370,18 +411,12 @@ This avoids boot-time races and lets late device truth arrive safely.
 
 TV presence is determined using:
 
-* passive SSDP `NOTIFY`
-* one-shot startup `M-SEARCH` burst
+* passive SSDP `NOTIFY` is the primary passive source of truth `ssdp_alive` and `ssdp_byebye`
+* one-shot active presence reconcile runs at startup in the background, using M-SEARCH first and HTTP `/dmr` only as fallback
+* websocket is a reusable control channel, not the primary source of presence truth
 
-If the TV is already on at boot, PiHub sends a short `M-SEARCH` burst and may set:
-
-* `presence_on: true`
-* `presence_source: "msearch"`
-
-Later passive updates may overwrite the source with:
-
-* `presence_source: "ssdp_alive"`
-* `presence_source: "ssdp_byebye"`
+**Important:**
+The Samsung websocket is intentionally not auto-closed just because presence becomes false or unknown. This is relied upon for recovery/power-toggle behavior around the recovery window.
 
 ### Device-state signals
 
@@ -426,6 +461,7 @@ Current intent:
 
 ### `watch`
 * set mode watch
+* request speaker stop playback if on listen source
 * if TV was off at start, request TV power on
 * if TV was off at start, sleep 2.0s
 * if TV was off at start, request BLE power on
@@ -451,7 +487,7 @@ Current intent:
 * if TV was on at start, sleep 2.5s
 * if TV was on at start, request TV power off
 * if TV was on at start, wait up to 20s for TV off
-* if speaker source at start was wifi, airplay, or multiroom-secondary, request speaker stop, sleep 0.5s, then request * speaker power off
+* if speaker source at start was wifi, airplay, or multiroom-secondary, request speaker stop, sleep 0.5s, then request speaker power off
 
 These are the normal explicit intent flows. Separate device-state flows may also exist for signal-driven behavior such as `listen_signal` or `watch_signal`.
 

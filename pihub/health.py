@@ -356,8 +356,9 @@ class HealthServer:
 
         if tv_state["status"] == "degraded":
             degraded_reasons.extend(
-                reason for reason in tv_state["reasons"]
-                if reason != "tv.presence_unknown"
+                reason
+                for reason in tv_state["reasons"]
+                if reason not in {"tv.presence_unknown", "tv.off"}
             )
 
         # ---------------- Speaker ----------------
