@@ -377,23 +377,23 @@ pre.json {
 }
 """
 
-async def _handle_tools(self, request: web.Request) -> web.Response:
-    import json
+    async def _handle_tools(self, request: web.Request) -> web.Response:
+        import json
 
-    host = request.host or "localhost"
+        host = request.host or "localhost"
 
-    snapshot = self.snapshot()
-    hostname = snapshot.get("pihub_id") or socket.gethostname()
-    pretty_json = json.dumps(snapshot, indent=2)
+        snapshot = self.snapshot()
+        hostname = snapshot.get("pihub_id") or socket.gethostname()
+        pretty_json = json.dumps(snapshot, indent=2)
 
-    runtime = snapshot.get("runtime") or {}
-    current_mode = str(runtime.get("mode") or "")
-    current_flow = str(runtime.get("last_flow") or "")
+        runtime = snapshot.get("runtime") or {}
+        current_mode = str(runtime.get("mode") or "")
+        current_flow = str(runtime.get("last_flow") or "")
 
-    def active_class(value: str, current: str) -> str:
-        return "active" if value == current else ""
+        def active_class(value: str, current: str) -> str:
+            return "active" if value == current else ""
 
-    html = f"""<!doctype html>
+        html = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -612,7 +612,7 @@ pre.json {{
 </body>
 </html>
 """
-    return web.Response(text=html, content_type="text/html")
+        return web.Response(text=html, content_type="text/html")
 
     async def _handle_dashboard(self, request: web.Request) -> web.Response:
         import json
