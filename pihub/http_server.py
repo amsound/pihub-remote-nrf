@@ -548,7 +548,7 @@ pre.json {{
     <div class="tools-grid">
       <section class="section">
         <div class="section-header">
-          <h2>Flows</h2>
+          <h2>Set Flow</h2>
           <span class="badge">Last flow: {self._html_escape(current_flow or "none")}</span>
         </div>
         <div class="row">
@@ -566,7 +566,7 @@ pre.json {{
 
       <section class="section">
         <div class="section-header">
-          <h2>Modes</h2>
+          <h2>Set Mode</h2>
           <span class="badge">Current mode: {self._html_escape(current_mode or "none")}</span>
         </div>
         <div class="row">
@@ -914,7 +914,7 @@ button:hover {{
 
     <section class="section">
       <form method="post" action="/settings/save">
-        <h2>Audio</h2>
+        <h2>Speaker Levels</h2>
         <div class="form-grid">
           <div class="field">
             <label for="watch_volume_pct">Watch volume (0–100)</label>
@@ -926,7 +926,7 @@ button:hover {{
           </div>
         </div>
 
-        <h2 style="margin-top:1.25rem;">Listen target</h2>
+        <h2 style="margin-top:1.25rem;">Listen Flow Preset</h2>
         <div class="form-grid">
           <div class="field">
             <label for="listen_target_type">Type</label>
@@ -945,7 +945,7 @@ button:hover {{
           </div>
         </div>
 
-        <h2 style="margin-top:1.25rem;">Stream URLs</h2>
+        <h2 style="margin-top:1.25rem;">Extra Stream URLs</h2>
         <div class="form-grid">
           <div class="field">
             <label for="stream_url_1">Key 7 stream URL</label>
