@@ -794,10 +794,24 @@ pre.json {{
           </div>
         </div>
         <div class="card">
-          <h3>Temperature</h3>
+          <h3>Power / Temp</h3>
           <div class="kv">
-            {kv_row("CPU / SoC", f"{system.get('cpu_temp_c')} °C" if system.get("cpu_temp_c") is not None else "unknown")}
+            {kv_row("CPU temp", f"{system.get('cpu_temp_c')} °C" if system.get("cpu_temp_c") is not None else "unknown")}
+            {kv_row("Power status", (system.get("throttling") or {}).get("status"))}
+            {kv_row("Undervoltage now", (system.get("throttling") or {}).get("undervoltage_now"))}
+            {kv_row("Throttled now", (system.get("throttling") or {}).get("throttled_now"))}
+            {kv_row("Historical events", (
+                (
+                    (system.get("throttling") or {}).get("undervoltage_occurred")
+                    or (system.get("throttling") or {}).get("freq_capped_occurred")
+                    or (system.get("throttling") or {}).get("throttled_occurred")
+                    or (system.get("throttling") or {}).get("temp_limit_occurred")
+                )
+                if (system.get("throttling") or {}).get("available")
+                else "unknown"
+            ))}
           </div>
+        </div>
         </div>
       </div>
     </section>
@@ -1169,11 +1183,78 @@ button:hover {{
                 continue
 
         return None
+    
+    @staticmethod
+    def _primary_ip() -> str | None:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                return str(s.getsockname()[0])
+            finally:
+                s.close()
+        except Exception:
+            try:
+                ip = socket.gethostbyname(socket.gethostname())
+                return None if ip.startswith("127.") else ip
+            except Exception:
+                return None
+
+    @staticmethod
+    def _read_throttling() -> dict:
+        import subprocess
+
+        try:
+            cp = subprocess.run(
+                ["vcgencmd", "get_throttled"],
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                check=False,
+            )
+            out = (cp.stdout or "").strip()
+            if cp.returncode != 0 or "throttled=" not in out:
+                return {
+                    "available": False,
+                    "raw": None,
+                    "status": "unknown",
+                }
+
+            raw = out.split("throttled=", 1)[1].strip()
+            value = int(raw, 16)
+
+            data = {
+                "available": True,
+                "raw": raw,
+                "undervoltage_now": bool(value & (1 << 0)),
+                "freq_capped_now": bool(value & (1 << 1)),
+                "throttled_now": bool(value & (1 << 2)),
+                "temp_limit_now": bool(value & (1 << 3)),
+                "undervoltage_occurred": bool(value & (1 << 16)),
+                "freq_capped_occurred": bool(value & (1 << 17)),
+                "throttled_occurred": bool(value & (1 << 18)),
+                "temp_limit_occurred": bool(value & (1 << 19)),
+            }
+
+            any_flag = any(v for k, v in data.items() if k.endswith("_now") or k.endswith("_occurred"))
+            data["status"] = "warning" if any_flag else "ok"
+            return data
+
+        except Exception:
+            return {
+                "available": False,
+                "raw": None,
+                "status": "unknown",
+            }
 
     def _system_snapshot(self) -> dict:
+        hostname = socket.gethostname()
+        primary_ip = self._primary_ip()
+        
         system_uptime_s = self._read_system_uptime_s()
         process_uptime_s = time.monotonic() - self._process_start_monotonic
         cpu_temp_c = self._read_cpu_temp_c()
+        throttling = self._read_throttling()
 
         try:
             load1, load5, load15 = os.getloadavg()
@@ -1195,11 +1276,14 @@ button:hover {{
             disk_total = disk_used = disk_free = None
 
         return {
+            "hostname": hostname,
+            "primary_ip": primary_ip,
             "system_uptime_s": int(system_uptime_s) if system_uptime_s is not None else None,
             "system_uptime_human": self._format_duration(system_uptime_s),
             "process_uptime_s": int(process_uptime_s),
             "process_uptime_human": self._format_duration(process_uptime_s),
             "cpu_temp_c": cpu_temp_c,
+            "throttling": throttling,
             "load": load,
             "memory": {
                 "total_bytes": mem_total,
