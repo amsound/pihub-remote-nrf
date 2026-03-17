@@ -525,14 +525,14 @@ pre.json {{
       <h1>Tools</h1>
       <p class="muted">Direct operator controls for flows, modes, networked-domain refresh, and restart.</p>
 
+        <div class="meta-card">
+          <h3>Last flow</h3>
+          <div class="meta-value">{self._html_escape(current_flow or "none")}</div>
+        </div>
       <div class="meta-grid">
         <div class="meta-card">
           <h3>Current mode</h3>
           <div class="meta-value">{self._html_escape(current_mode or "none")}</div>
-        </div>
-        <div class="meta-card">
-          <h3>Current flow</h3>
-          <div class="meta-value">{self._html_escape(current_flow or "none")}</div>
         </div>
         <div class="meta-card">
           <h3>Last trigger</h3>
@@ -549,7 +549,7 @@ pre.json {{
       <section class="section">
         <div class="section-header">
           <h2>Flows</h2>
-          <span class="badge">Current flow: {self._html_escape(current_flow or "none")}</span>
+          <span class="badge">Last flow: {self._html_escape(current_flow or "none")}</span>
         </div>
         <div class="row">
           <form method="post" action="/flow/run/watch" class="{active_class('watch', current_flow)}">
@@ -745,8 +745,9 @@ pre.json {{
           {runtime_error_html}
         </div>
         <div class="card">
-          <h3>PiHub uptime</h3>
+          <h3>PiHub System</h3>
           <div class="kv">
+            {kv_row("CPU / SoC", f"{system.get('cpu_temp_c')} °C" if system.get("cpu_temp_c") is not None else "unknown")}
             {kv_row("Process uptime", system.get("process_uptime_human"))}
             {kv_row("System uptime", system.get("system_uptime_human"))}
           </div>
@@ -791,6 +792,12 @@ pre.json {{
             {kv_row("Free", (system.get("disk") or {{}}).get("free_human"))}
             {kv_row("Total", (system.get("disk") or {{}}).get("total_human"))}
           </div>
+        <div class="card">
+          <h3>Temperature</h3>
+          <div class="kv">
+            {kv_row("CPU / SoC", f"{system.get('cpu_temp_c')} °C" if system.get("cpu_temp_c") is not None else "unknown")}
+          </div>
+        </div>
         </div>
       </div>
     </section>
@@ -1142,10 +1149,31 @@ button:hover {{
                 return f"{value:.1f} {unit}"
             value /= 1024.0
         return None
+    
+    @staticmethod
+    def _read_cpu_temp_c() -> float | None:
+        candidates = [
+            "/sys/class/thermal/thermal_zone0/temp",
+        ]
+
+        for path in candidates:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = f.read().strip()
+                value = int(raw)
+                # Raspberry Pi thermal_zone temp is usually millidegrees C
+                if value > 1000:
+                    return round(value / 1000.0, 1)
+                return round(float(value), 1)
+            except Exception:
+                continue
+
+        return None
 
     def _system_snapshot(self) -> dict:
         system_uptime_s = self._read_system_uptime_s()
         process_uptime_s = time.monotonic() - self._process_start_monotonic
+        cpu_temp_c = self._read_cpu_temp_c()
 
         try:
             load1, load5, load15 = os.getloadavg()
@@ -1171,6 +1199,7 @@ button:hover {{
             "system_uptime_human": self._format_duration(system_uptime_s),
             "process_uptime_s": int(process_uptime_s),
             "process_uptime_human": self._format_duration(process_uptime_s),
+            "cpu_temp_c": cpu_temp_c,
             "load": load,
             "memory": {
                 "total_bytes": mem_total,
