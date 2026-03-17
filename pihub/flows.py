@@ -46,11 +46,13 @@ class SequenceRunner:
         tv: Any = None,
         speaker: Any = None,
         ble: Any = None,
+        settings: Any = None,
     ) -> None:
         self._runtime = runtime
         self._tv = tv
         self._speaker = speaker
         self._ble = ble
+        self._settings = settings
         self._predicates: dict[str, Callable[[dict[str, Any]], bool]] = {
             "tv_was_on": lambda snap: bool(snap.get("tv_was_on")),
             "tv_was_off": lambda snap: bool(snap.get("tv_was_off")),
@@ -96,14 +98,14 @@ class SequenceRunner:
                         "speaker_volume",
                         "speaker",
                         "set_volume",
-                        {"volume": LISTEN_VOLUME_PCT},
+                        {"setting": "listen_volume_pct"},
                         mode="dispatch",
                     ),
                     SequenceStep(
                         "speaker_preset",
                         "speaker",
-                        "preset",
-                        {"preset": LISTEN_PRESET},
+                        "play_listen_target",
+                        {},
                         mode="dispatch",
                     ),
 
@@ -159,7 +161,7 @@ class SequenceRunner:
                         "speaker_volume",
                         "speaker",
                         "set_volume",
-                        {"volume": WATCH_VOLUME_PCT},
+                        {"setting": "watch_volume_pct"},
                         mode="dispatch",
                     ),
                     SequenceStep(
@@ -237,7 +239,7 @@ class SequenceRunner:
                         "speaker_volume",
                         "speaker",
                         "set_volume",
-                        {"volume": WATCH_VOLUME_PCT},
+                        {"setting": "watch_volume_pct"},
                         mode="dispatch",
                     ),
                     SequenceStep(
@@ -459,7 +461,33 @@ class SequenceRunner:
 
         if step.domain == "speaker" and step.action == "set_volume":
             if self._speaker is not None:
-                await self._speaker.set_volume(int(args["volume"]))
+                if "setting" in args:
+                    setting_name = str(args["setting"])
+                    if setting_name == "watch_volume_pct":
+                        volume = self._watch_volume_pct()
+                    elif setting_name == "listen_volume_pct":
+                        volume = self._listen_volume_pct()
+                    else:
+                        raise ValueError(f"unknown volume setting: {setting_name}")
+                else:
+                    volume = int(args["volume"])
+                await self._speaker.set_volume(int(volume))
+            return
+        
+        if step.domain == "speaker" and step.action == "play_listen_target":
+            if self._speaker is not None:
+                target = self._listen_target()
+                if target["type"] == "preset":
+                    await self._speaker.preset(int(target["preset"]))
+                elif target["type"] == "stream":
+                    if self._settings is None:
+                        raise ValueError("stream listen target configured but settings unavailable")
+                    url = self._settings.get_stream_url(int(target["stream"]))
+                    if not url:
+                        raise ValueError(f"listen target stream_url_{int(target['stream'])} is empty")
+                    await self._speaker.play_url(url)
+                else:
+                    raise ValueError(f"unsupported listen target type: {target['type']}")
             return
 
         if step.domain == "speaker" and step.action == "stop_playback":
@@ -540,6 +568,35 @@ class SequenceRunner:
         except Exception:
             return ""
 
+    def _watch_volume_pct(self) -> int:
+        if self._settings is None:
+            return WATCH_VOLUME_PCT
+        try:
+            return int(self._settings.get_watch_volume_pct())
+        except Exception:
+            return WATCH_VOLUME_PCT
+
+    def _listen_volume_pct(self) -> int:
+        if self._settings is None:
+            return LISTEN_VOLUME_PCT
+        try:
+            return int(self._settings.get_listen_volume_pct())
+        except Exception:
+            return LISTEN_VOLUME_PCT
+
+    def _listen_target(self) -> dict[str, Any]:
+        if self._settings is None:
+            return {"type": "preset", "preset": LISTEN_PRESET, "stream": 1}
+        try:
+            target = self._settings.get_listen_target()
+            return {
+                "type": str(target.get("type") or "preset"),
+                "preset": int(target.get("preset") or LISTEN_PRESET),
+                "stream": int(target.get("stream") or 1),
+            }
+        except Exception:
+            return {"type": "preset", "preset": LISTEN_PRESET, "stream": 1}
+
     async def _wait_for_tv_on(self, *, timeout_s: float) -> None:
         if self._tv is None:
             raise FlowWaitTimeout(kind="tv_on", timeout_s=timeout_s)
@@ -580,8 +637,15 @@ class FlowRunner:
         tv: Any = None,
         speaker: Any = None,
         ble: Any = None,
+        settings: Any = None,
     ) -> None:
-        self._sequences = SequenceRunner(runtime=runtime, tv=tv, speaker=speaker, ble=ble)
+        self._sequences = SequenceRunner(
+            runtime=runtime,
+            tv=tv,
+            speaker=speaker,
+            ble=ble,
+            settings=settings,
+        )
 
     async def run(
         self,

@@ -36,6 +36,7 @@ class HttpServer:
         reader: Optional[UnifyingReader] = None,
         tv: Optional[TvController] = None,
         speaker: Optional[AudioProSpeaker] = None,
+        settings: Any = None,
         runtime: Optional[RuntimeEngine] = None,
     ) -> None:
         self._host = host
@@ -44,6 +45,7 @@ class HttpServer:
         self._reader = reader
         self._tv = tv
         self._speaker = speaker
+        self._settings = settings
         self._runtime = runtime
 
         self._runner: Optional[web.AppRunner] = None
@@ -61,6 +63,8 @@ class HttpServer:
                 web.get("/health", self._handle_health),
                 web.get("/dashboard", self._handle_dashboard),
                 web.get("/tools", self._handle_tools),
+                web.get("/settings", self._handle_settings),
+                web.post("/settings/save", self._handle_settings_save),
 
                 web.post("/flow/run/{name}", self._handle_flow_run),
                 web.post("/mode/set/{name}", self._handle_mode_set),
@@ -152,6 +156,7 @@ class HttpServer:
     <nav class="nav">
       {link("Dashboard", "/dashboard", "dashboard")}
       {link("Tools", "/tools", "tools")}
+      {link("Settings", "/settings", "settings")}
       {link("Raw Health", "/health", "health")}
     </nav>
   </div>
@@ -803,6 +808,169 @@ pre.json {{
 </html>
 """
         return web.Response(text=html, content_type="text/html")
+
+    async def _handle_settings(self, request: web.Request) -> web.Response:
+        if self._settings is None:
+            return web.Response(text="settings unavailable", status=503)
+
+        saved = request.query.get("saved") == "1"
+        error = request.query.get("error") or ""
+
+        snapshot = self.snapshot()
+        hostname = snapshot.get("pihub_id") or socket.gethostname()
+        settings = self._settings.snapshot()
+
+        def selected(name: str, value: str) -> str:
+            return ' selected="selected"' if str(settings.get(name)) == value else ""
+
+        def field(name: str) -> str:
+            return self._html_escape(settings.get(name, ""))
+
+        saved_html = (
+            '<div class="section"><div class="chip" style="background:#123222;border-color:#1d4d32;color:#86efac;">Settings saved</div></div>'
+            if saved else ""
+        )
+        error_html = (
+            f'<div class="section"><div class="error-line"><strong>Save failed:</strong> {self._html_escape(error)}</div></div>'
+            if error else ""
+        )
+
+        html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PiHub Settings — {self._html_escape(hostname)}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+{self._shared_dark_css()}
+input, select {{
+  width: 100%;
+  padding: 0.75rem 0.8rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}}
+label {{
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}}
+.form-grid {{
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}}
+.field {{
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}}
+button {{
+  padding: 0.8rem 1rem;
+  font-size: 1rem;
+  cursor: pointer;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}}
+button:hover {{
+  border-color: var(--accent);
+  background: #1b2740;
+}}
+  </style>
+</head>
+<body>
+  {self._nav_html(current="settings", hostname=str(hostname))}
+  <main class="page">
+    <section class="section">
+      <h1>Settings</h1>
+      <p class="muted">Changes apply immediately to future flows and future stream URL button presses. Running flows keep their existing start snapshot.</p>
+    </section>
+
+    {saved_html}
+    {error_html}
+
+    <section class="section">
+      <form method="post" action="/settings/save">
+        <h2>Audio</h2>
+        <div class="form-grid">
+          <div class="field">
+            <label for="watch_volume_pct">Watch volume (0–100)</label>
+            <input id="watch_volume_pct" name="watch_volume_pct" type="number" min="0" max="100" value="{field('watch_volume_pct')}">
+          </div>
+          <div class="field">
+            <label for="listen_volume_pct">Listen volume (0–100)</label>
+            <input id="listen_volume_pct" name="listen_volume_pct" type="number" min="0" max="100" value="{field('listen_volume_pct')}">
+          </div>
+        </div>
+
+        <h2 style="margin-top:1.25rem;">Listen target</h2>
+        <div class="form-grid">
+          <div class="field">
+            <label for="listen_target_type">Type</label>
+            <select id="listen_target_type" name="listen_target_type">
+              <option value="preset"{selected('listen_target_type', 'preset')}>Speaker preset</option>
+              <option value="stream"{selected('listen_target_type', 'stream')}>Stream URL</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="listen_target_preset">Speaker preset (1–6)</label>
+            <input id="listen_target_preset" name="listen_target_preset" type="number" min="1" max="6" value="{field('listen_target_preset')}">
+          </div>
+          <div class="field">
+            <label for="listen_target_stream">Stream URL slot (1–4)</label>
+            <input id="listen_target_stream" name="listen_target_stream" type="number" min="1" max="4" value="{field('listen_target_stream')}">
+          </div>
+        </div>
+
+        <h2 style="margin-top:1.25rem;">Stream URLs</h2>
+        <div class="form-grid">
+          <div class="field">
+            <label for="stream_url_1">Key 7 stream URL</label>
+            <input id="stream_url_1" name="stream_url_1" type="url" value="{field('stream_url_1')}">
+          </div>
+          <div class="field">
+            <label for="stream_url_2">Key 8 stream URL</label>
+            <input id="stream_url_2" name="stream_url_2" type="url" value="{field('stream_url_2')}">
+          </div>
+          <div class="field">
+            <label for="stream_url_3">Key 9 stream URL</label>
+            <input id="stream_url_3" name="stream_url_3" type="url" value="{field('stream_url_3')}">
+          </div>
+          <div class="field">
+            <label for="stream_url_4">Key 0 stream URL</label>
+            <input id="stream_url_4" name="stream_url_4" type="url" value="{field('stream_url_4')}">
+          </div>
+        </div>
+
+        <div style="margin-top:1.25rem;">
+          <button type="submit">Save settings</button>
+        </div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>
+"""
+        return web.Response(text=html, content_type="text/html")
+
+    async def _handle_settings_save(self, request: web.Request) -> web.Response:
+        if self._settings is None:
+            return web.Response(text="settings unavailable", status=503)
+
+        data = await request.post()
+        payload = dict(data)
+
+        try:
+            self._settings.save_from_payload(payload)
+        except Exception as exc:
+            from urllib.parse import quote
+            raise web.HTTPFound(location=f"/settings?error={quote(str(exc))}")
+
+        raise web.HTTPFound(location="/settings?saved=1")
 
     def _status_badge_html(self, status: str) -> str:
         safe = self._html_escape(status)

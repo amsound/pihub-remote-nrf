@@ -134,10 +134,10 @@
       "rem_4":            [ { "domain": "speaker", "action": "preset", "n": 4 } ],
       "rem_5":            [ { "domain": "speaker", "action": "preset", "n": 5 } ],
       "rem_6":            [ { "domain": "speaker", "action": "preset", "n": 6 } ],
-      "rem_7":            [ { "domain": "speaker", "action": "play_url", "url": "http://icecast.thisisdax.com/CapitalMP3.m3u" } ],
-      "rem_8":            [ { "domain": "speaker", "action": "play_url", "url": "http://www.radiofeeds.net/playlists/bauerflash.pls?station=magic1054-mp3" } ],
-      "rem_9":            [ { "domain": "speaker", "action": "play_url", "url": "http://icecast.thisisdax.com/HeartLondonMP3.m3u" } ],
-      "rem_0":            [ { "domain": "speaker", "action": "play_url", "url": "http://www.radiofeeds.net/playlists/virginb.pls?mp=stream" } ]
+      "rem_7":            [ { "domain": "speaker", "action": "play_stream_url", "slot": 1 } ],
+      "rem_8":            [ { "domain": "speaker", "action": "play_stream_url", "slot": 2 } ],
+      "rem_9":            [ { "domain": "speaker", "action": "play_stream_url", "slot": 3 } ],
+      "rem_0":            [ { "domain": "speaker", "action": "play_stream_url", "slot": 4 } ]
     }
   }
 }

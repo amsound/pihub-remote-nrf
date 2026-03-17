@@ -25,6 +25,7 @@ from .unifying_input import UnifyingReader
 from .ble_dongle import BleDongleLink
 from .samsung_tv import TvController, ssdp_listener, start_discovery_tasks, stop_discovery_tasks
 from .audiopro_speaker import AudioProSpeaker
+from .settings import SettingsStore
 
 
 def _debug_enabled() -> bool:
@@ -45,6 +46,9 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     """Run the PiHub control loop until interrupted."""
     cfg = Config.load()
+
+    settings = SettingsStore()
+    settings.load()
 
     cleanup_hooks = []
 
@@ -154,6 +158,7 @@ async def main() -> None:
         tv=tv,
         speaker=speaker,
         ble=ble,
+        settings=settings,
         initial_mode="power_off",
     )
 
@@ -178,6 +183,7 @@ async def main() -> None:
         ble=ble,
         tv=tv,
         speaker=speaker,
+        settings=settings,
         run_flow=runtime.run_flow,
     )
 
@@ -200,6 +206,7 @@ async def main() -> None:
         reader=reader,
         tv=tv,
         speaker=speaker,
+        settings=settings,
         runtime=runtime,
     )
 

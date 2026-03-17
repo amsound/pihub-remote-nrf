@@ -67,12 +67,14 @@ class Dispatcher:
         ble: Any,
         tv: Any = None,
         speaker: Any = None,
+        settings: Any = None,
         run_flow: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self._cfg = cfg
         self._ble = ble
         self._tv = tv
         self._speaker = speaker
+        self._settings = settings
         self._run_flow = run_flow
         self._last_cmd_fail_log = 0.0
 
@@ -415,6 +417,20 @@ class Dispatcher:
 
         action = a.get("action")
         if not isinstance(action, str) or not action:
+            return
+    
+        if action == "play_stream_url":
+            if self._settings is None:
+                return
+            try:
+                slot = int(a.get("slot"))
+            except Exception:
+                return
+            url = self._settings.get_stream_url(slot)
+            if not url:
+                logger.info("speaker stream slot empty slot=%s", slot)
+                return
+            await sp.play_url(url)
             return
 
         kwargs = self._action_kwargs(a)
