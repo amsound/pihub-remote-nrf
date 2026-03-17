@@ -931,7 +931,7 @@ button:hover {{
           <div class="field">
             <label for="listen_target_type">Type</label>
             <select id="listen_target_type" name="listen_target_type">
-              <option value="preset"{selected('listen_target_type', 'preset')}>Speaker preset</option>
+              <option value="preset"{selected('listen_target_type', 'preset')}>Speaker native preset</option>
               <option value="stream"{selected('listen_target_type', 'stream')}>Stream URL</option>
             </select>
           </div>
