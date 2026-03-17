@@ -549,7 +549,7 @@ pre.json {{
       <section class="section">
         <div class="section-header">
           <h2>Set Flow</h2>
-          <span class="badge">Last flow: {self._html_escape(current_flow or "none")}</span>
+          <span class="badge">{self._html_escape(current_flow or "none")}</span>
         </div>
         <div class="row">
           <form method="post" action="/flow/run/watch" class="{active_class('watch', current_flow)}">
@@ -567,7 +567,7 @@ pre.json {{
       <section class="section">
         <div class="section-header">
           <h2>Set Mode</h2>
-          <span class="badge">Current mode: {self._html_escape(current_mode or "none")}</span>
+          <span class="badge">{self._html_escape(current_mode or "none")}</span>
         </div>
         <div class="row">
           <form method="post" action="/mode/set/watch" class="{active_class('watch', current_mode)}">
