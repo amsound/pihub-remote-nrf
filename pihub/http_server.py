@@ -548,7 +548,7 @@ pre.json {{
     <div class="tools-grid">
       <section class="section">
         <div class="section-header">
-          <h2>Set Flow</h2>
+          <h2>Run Flow</h2>
           <span class="badge">{self._html_escape(current_flow or "none")}</span>
         </div>
         <div class="row">
