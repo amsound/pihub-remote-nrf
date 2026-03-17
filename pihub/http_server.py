@@ -525,11 +525,11 @@ pre.json {{
       <h1>Tools</h1>
       <p class="muted">Direct operator controls for flows, modes, networked-domain refresh, and restart.</p>
 
+      <div class="meta-grid">
         <div class="meta-card">
           <h3>Last flow</h3>
           <div class="meta-value">{self._html_escape(current_flow or "none")}</div>
         </div>
-      <div class="meta-grid">
         <div class="meta-card">
           <h3>Current mode</h3>
           <div class="meta-value">{self._html_escape(current_mode or "none")}</div>
