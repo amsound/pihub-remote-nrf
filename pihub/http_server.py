@@ -792,12 +792,12 @@ pre.json {{
             {kv_row("Free", (system.get("disk") or {{}}).get("free_human"))}
             {kv_row("Total", (system.get("disk") or {{}}).get("total_human"))}
           </div>
+        </div>
         <div class="card">
           <h3>Temperature</h3>
           <div class="kv">
             {kv_row("CPU / SoC", f"{system.get('cpu_temp_c')} °C" if system.get("cpu_temp_c") is not None else "unknown")}
           </div>
-        </div>
         </div>
       </div>
     </section>
