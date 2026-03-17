@@ -846,10 +846,19 @@ pre.json {{
 input, select {{
   width: 100%;
   padding: 0.75rem 0.8rem;
+  min-height: 48px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
+  font: inherit;
+}}
+
+select {{
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  line-height: 1.2;
 }}
 label {{
   display: block;
@@ -879,6 +888,9 @@ button {{
 button:hover {{
   border-color: var(--accent);
   background: #1b2740;
+}}
+.hidden {{
+  display: none !important;
 }}
   </style>
 </head>
@@ -916,11 +928,11 @@ button:hover {{
               <option value="stream"{selected('listen_target_type', 'stream')}>Stream URL</option>
             </select>
           </div>
-          <div class="field">
+          <div class="field" id="listen-target-preset-field">
             <label for="listen_target_preset">Speaker preset (1–6)</label>
             <input id="listen_target_preset" name="listen_target_preset" type="number" min="1" max="6" value="{field('listen_target_preset')}">
           </div>
-          <div class="field">
+          <div class="field" id="listen-target-stream-field">
             <label for="listen_target_stream">Stream URL slot (1–4)</label>
             <input id="listen_target_stream" name="listen_target_stream" type="number" min="1" max="4" value="{field('listen_target_stream')}">
           </div>
@@ -952,6 +964,34 @@ button:hover {{
       </form>
     </section>
   </main>
+  <script>
+    (function () {{
+      const typeSelect = document.getElementById("listen_target_type");
+      const presetField = document.getElementById("listen-target-preset-field");
+      const streamField = document.getElementById("listen-target-stream-field");
+
+      function updateListenTargetFields() {{
+        const mode = typeSelect ? typeSelect.value : "";
+        if (!presetField || !streamField) return;
+
+        if (mode === "preset") {{
+          presetField.classList.remove("hidden");
+          streamField.classList.add("hidden");
+        }} else if (mode === "stream") {{
+          presetField.classList.add("hidden");
+          streamField.classList.remove("hidden");
+        }} else {{
+          presetField.classList.remove("hidden");
+          streamField.classList.remove("hidden");
+        }}
+      }}
+
+      if (typeSelect) {{
+        typeSelect.addEventListener("change", updateListenTargetFields);
+        updateListenTargetFields();
+      }}
+    }})();
+  </script>
 </body>
 </html>
 """
