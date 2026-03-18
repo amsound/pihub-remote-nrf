@@ -8,7 +8,6 @@ import socket
 import os
 import shutil
 import time
-import json
 from typing import Optional
 
 from aiohttp import web

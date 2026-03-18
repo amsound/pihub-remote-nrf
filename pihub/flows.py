@@ -9,9 +9,6 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-WATCH_VOLUME_PCT = 30
-LISTEN_VOLUME_PCT = 22
-LISTEN_PRESET = 1
 SPEAKER_WATCH_SOURCE = "hdmi"
 LISTEN_SOURCES = {"wifi", "airplay", "multiroom-secondary"}
 

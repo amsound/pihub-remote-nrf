@@ -169,7 +169,7 @@ Example response:
 
 ```json
 {
-  "pihub_id": "test-pihub",
+  "pihub_id": "living-room-pihub",
   "status": "ok",
   "degraded_reasons": [],
   "domains": {
@@ -243,7 +243,7 @@ Example response:
       "initialized": true,
       "presence_on": true,
       "presence_source": "ssdp_alive",
-      "last_change_age_s": 9,
+      "last_change_age_s": 4008,
       "ws_connected": true,
       "token_present": true
     }
@@ -263,11 +263,47 @@ Example response:
       "connected": true,
       "ready": true,
       "playback_status": null,
-      "volume_pct": 30,
+      "volume_pct": 28,
       "muted": false,
       "source": "hdmi",
-      "last_update_ts": 1773669131,
-      "update_age_s": 6
+      "last_update_ts": 1773866846,
+      "update_age_s": 34
+    }
+  },
+  "system": {
+    "hostname": "living-room-pihub",
+    "primary_ip": "192.168.90.42",
+    "system_uptime_s": 102721,
+    "system_uptime_human": "1d 04:32:01",
+    "process_uptime_s": 14684,
+    "process_uptime_human": "04:04:44",
+    "cpu_temp_c": 53.7,
+    "throttling": {
+      "available": false,
+      "raw": null,
+      "status": "unknown"
+    },
+    "load": {
+      "1m": 0.08,
+      "5m": 0.04,
+      "15m": 0.06
+    },
+    "memory": {
+      "total_bytes": 950181888,
+      "available_bytes": 687480832,
+      "used_bytes": 262701056,
+      "total_human": "906.2 MB",
+      "available_human": "655.6 MB",
+      "used_human": "250.5 MB"
+    },
+    "disk": {
+      "path": "/",
+      "total_bytes": 62437576704,
+      "used_bytes": 3164504064,
+      "free_bytes": 56082489344,
+      "total_human": "58.1 GB",
+      "used_human": "2.9 GB",
+      "free_human": "52.2 GB"
     }
   }
 }

@@ -74,6 +74,18 @@ class RuntimeEngine:
         self._last_error = (error or "").strip() or None
         self._last_result = result
 
+    def _log_trigger_kind(self, trigger: str | None) -> str:
+        t = str(trigger or "").strip().lower()
+        if t.startswith("remote."):
+            return "remote"
+        if t.startswith("device_state_change."):
+            return "device-state"
+        if t.startswith("startup"):
+            return "startup"
+        if t.startswith("http."):
+            return "http"
+        return t or "internal"
+
     def attach_dispatcher(self, dispatcher: Any) -> None:
         self._dispatcher = dispatcher
 
@@ -137,9 +149,9 @@ class RuntimeEngine:
         self._mode = name
 
         if prior != name:
-            logger.info("mode changed %s -> %s trigger=%s", prior, name, trigger)
+            logger.info("mode %s -> %s", prior, name)
         else:
-            logger.info("mode unchanged %s trigger=%s", name, trigger)
+            logger.info("mode unchanged (%s)", name)
 
         self._set_runtime_ok("ok")
         return {
@@ -178,13 +190,10 @@ class RuntimeEngine:
             self._set_runtime_error("flow_name_required", result="invalid")
             return {"ok": False, "error": "flow name required"}
 
-        if self._lock.locked():
-            logger.info(
-                "sequence ignored name=%s trigger=%s source=%s reason=runner_busy",
-                name,
-                trigger,
-                source,
-            )
+        if source == "device_state_change":
+            logger.info("device-state %s ignored (flow running)", name)
+        else:
+            logger.info("flow %s ignored (flow running)", name)
             self._set_runtime_error("runner_busy", result="busy")
             return {
                 "ok": False,
@@ -199,7 +208,7 @@ class RuntimeEngine:
         async with self._lock:
             self._flow_running = True
             self._last_trigger = trigger
-            logger.info("sequence started name=%s trigger=%s source=%s", name, trigger, source)
+            logger.info("flow %s started (trigger=%s)", name, self._log_trigger_kind(trigger))
 
             seq_task = asyncio.create_task(
                 self._flows.run(name=name, trigger=trigger, args=args, source=source),
@@ -239,7 +248,7 @@ class RuntimeEngine:
                         "error": "flow_failed",
                     }
 
-                logger.info("sequence completed name=%s trigger=%s source=%s", name, trigger, source)
+                logger.info("flow %s completed", name)
                 return {
                     "ok": True,
                     "domain": "flow",
@@ -296,11 +305,7 @@ class RuntimeEngine:
             return {"ok": False, "error": "state change name required"}
 
         if self._lock.locked():
-            logger.info(
-                "sequence ignored name=%s trigger=device_state_change.%s source=device_state_change reason=runner_busy",
-                name,
-                name,
-            )
+            logger.info("device-state %s ignored (flow running)", name)
             self._set_runtime_error("runner_busy", result="busy")
             return {
                 "ok": False,
@@ -311,11 +316,11 @@ class RuntimeEngine:
 
         # Idempotence for device signals uses last logical flow, not current mode.
         if name == "listen" and self._last_flow == "listen":
-            logger.info("device state change ignored name=listen reason=last_flow_listen")
+            logger.info("device-state listen ignored (already listen)")
             return {"ok": False, "name": name, "reason": "last_flow_listen"}
 
         if name == "watch" and self._last_flow == "watch":
-            logger.info("device state change ignored name=watch reason=last_flow_watch")
+            logger.info("device-state watch ignored (already watch)")
             return {"ok": False, "name": name, "reason": "last_flow_watch"}
 
         sequence_name = {
