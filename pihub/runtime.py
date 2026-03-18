@@ -189,11 +189,13 @@ class RuntimeEngine:
         if not name:
             self._set_runtime_error("flow_name_required", result="invalid")
             return {"ok": False, "error": "flow name required"}
+        
+        if self._lock.locked():
+            if source == "device_state_change":
+                logger.info("device-state %s ignored (flow running)", name)
+            else:
+                logger.info("flow %s ignored (flow running)", name)
 
-        if source == "device_state_change":
-            logger.info("device-state %s ignored (flow running)", name)
-        else:
-            logger.info("flow %s ignored (flow running)", name)
             self._set_runtime_error("runner_busy", result="busy")
             return {
                 "ok": False,
