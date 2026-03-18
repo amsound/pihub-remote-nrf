@@ -26,6 +26,14 @@
 /* Forward declarations */
 static int send_consumer_report(const uint8_t report2[2]);
 static int send_keyboard_report(const uint8_t report8[8]);
+static void set_leds_adv(void);
+static void set_leds_conn(void);
+static void pihub_led_err_on(void);
+static void start_advertising(void);
+static const char *phy_to_str(uint8_t phy);
+static void update_link_ready(const char *why);
+static void bond_clear_work_handler(struct k_work *work);
+static void button_changed(uint32_t button_state, uint32_t has_changed);
 
 /* Optional USB CDC ACM console support (logs over USB). */
 #if IS_ENABLED(CONFIG_USB_DEVICE_STACK)
@@ -54,6 +62,29 @@ static int send_keyboard_report(const uint8_t report8[8]);
  * To keep this project buildable, we avoid those convenience macros and create
  * the advertising parameters explicitly.
  */
+
+/* --------------------------------------------------------------------------
+ * Logical LED channels
+ *
+ * Keep state logic board-agnostic by mapping semantic roles here.
+ *
+ * Nordic nRF52840 Dongle / E104-BT5040U physical LEDs:
+ *   - single-colour LED     = P0.06
+ *   - RGB red channel       = P0.08
+ *   - RGB green channel     = P1.09
+ *   - RGB blue channel      = P0.12
+ *
+ * Current DK mapping observed on this firmware/board combo:
+ *   - DK_LED1 = dedicated red LED
+ *   - DK_LED2 = RGB red
+ *   - DK_LED3 = RGB green
+ *   - DK_LED4 = RGB blue
+ *
+ * If another dongle maps these differently, only change the defines below.
+ * -------------------------------------------------------------------------- */
+#define PIHUB_LED_ERR   DK_LED1   /* red */
+#define PIHUB_LED_CONN  DK_LED3   /* green */
+#define PIHUB_LED_ADV   DK_LED4   /* blue */
 
 /*
  * Advertising parameters
@@ -97,10 +128,6 @@ LOG_MODULE_REGISTER(pihub_hogp, LOG_LEVEL_INF);
 #endif
 #endif
 
-/* Forward declarations (avoid implicit int / non-static declarations under C99) */
-static void start_advertising(void);
-static const char *phy_to_str(uint8_t phy);
-
 
 /* --- Simple HOGP: HID Service + a single input report characteristic --- */
 
@@ -122,8 +149,6 @@ static const uint8_t report_map[] = {
 static uint8_t battery_level = 100; /* Fake 100% */
 static bool notify_batt_enabled;
 
-/* Forward decl: batt/CCC callbacks can fire before the helper is defined. */
-static void update_link_ready(const char *why);
 
 static void batt_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
@@ -151,26 +176,15 @@ BT_GATT_SERVICE_DEFINE(bas_svc,
 );
 
 
-
-
-static uint8_t protocol_mode = 1; /* 0=Boot, 1=Report */
-/* Cached link status for STATUS snapshots (so host can resync after restart) */
-static bool have_conn_params;
-static uint16_t last_interval;
-static uint16_t last_latency;
-static uint16_t last_timeout;
-
-static bool have_phy;
-static uint8_t last_tx_phy;
-static uint8_t last_rx_phy;
-/* Reports (Report IDs are indicated via Report Reference descriptors; payloads here do NOT include the ID byte) */
-static uint8_t kb_report[8] = { 0 };      /* modifiers, reserved, 6 keys */
-static uint8_t cc_report[2] = { 0 };      /* 16-bit Consumer usage */
-static uint8_t boot_kb_report[8] = { 0 };
-
-
-/* Report Reference descriptor payload: [Report ID, Report Type (Input=1)] */
-
+/* Runtime state
+ *
+ * File-scope state shared across bring-up, BLE callbacks, LED policy, and the
+ * SW1 long-press unpair flow. Keeping it in one place makes the control flow
+ * easier to follow without changing behavior.
+ */
+static struct k_work_delayable sw1_feedback_work;
+static atomic_t sw1_pressed;
+static bool sw1_feedback_on;
 static struct bt_conn *current_conn;
 static volatile bool adv_is_on;
 static volatile bool error_state;
@@ -178,10 +192,29 @@ static bool notify_kb_enabled;
 static bool notify_cc_enabled;
 static bool hid_suspended;
 static bool notify_boot_enabled;
-
 static uint8_t current_sec_level;
 static bool hid_zero_sent;
 static bool link_ready;
+static bool have_conn_params;
+static uint16_t last_interval;
+static uint16_t last_latency;
+static uint16_t last_timeout;
+static bool have_phy;
+static uint8_t last_tx_phy;
+static uint8_t last_rx_phy;
+static struct k_work_delayable bond_clear_work;
+static struct k_timer blink_timer;
+static struct k_work_delayable adv_restart_work;
+static bool blink_state;
+
+static uint8_t protocol_mode = 1; /* 0=Boot, 1=Report */
+/* Reports (Report IDs are indicated via Report Reference descriptors; payloads here do NOT include the ID byte) */
+static uint8_t kb_report[8] = { 0 };      /* modifiers, reserved, 6 keys */
+static uint8_t cc_report[2] = { 0 };      /* 16-bit Consumer usage */
+static uint8_t boot_kb_report[8] = { 0 };
+
+
+/* Report Reference descriptor payload: [Report ID, Report Type (Input=1)] */
 
 /* --------------------------------------------------------------------------
  * USB CDC ACM command channel (PiHub <-> dongle)
@@ -327,10 +360,31 @@ static void cmd_evt_adv(bool on)      { adv_is_on = on; char b[24]; snprintk(b, 
 static void cmd_evt_conn(bool on)     { char b[24]; snprintk(b, sizeof(b), "EVT CONN %d", on ? 1 : 0); cmd_uart_send_line(b); }
 static void cmd_evt_ready(bool on)    { char b[32]; snprintk(b, sizeof(b), "EVT READY %d", on ? 1 : 0); cmd_uart_send_line(b); }
 static void cmd_evt_proto(uint8_t pm) { char b[24]; snprintk(b, sizeof(b), "EVT PROTO %u", (unsigned int)(pm ? 1 : 0)); cmd_uart_send_line(b); }
-static void cmd_evt_err(bool on)      { error_state = on; char b[24]; snprintk(b, sizeof(b), "EVT ERR %d", on ? 1 : 0); cmd_uart_send_line(b); }
+static void cmd_evt_err(bool on)
+{
+    error_state = on;
 
-/* --- Forward decls --- */
-static void update_link_ready(const char *why);
+    if (on) {
+        /* Error state wins over normal adv/conn indication. */
+        k_timer_stop(&blink_timer);
+        pihub_led_err_on();
+    } else if (!atomic_get(&sw1_pressed)) {
+        /* Restore normal LED state when error clears, unless SW1 feedback is active. */
+        if (current_conn) {
+            set_leds_conn();
+        } else {
+            blink_state = false;
+            set_leds_adv();
+            k_timer_start(&blink_timer, K_NO_WAIT, K_MSEC(500));
+        }
+    }
+
+    char b[24];
+    snprintk(b, sizeof(b), "EVT ERR %d", on ? 1 : 0);
+    cmd_uart_send_line(b);
+}
+
+/* Local forward decls */
 static void hid_release_all_best_effort(void);
 
 static void cmd_evt_disc(uint8_t reason)
@@ -719,20 +773,23 @@ static void cmd_uart_init(void)
 }
 
 
-/* --- SW1 long-press bond clear (5 seconds) --- */
+/* SW1 long-press unpair flow
+ *
+ * Holding SW1 schedules a delayed bond-clear action. Releasing early cancels it.
+ * A small LED feedback worker runs while the button is held, and normal LED state
+ * is restored from the actual link state when the hold ends.
+ */
 /* Prefer direct GPIO for SW1: more reliable than dk_buttons on nrf52840dongle. */
 #define SW1_NODE DT_ALIAS(sw0)
 #if DT_NODE_HAS_STATUS(SW1_NODE, okay)
 static const struct gpio_dt_spec sw1 = GPIO_DT_SPEC_GET(SW1_NODE, gpios);
 static struct gpio_callback sw1_cb;
-static atomic_t sw1_pressed;
 
 /* --------------------------------------------------------------------------
- * SETTINGS/NVS storage helpers
+ * Settings / storage helpers
  *
- * Bonding data lives in the "storage" flash area. We keep explicit helpers here
- * so the SW1 long-press / UNPAIR path can wipe bonds in firmware, which is useful
- * on a dongle that is typically flashed over USB rather than with a debug probe.
+ * Bonds live in the settings backend. These helpers keep the erase path explicit
+ * so SW1 long-press and UNPAIR can clear pairing state without needing a probe.
  */
 
 static int pihub_open_storage(const struct flash_area **fa_out)
@@ -800,15 +857,69 @@ static int pihub_settings_load_after_bt(void)
 }
 #endif
 
+/* LED policy
+ *
+ * All user-visible LED behavior should go through this section. Higher-level
+ * state paths should call semantic helpers rather than touching DK_LEDx directly.
+ */
+static void pihub_leds_all_off(void)
+{
+    dk_set_led_off(DK_LED1);
+    dk_set_led_off(DK_LED2);
+    dk_set_led_off(DK_LED3);
+    dk_set_led_off(DK_LED4);
+}
 
-static struct k_work_delayable bond_clear_work;
-static void bond_clear_work_handler(struct k_work *work);
-static void button_changed(uint32_t button_state, uint32_t has_changed);
-static void set_leds_adv(void);
-static struct k_timer blink_timer;
+static void pihub_led_err_on(void)
+{
+    pihub_leds_all_off();
+    dk_set_led_on(PIHUB_LED_ERR);
+}
 
+static void pihub_led_conn_on(void)
+{
+    pihub_leds_all_off();
+    dk_set_led_on(PIHUB_LED_CONN);
+}
 
-static struct k_work_delayable adv_restart_work;
+static void pihub_led_adv_set(bool on)
+{
+    /* Keep adv as blue-only blink */
+    dk_set_led_off(PIHUB_LED_ERR);
+    dk_set_led_off(PIHUB_LED_CONN);
+    dk_set_led(PIHUB_LED_ADV, on ? 1 : 0);
+}
+
+static void pihub_led_restore_state(void)
+{
+    if (current_conn) {
+        set_leds_conn();
+    } else {
+        set_leds_adv();
+    }
+}
+
+static void sw1_feedback_work_fn(struct k_work *work)
+{
+    ARG_UNUSED(work);
+
+    if (!atomic_get(&sw1_pressed)) {
+        sw1_feedback_on = false;
+        pihub_led_restore_state();
+        return;
+    }
+
+    sw1_feedback_on = !sw1_feedback_on;
+
+    if (sw1_feedback_on) {
+        pihub_leds_all_off();
+        dk_set_led_on(PIHUB_LED_ERR);
+    } else {
+        pihub_led_restore_state();
+    }
+
+    k_work_schedule(&sw1_feedback_work, K_MSEC(200));
+}
 
 /* Test/bring-up sequence tuning.
  * We keep this conservative to improve iOS/tvOS reliability on (re)connect:
@@ -1153,14 +1264,16 @@ static void bond_clear_work_handler(struct k_work *work)
 static void sw1_schedule_or_cancel(bool pressed)
 {
     if (pressed) {
-        /* tiny feedback on press */
-        dk_set_led_on(DK_LED2);
-        k_sleep(K_MSEC(40));
-        dk_set_led_off(DK_LED2);
-
+        atomic_set(&sw1_pressed, 1);
+        sw1_feedback_on = false;
         k_work_schedule(&bond_clear_work, K_SECONDS(5));
+        k_work_schedule(&sw1_feedback_work, K_NO_WAIT);
     } else {
+        atomic_set(&sw1_pressed, 0);
         (void)k_work_cancel_delayable(&bond_clear_work);
+        (void)k_work_cancel_delayable(&sw1_feedback_work);
+        sw1_feedback_on = false;
+        pihub_led_restore_state();
     }
 }
 
@@ -1409,28 +1522,33 @@ static void cmd_handle_line(char *line)
 
 static void set_leds_adv(void)
 {
-    /* Advertising state: blink LED4, keep the other LEDs off. */
-    dk_set_led_off(DK_LED4);
-    dk_set_led_off(DK_LED3);
-    dk_set_led_off(DK_LED2);
-    dk_set_led_off(DK_LED1);
+    /* Advertising state: blue blink, all others off. */
+    pihub_leds_all_off();
 }
 
 static void set_leds_conn(void)
 {
-    /* Connected: solid GREEN (LED1). Ensure ADV blink LED is off. */
-    dk_set_led_off(DK_LED4);
-    dk_set_led_off(DK_LED3);
-    dk_set_led_off(DK_LED2);
-    dk_set_led(DK_LED1, 1);
+    /* Connected: solid green. */
+    pihub_led_conn_on();
 }
 
 static void set_leds_blink_adv(bool on)
 {
-    dk_set_led(DK_LED4, on ? 1 : 0);
+    pihub_led_adv_set(on);
 }
 
-static bool blink_state;
+
+static void pihub_led_boot_sequence(void)
+{
+    for (int i = 0; i < 6; i++) {
+        dk_set_led(PIHUB_LED_ERR,  i & 1);
+        dk_set_led(PIHUB_LED_CONN, (i + 1) & 1);
+        k_sleep(K_MSEC(120));
+    }
+
+    dk_set_led_off(PIHUB_LED_ERR);
+    dk_set_led_off(PIHUB_LED_CONN);
+}
 
 static void blink_timer_handler(struct k_timer *timer)
 {
@@ -1445,30 +1563,20 @@ static void start_advertising(void)
     k_work_schedule(&adv_restart_work, K_NO_WAIT);
 }
 
-static void log_conn_params(struct bt_conn *conn, const char *tag)
+static void log_conn_params_cached(const char *tag)
 {
-    struct bt_conn_info info;
-    int err = bt_conn_get_info(conn, &info);
-    if (err) {
-        LOG_WRN("%s: bt_conn_get_info failed: %d", tag, err);
-        return;
-    }
-    if (info.type != BT_CONN_TYPE_LE) {
-        LOG_INF("%s: non-LE connection", tag);
+    if (!have_conn_params) {
+        LOG_INF("%s: conn params not known yet", tag);
         return;
     }
 
-    /* interval units: 1.25 ms, timeout units: 10 ms */
-    uint32_t interval_ms = ((uint32_t)info.le.interval * 125U) / 100U;
-    uint16_t latency = info.le.latency;
-    uint32_t timeout_ms = (uint32_t)info.le.timeout * 10U;
-
-    cmd_evt_conn_params(info.le.interval, info.le.latency, info.le.timeout);
+    uint32_t interval_ms = ((uint32_t)last_interval * 125U) / 100U; /* 1.25 ms units -> ms */
+    uint32_t timeout_ms  = (uint32_t)last_timeout * 10U;            /* 10 ms units -> ms */
 
     LOG_INF("%s: interval=%u ms latency=%u timeout=%u ms",
             tag,
             (unsigned)interval_ms,
-            latency,
+            (unsigned)last_latency,
             (unsigned)timeout_ms);
 }
 
@@ -1505,7 +1613,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 
     LOG_INF("Connected");
     update_link_ready("pm");
-    log_conn_params(conn, "Conn (initial)");
+    log_conn_params_cached("Conn (initial)");
 
 
 /* Let the central choose connection parameters. We only log what we get. */
@@ -1556,11 +1664,11 @@ static void le_param_updated(struct bt_conn *conn, uint16_t interval,
     cmd_evt_conn_params(interval, latency, timeout);
 
     uint32_t interval_ms = ((uint32_t)interval * 125U) / 100U;
-    uint32_t timeout_ms = (uint32_t)timeout * 10U;
+    uint32_t timeout_ms  = (uint32_t)timeout * 10U;
 
-    LOG_INF("Conn (updated): interval=%u ms latency=%u timeout=%u ms",
+    LOG_INF("Conn params: interval=%u ms latency=%u timeout=%u ms",
             (unsigned)interval_ms,
-            latency,
+            (unsigned)latency,
             (unsigned)timeout_ms);
 }
 
@@ -1613,18 +1721,22 @@ static struct bt_conn_auth_cb auth_cb = {
     .cancel = auth_cancel,
 };
 
+/* Startup order
+ *
+ * 1) visible hardware bring-up
+ * 2) command/UART path
+ * 3) button/work/timer init
+ * 4) settings init
+ * 5) Bluetooth enable + settings load
+ * 6) enter advertising idle loop
+ */
 int main(void)
 {
     int err;
 
     /* Short visible boot sequence so bring-up failures are obvious on bare hardware. */
     dk_leds_init();
-    for (int i = 0; i < 6; i++) {
-        dk_set_led(DK_LED1, i & 1);
-        dk_set_led(DK_LED2, (i + 1) & 1);
-        k_sleep(K_MSEC(120));
-    }
-    dk_set_led_off(DK_LED2);
+    pihub_led_boot_sequence();
     usb_console_init();
 
     /* Bring up CDC ACM command interface (PING/PONG + KB/CC). */
@@ -1637,6 +1749,7 @@ int main(void)
 
     k_work_init_delayable(&adv_restart_work, adv_restart_work_handler);
     k_work_init_delayable(&bond_clear_work, bond_clear_work_handler);
+    k_work_init_delayable(&sw1_feedback_work, sw1_feedback_work_fn);
 
     /* Buttons: SW1 long-hold clears bonds */
     err = dk_buttons_init(button_changed);
@@ -1673,8 +1786,9 @@ int main(void)
     err = pihub_settings_init_only();
     if (err) {
         LOG_ERR("settings_subsys_init failed (err %d)", err);
-        dk_set_led_on(DK_LED1);
-        dk_set_led_on(DK_LED2);
+        pihub_leds_all_off();
+        dk_set_led_on(PIHUB_LED_ERR);
+        dk_set_led_on(PIHUB_LED_CONN);
         return 0;
     }
 #endif
@@ -1684,8 +1798,9 @@ int main(void)
         LOG_ERR("bt_enable failed (err %d)", err);
         printk("[PiHub] bt_enable failed (err %d)\n", err);
         /* Both LEDs ON solid means bt_enable failed */
-        dk_set_led_on(DK_LED1);
-        dk_set_led_on(DK_LED2);
+        pihub_leds_all_off();
+        dk_set_led_on(PIHUB_LED_ERR);
+        dk_set_led_on(PIHUB_LED_CONN);
         return 0;
     }
 
