@@ -656,8 +656,19 @@ pre.json {{
                 rows.append(kv_row("Path", data.get("path")))
 
             for key in details_keys:
-                if key in details:
-                    rows.append(kv_row(key.replace("_", " ").title(), details.get(key)))
+                if key not in details:
+                    continue
+
+                if key == "conn_params" and isinstance(details.get(key), dict):
+                    cp = details.get(key) or {}
+                    interval_ms = cp.get("interval_ms")
+                    latency = cp.get("latency")
+                    timeout_ms = cp.get("timeout_ms")
+                    compact = f"{interval_ms} / {latency} / {timeout_ms}"
+                    rows.append(kv_row("Conn params", compact))
+                    continue
+
+                rows.append(kv_row(key.replace("_", " ").title(), details.get(key)))
 
             error_html = ""
             if data.get("last_error"):
@@ -759,7 +770,7 @@ pre.json {{
       <h2>Domains</h2>
       <div class="grid domains">
         {domain_card("USB", snapshot.get("usb") or {}, ["paired_remote", "reader_running", "input_open", "grabbed"])}
-        {domain_card("BLE", snapshot.get("ble") or {}, ["transport_open", "advertising", "connected", "proto_report", "last_disc_reason"])}
+        {domain_card("BLE", snapshot.get("ble") or {}, ["transport_open", "advertising", "connected", "proto_report", "last_disc_reason", "conn_params"])}
         {domain_card("TV", snapshot.get("tv") or {}, ["initialized", "presence_on", "presence_source", "last_change_age_s", "ws_connected", "token_present"])}
         {domain_card("Speaker", snapshot.get("speaker") or {}, ["reachable", "connected", "ready", "playback_status", "source", "volume_pct", "muted", "update_age_s"])}
       </div>
