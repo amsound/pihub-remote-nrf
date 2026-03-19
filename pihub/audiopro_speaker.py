@@ -23,6 +23,7 @@ _TCP_HEADER = b"\x18\x96\x18\x20"  # 0x18 0x96 0x18 0x20
 
 _HTTPAPI_PATH = "/httpapi.asp"
 _HTTP_TIMEOUT_S = 10
+SEND_TIMEOUT_S = 2.0        # fail fast if a TCP send/drain stalls
 DEFAULT_HTTP_POWEROFF_CMD = "setShutdown:0"
 
 # Poll knobs (tweak here)
@@ -161,6 +162,7 @@ class AudioProSpeaker:
         self._poll_task: asyncio.Task | None = None
         self._poll_wake_evt = asyncio.Event()
         self._log_drop_once = False
+        self._log_http_drop_once = False
 
         # Mute GET waiter
         self._mute_evt = asyncio.Event()
@@ -328,6 +330,7 @@ class AudioProSpeaker:
         self._state.connected = False
         self._state.ready = False
         self._log_drop_once = False
+        self._log_http_drop_once = False
         self._poll_wake_evt.clear()
 
         try:
@@ -437,9 +440,11 @@ class AudioProSpeaker:
 
             try:
                 self._writer.write(packet)
-                await self._writer.drain()
+                await asyncio.wait_for(self._writer.drain(), timeout=SEND_TIMEOUT_S)
                 self._last_send_monotonic = time.monotonic()
                 return
+            except asyncio.TimeoutError as e:
+                send_error = ConnectionError(f"send timeout after {SEND_TIMEOUT_S:.1f}s")
             except Exception as e:
                 send_error = e
 
@@ -460,6 +465,28 @@ class AudioProSpeaker:
             return True
         except Exception as e:
             self._state.last_error = str(e)
+            self._state.last_update_ts = _now()
+            return False
+
+    async def _http_control(self, cmd: str) -> bool:
+        """
+        HTTP control-plane sends. Use the same front-door policy as TCP:
+        drop unless ready=True.
+
+        Returns True if the HTTP request was attempted successfully,
+        False if dropped or failed.
+        """
+        if not self._state.ready:
+            if not self._log_http_drop_once:
+                logger.info("speaker link not ready yet; dropping http command=%s", cmd)
+                self._log_http_drop_once = True
+            return False
+
+        try:
+            await self._http_cmd(cmd)
+            return True
+        except Exception as e:
+            self._state.last_error = f"httpapi failed: {e}"
             self._state.last_update_ts = _now()
             return False
 
@@ -815,49 +842,34 @@ class AudioProSpeaker:
     # -------------- HTTP API --------------
 
     async def power_off(self) -> None:
-        """Best-effort courtesy amplifier off via HTTP API."""
+        """Best-effort courtesy amplifier off via HTTP API, but only when ready."""
         cmd = getattr(self, "_http_poweroff_cmd", DEFAULT_HTTP_POWEROFF_CMD)
-        task = asyncio.create_task(self._http_cmd(cmd))
+        task = asyncio.create_task(self._http_control(cmd))
         task.add_done_callback(self._log_http_poweroff_result)
 
-
-    def _log_http_poweroff_result(self, task: asyncio.Task[None]) -> None:
+    def _log_http_poweroff_result(self, task: asyncio.Task[bool]) -> None:
         try:
-            task.result()
+            ok = task.result()
+            if not ok:
+                logger.info("speaker courtesy power_off not sent")
         except Exception as e:
             self._state.last_error = f"httpapi power_off failed: {e}"
             self._state.last_update_ts = _now()
             logger.warning("speaker courtesy power_off failed: %s", e)
 
-
     async def play_url(self, url: str) -> None:
         """
         LinkPlay's TCP API doesn't cover "play arbitrary URL" for all firmwares.
-        This keeps your existing behavior: call httpapi.asp over HTTPS (often self-signed).
+        For consistency with the TCP control plane, drop unless ready=True.
         """
         if not url:
             return
-        if not self._session:
-            timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
-            self._session = aiohttp.ClientSession(timeout=timeout)
 
         cmd = f"setPlayerCmd:play:{url}"
-        endpoint = f"{self._http_scheme}://{self._speaker_ip}{_HTTPAPI_PATH}"
-        params = {"command": cmd}
-
-        try:
-            async with self._session.get(endpoint, params=params, ssl=False) as resp:
-                _ = await resp.text(errors="replace")
-                if resp.status >= 400:
-                    raise RuntimeError(f"httpapi status {resp.status}")
-        except Exception as e:
-            self._state.last_error = f"httpapi play_url failed: {e}"
-            self._state.last_update_ts = _now()
-            raise
-        finally:
+        ok = await self._http_control(cmd)
+        if ok:
             task = asyncio.create_task(self._pinfget())
             task.add_done_callback(self._log_pinfget_result)
-
 
     def _log_pinfget_result(self, task: asyncio.Task[None]) -> None:
         try:
