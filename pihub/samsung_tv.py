@@ -17,6 +17,7 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+TV_ON_SIGNAL_DEBOUNCE_S = 8.0
 
 # --- Presence fallback probe ---
 
@@ -336,11 +337,14 @@ class TvController:
         self._last_power_off_request_ts: float | None = None
         self._state_change_callback = state_change_callback
 
+        self._pending_watch_signal_task: Optional[asyncio.Task] = None
+
     async def start(self) -> None:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
 
     async def stop(self) -> None:
+        self._cancel_pending_watch_signal()
         await self.ws.close()
         sess, self._session = self._session, None
         if sess:
@@ -361,14 +365,18 @@ class TvController:
         self._presence_last_change_ts = now
 
         curr_on = self._presence_cached is True
+
+        # Passive TV-on promotions are debounced before emitting a watch signal.
+        # Raw presence remains immediate for health/control truth; only the
+        # device-state signal is delayed/cancelled.
         if not prev_on and curr_on:
-            self._emit_state_change(
-                "watch",
-                {
-                    "domain": "tv",
-                    "presence_source": source,
-                },
-            )
+            self._schedule_watch_signal(source=source)
+
+        # If TV falls back off before the debounce completes, cancel the pending
+        # watch signal so spurious SSDP "on" splats do not promote runtime mode.
+        if prev_on and not curr_on:
+            self._cancel_pending_watch_signal()
+
         return True
 
     def notify_msearch(self, *, location: str | None) -> bool:
@@ -499,6 +507,52 @@ class TvController:
             ws_connected=st.connected,
             token_present=st.token_present,
             last_error=st.last_error,
+        )
+
+    def _cancel_pending_watch_signal(self) -> None:
+        task, self._pending_watch_signal_task = self._pending_watch_signal_task, None
+        if task and not task.done():
+            task.cancel()
+
+    async def _emit_watch_signal_after_delay(self, *, source: str, delay_s: float) -> None:
+        try:
+            await asyncio.sleep(delay_s)
+
+            # Only emit if TV is still logically on after the debounce window.
+            if self._presence_cached is not True:
+                logger.debug(
+                    "tv watch signal cancelled after debounce source=%s reason=presence_not_on",
+                    source,
+                )
+                return
+
+            self._emit_state_change(
+                "watch",
+                {
+                    "domain": "tv",
+                    "presence_source": source,
+                },
+            )
+            logger.debug(
+                "tv watch signal emitted after debounce source=%s delay_s=%.1f",
+                source,
+                delay_s,
+            )
+        except asyncio.CancelledError:
+            logger.debug("tv watch signal debounce cancelled source=%s", source)
+            raise
+        finally:
+            if self._pending_watch_signal_task is asyncio.current_task():
+                self._pending_watch_signal_task = None
+
+    def _schedule_watch_signal(self, *, source: str) -> None:
+        self._cancel_pending_watch_signal()
+        self._pending_watch_signal_task = asyncio.create_task(
+            self._emit_watch_signal_after_delay(
+                source=source,
+                delay_s=TV_ON_SIGNAL_DEBOUNCE_S,
+            ),
+            name="tv:watch_signal_debounce",
         )
 
     def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:
