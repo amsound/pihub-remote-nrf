@@ -311,7 +311,7 @@ class SamsungSoundbar:
     async def _get_device_payload(self) -> dict[str, Any]:
         session = await self._get_session()
         headers = await self._auth_headers()
-        url = f"{SMARTTHINGS_API_BASE}/devices/{self._device_id}"
+        url = f"{SMARTTHINGS_API_BASE}/devices/{self._device_id}/status"
 
         async with session.get(url, headers=headers, ssl=False) as resp:
             body = await resp.text()
@@ -394,8 +394,8 @@ class SamsungSoundbar:
         playback_status = self._get_attr(main_map, "samsungvd.audioPlayback", "playbackStatus")
 
         sound_from = (
-            self._get_attr(main_map, "samsungvd.audioSoundFrom", "detailName")
-            or self._get_attr(main_map, "samsungvd.soundFrom", "detailName")
+            self._get_attr(main_map, "samsungvd.soundFrom", "detailName")
+            or self._get_attr(main_map, "samsungvd.audioSoundFrom", "detailName")
         )
 
         power_on = str(power or "").strip().lower() == "on"
@@ -462,6 +462,15 @@ class SamsungSoundbar:
         source = str(raw_input_source or "").strip().upper()
         from_name = str(sound_from or "").strip().lower()
 
+        # Best truth first: Samsung's own semantic source label
+        if from_name == "tv":
+            return "hdmi"
+        if from_name == "airplay":
+            return "airplay"
+        if from_name == "bluetooth":
+            return "bluetooth"
+
+        # Fallback to raw input source if soundFrom is missing/useless
         if source == "D.IN":
             return "optical"
         if source == "BT":
@@ -469,15 +478,9 @@ class SamsungSoundbar:
         if source == "WIFI":
             return "wifi"
 
-        # Samsung often leaves inputSource empty while the bar is in AirPlay/listen mode.
-        # Preserve existing PiHub flow predicates by exposing a derived source.
+        # If blank while powered on, treat as listen-ish fallback
         if source == "":
-            if from_name == "tv":
-                return "hdmi"
             return "airplay"
-
-        if from_name == "tv":
-            return "hdmi"
 
         return None
 
