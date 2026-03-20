@@ -189,6 +189,9 @@ class SamsungSoundbar:
         self._send_lock = asyncio.Lock()
         self._last_send_monotonic = 0.0
 
+        self._last_refresh_monotonic = 0.0
+        self._min_refresh_interval_s = 1.0
+
         self._state_change_callback = state_change_callback
 
     @property
@@ -250,6 +253,12 @@ class SamsungSoundbar:
         self._session = None
 
     async def request_refresh(self) -> None:
+        now = time.monotonic()
+        if (now - self._last_refresh_monotonic) < self._min_refresh_interval_s:
+            self._poll_wake_evt.set()
+            return
+
+        self._last_refresh_monotonic = now
         self._poll_wake_evt.set()
         await self._refresh_now()
 
@@ -400,16 +409,24 @@ class SamsungSoundbar:
 
         power_on = str(power or "").strip().lower() == "on"
 
-        derived_source = self._derive_source(
-            power_on=power_on,
-            raw_input_source=input_source,
-            sound_from=sound_from,
-        )
-        listen_active = power_on and derived_source == "airplay"
+        if not power_on:
+            raw_input_source_norm = None
+            sound_from_norm = None
+            derived_source = None
+            listen_active = False
+        else:
+            raw_input_source_norm = self._norm_str(input_source)
+            sound_from_norm = self._norm_str(sound_from)
+            derived_source = self._derive_source(
+                power_on=power_on,
+                raw_input_source=input_source,
+                sound_from=sound_from,
+            )
+            listen_active = derived_source == "airplay"
 
         self._state.power_on = power_on
-        self._state.raw_input_source = self._norm_str(input_source)
-        self._state.sound_from = self._norm_str(sound_from)
+        self._state.raw_input_source = raw_input_source_norm
+        self._state.sound_from = sound_from_norm
         self._state.source = derived_source
         self._state.listen_active = listen_active
 
@@ -505,16 +522,13 @@ class SamsungSoundbar:
 
     async def volume_up(self) -> None:
         await self._send_command("audioVolume", "volumeUp")
-        await self.request_refresh()
 
     async def volume_down(self) -> None:
         await self._send_command("audioVolume", "volumeDown")
-        await self.request_refresh()
 
     async def set_volume(self, pct: int) -> None:
         target = max(0, min(100, int(pct)))
         await self._send_command("audioVolume", "setVolume", [target])
-        await self.request_refresh()
 
     async def set_muted(self, target: bool) -> None:
         await self._send_command("audioMute", "mute" if target else "unmute")
@@ -526,23 +540,18 @@ class SamsungSoundbar:
 
     async def play(self) -> None:
         await self._send_command("samsungvd.audioPlayback", "play")
-        await self.request_refresh()
 
     async def pause(self) -> None:
         await self._send_command("samsungvd.audioPlayback", "pause")
-        await self.request_refresh()
 
     async def stop_playback(self) -> None:
         await self._send_command("samsungvd.audioPlayback", "stop")
-        await self.request_refresh()
 
     async def next_track(self) -> None:
         await self._send_command("samsungvd.audioPlayback", "fastForward")
-        await self.request_refresh()
 
     async def previous_track(self) -> None:
         await self._send_command("samsungvd.audioPlayback", "rewind")
-        await self.request_refresh()
 
     # ---- No-op methods so existing flows can stay unchanged ----
 
