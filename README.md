@@ -5,7 +5,7 @@ It listens to RF key events from a Logitech Harmony Remote (simple type, no disp
 
 * **BLE HID** (Consumer + Keyboard) tested with Apple TV 4K 3rd Gen
 * **Samsung TV**
-* **LinkPlay/WiiM speaker**
+* **Audio Pro/LinkPlay/WiiM speaker**
 * **Local runtime flows** over HTTP
 
 It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No Harmony Hub or cloud required.
@@ -19,7 +19,7 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 * **HTTP control surface** on port `9123`
 * **BLE Output**: per-button **Consumer + Keyboard** usages
 * **TV control** via Samsung WebSocket + SSDP discovery
-* **Speaker control** via LinkPlay TCP + HTTP
+* **Speaker control** via TCP API + HTTP API
 * **Flows**: local named flows such as `watch`, `listen`, `power_off`
 * **Device-state signals**: passive state-driven routing from TV/speaker changes into local runtime behavior
 * **Precise edges**: explicit **down/up**; filters kernel auto-repeat
@@ -125,7 +125,7 @@ docker push a1exm/pihub-nrf:latest
 | `TV_TOKEN_FILE` | Samsung TV token path | `/data/samsungtv-token.txt` |
 | `TV_NAME` | Name presented to the Samsung TV | `PiHub Remote` |
 | `TV_ENABLED` | enable Samsung TV domain | default `true` |
-| `SPEAKER_IP` | LinkPlay/WiiM speaker IP address | optional |
+| `SPEAKER_IP` | Audio Pro/LinkPlay/WiiM speaker IP address | optional |
 | `SPEAKER_HTTP_SCHEME` | Speaker HTTP scheme | `https` |
 | `SPEAKER_ENABLED` | enable Audio Pro speaker domain | default `true` |
 | `DEBUG` | Debug knob | defaults to INFO/WARN |
