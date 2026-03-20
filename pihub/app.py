@@ -25,6 +25,8 @@ from .unifying_input import UnifyingReader
 from .ble_dongle import BleDongleLink
 from .samsung_tv import TvController, ssdp_listener, start_discovery_tasks, stop_discovery_tasks
 from .audiopro_speaker import AudioProSpeaker
+from .samsung_soundbar import SamsungSoundbar
+from .speaker import SpeakerLike
 from .settings import SettingsStore
 
 
@@ -136,14 +138,27 @@ async def main() -> None:
     else:
         shutdown_event = asyncio.Event()
 
-    speaker: AudioProSpeaker | None = None
+    speaker: SpeakerLike | None = None
 
-    if cfg.speaker_enabled and cfg.speaker_ip:
-        speaker = AudioProSpeaker(
-            speaker_ip=cfg.speaker_ip,
-            http_scheme=cfg.speaker_http_scheme,
-            volume_step_pct=cfg.speaker_volume_step_pct,
-        )
+    if cfg.speaker_enabled:
+        if cfg.speaker_backend == "audiopro":
+            if cfg.speaker_ip:
+                speaker = AudioProSpeaker(
+                    speaker_ip=cfg.speaker_ip,
+                    http_scheme=cfg.speaker_http_scheme,
+                    volume_step_pct=cfg.speaker_volume_step_pct,
+                )
+        elif cfg.speaker_backend == "samsung_soundbar":
+            if cfg.smartthings_device_id:
+                speaker = SamsungSoundbar(
+                    device_id=cfg.smartthings_device_id,
+                    poll_interval_s=cfg.smartthings_poll_interval_s,
+                    token_file=cfg.smartthings_token_file,
+                )
+        else:
+            raise ValueError(f"unsupported SPEAKER_BACKEND={cfg.speaker_backend!r}")
+
+    if speaker is not None:
         await speaker.start()
         cleanup_hooks.append(("speaker", speaker.stop))
 

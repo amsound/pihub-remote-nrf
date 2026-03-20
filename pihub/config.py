@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
 
 @dataclass(frozen=True)
 class Config:
@@ -27,10 +29,18 @@ class Config:
     tv_token_file: str
     tv_name: str
 
-    # Audio Pro/Arylic/LinkPlay/WiiM Speaker
+    # Speaker backend selection
+    speaker_backend: str
+
+    # Audio Pro / LinkPlay / WiiM
     speaker_ip: str
-    speaker_http_scheme: str  # https (self-signed)
-    speaker_volume_step_pct: int  # MUST be 2%
+    speaker_http_scheme: str
+    speaker_volume_step_pct: int
+
+    # Samsung SmartThings soundbar
+    smartthings_device_id: str
+    smartthings_token_file: str
+    smartthings_poll_interval_s: int
 
     # Domain toggles
     ble_enabled: bool
@@ -38,17 +48,13 @@ class Config:
     tv_enabled: bool
     speaker_enabled: bool
 
-
     @staticmethod
     def load() -> "Config":
-        """Build a Config from environment (compose env)."""
-        # Domain toggles
         ble_enabled = _env_bool("BLE_ENABLED", True)
         usb_enabled = _env_bool("USB_ENABLED", True)
         tv_enabled = _env_bool("TV_ENABLED", True)
         speaker_enabled = _env_bool("SPEAKER_ENABLED", True)
 
-        # HID dongle
         ble_serial_device = (os.getenv("BLE_SERIAL_DEVICE", "auto") or "auto").strip()
         ble_serial_baud = int(os.getenv("BLE_SERIAL_BAUD", "115200"))
 
@@ -63,11 +69,22 @@ class Config:
         tv_token_file = (os.getenv("TV_TOKEN_FILE", "/data/samsungtv-token.txt") or "").strip()
         tv_name = (os.getenv("TV_NAME", "PiHub Remote") or "").strip()
 
-        # Speaker
+        speaker_backend = (os.getenv("SPEAKER_BACKEND", "audiopro") or "audiopro").strip().lower()
+
         speaker_ip = (os.getenv("SPEAKER_IP", "") or "").strip()
         speaker_http_scheme = (os.getenv("SPEAKER_HTTP_SCHEME", "https") or "https").strip().lower()
         if speaker_http_scheme not in {"http", "https"}:
             speaker_http_scheme = "https"
+
+        smartthings_device_id = (os.getenv("SMARTTHINGS_DEVICE_ID", "") or "").strip()
+        smartthings_token_file = (
+            os.getenv("SMARTTHINGS_TOKEN_FILE", "/data/smartthings-token.json")
+            or "/data/smartthings-token.json"
+        ).strip()
+        try:
+            smartthings_poll_interval_s = int(os.getenv("SMARTTHINGS_POLL_INTERVAL_S", "30"))
+        except ValueError:
+            smartthings_poll_interval_s = 30
 
         speaker_volume_step_pct = 2
 
@@ -84,7 +101,11 @@ class Config:
             tv_mac=tv_mac,
             tv_token_file=tv_token_file,
             tv_name=tv_name,
+            speaker_backend=speaker_backend,
             speaker_ip=speaker_ip,
             speaker_http_scheme=speaker_http_scheme,
             speaker_volume_step_pct=speaker_volume_step_pct,
+            smartthings_device_id=smartthings_device_id,
+            smartthings_token_file=smartthings_token_file,
+            smartthings_poll_interval_s=smartthings_poll_interval_s,
         )

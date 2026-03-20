@@ -16,7 +16,7 @@ from .runtime import RuntimeEngine
 
 from .ble_dongle import BleDongleLink
 from .unifying_input import UnifyingReader
-from .audiopro_speaker import AudioProSpeaker
+from .speaker import SpeakerLike
 from .samsung_tv import TvController
 
 def _norm_error(value: object) -> str | None:
@@ -34,7 +34,7 @@ class HttpServer:
         ble: Optional[BleDongleLink] = None,
         reader: Optional[UnifyingReader] = None,
         tv: Optional[TvController] = None,
-        speaker: Optional[AudioProSpeaker] = None,
+        speaker: Optional[SpeakerLike] = None,
         settings: Any = None,
         runtime: Optional[RuntimeEngine] = None,
     ) -> None:
