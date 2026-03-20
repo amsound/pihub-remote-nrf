@@ -758,7 +758,7 @@ pre.json {{
           <h3>PiHub System</h3>
           <div class="kv">
             {kv_row("CPU / SoC", f"{system.get('cpu_temp_c')} °C" if system.get("cpu_temp_c") is not None else "unknown")}
-            {kv_row("Process uptime", system.get("process_uptime_human"))}
+            {kv_row("Container uptime", system.get("process_uptime_human"))}
             {kv_row("System uptime", system.get("system_uptime_human"))}
           </div>
         </div>
@@ -771,7 +771,7 @@ pre.json {{
         {domain_card("USB", snapshot.get("usb") or {}, ["paired_remote", "reader_running", "input_open", "grabbed"])}
         {domain_card("BLE", snapshot.get("ble") or {}, ["transport_open", "advertising", "connected", "proto_report", "last_disc_reason", "conn_params"])}
         {domain_card("TV", snapshot.get("tv") or {}, ["initialized", "presence_on", "presence_source", "last_change_age_s", "ws_connected", "token_present"])}
-        {domain_card("Speaker", snapshot.get("speaker") or {}, ["reachable", "connected", "ready", "playback_status", "source", "volume_pct", "muted", "update_age_s"])}
+        {domain_card("Speaker", snapshot.get("speaker") or {}, ["backend", "reachable", "connected", "ready", "playback_status", "source", "volume_pct", "muted", "update_age_s"])}
       </div>
     </section>
 

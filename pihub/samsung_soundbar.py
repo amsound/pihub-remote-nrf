@@ -205,6 +205,7 @@ class SamsungSoundbar:
         last_i = None if s.last_update_ts is None else int(s.last_update_ts)
         age_i = None if last_i is None else max(0, now_i - last_i)
         return {
+            "backend": "samsung_soundbar",
             "reachable": bool(s.reachable),
             "connected": bool(s.connected),
             "ready": bool(s.ready),
