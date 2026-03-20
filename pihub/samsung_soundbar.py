@@ -189,8 +189,7 @@ class SamsungSoundbar:
         self._send_lock = asyncio.Lock()
         self._last_send_monotonic = 0.0
 
-        self._last_refresh_monotonic = 0.0
-        self._min_refresh_interval_s = 1.0
+        self._refresh_lock = asyncio.Lock()
 
         self._state_change_callback = state_change_callback
 
@@ -253,14 +252,13 @@ class SamsungSoundbar:
         self._session = None
 
     async def request_refresh(self) -> None:
-        now = time.monotonic()
-        if (now - self._last_refresh_monotonic) < self._min_refresh_interval_s:
+        if self._refresh_lock.locked():
             self._poll_wake_evt.set()
             return
 
-        self._last_refresh_monotonic = now
-        self._poll_wake_evt.set()
-        await self._refresh_now()
+        async with self._refresh_lock:
+            self._poll_wake_evt.set()
+            await self._refresh_now()
 
     async def _runner(self) -> None:
         while self._enabled and not self._stop_evt.is_set():
