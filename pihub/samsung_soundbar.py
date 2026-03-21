@@ -497,7 +497,6 @@ class SamsungSoundbar:
             if isinstance(main, dict):
                 main_map = main
 
-        friendly_name = self._norm_str(payload.get("label")) or self._norm_str(payload.get("name"))
         power = self._get_attr(main_map, "switch", "switch")
         volume = self._get_attr(main_map, "audioVolume", "volume")
         mute = self._get_attr(main_map, "audioMute", "mute")
@@ -549,8 +548,6 @@ class SamsungSoundbar:
                 self._state.muted = None
         else:
             self._state.muted = None
-
-        self._state.friendly_name = friendly_name
 
         self._state.last_update_ts = _now()
 
