@@ -42,6 +42,8 @@ class SamsungSoundbarState:
     sound_from: str | None = None
     listen_active: bool = False
 
+    friendly_name: str | None = None
+
     last_update_ts: float | None = None
 
 
@@ -278,10 +280,10 @@ class SamsungSoundbar:
             timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_S)
             self._session = aiohttp.ClientSession(timeout=timeout)
 
+        token_present = self._token_store.path.exists()
         logger.info(
-            "speaker smartthings starting device_id=%s token_file=%s",
-            self._device_id,
-            self._token_store.path,
+            "initialised speaker token_present=%s",
+            str(token_present).lower(),
         )
 
         self._task = asyncio.create_task(self._runner(), name=f"smartthings[{self._device_id}]")
@@ -342,14 +344,8 @@ class SamsungSoundbar:
         self._parse_payload(payload)
 
         if not self._startup_refresh_logged:
-            logger.info(
-                "speaker smartthings initial refresh ok device_id=%s power_on=%s source=%r volume=%r muted=%r",
-                self._device_id,
-                self._state.power_on,
-                self._state.source,
-                self._state.volume,
-                self._state.muted,
-            )
+            name = self._state.friendly_name or "unknown"
+            logger.info("speaker cloud link ready name=%s (initial status received)", name)
             self._startup_refresh_logged = True
 
         if not old_listen and self._state.listen_active:
@@ -393,7 +389,7 @@ class SamsungSoundbar:
         self._state.last_error = None
 
         if not self._startup_connect_logged:
-            logger.info("speaker smartthings connected device_id=%s", self._device_id)
+            logger.info("speaker connected via cloud device_id=%s", self._device_id)
             self._startup_connect_logged = True
 
         return payload
@@ -460,6 +456,7 @@ class SamsungSoundbar:
             if isinstance(main, dict):
                 main_map = main
 
+        friendly_name = self._norm_str(payload.get("label")) or self._norm_str(payload.get("name"))
         power = self._get_attr(main_map, "switch", "switch")
         volume = self._get_attr(main_map, "audioVolume", "volume")
         mute = self._get_attr(main_map, "audioMute", "mute")
@@ -511,6 +508,8 @@ class SamsungSoundbar:
                 self._state.muted = None
         else:
             self._state.muted = None
+
+        self._state.friendly_name = friendly_name
 
         self._state.last_update_ts = _now()
 
