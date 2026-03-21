@@ -47,35 +47,37 @@ class SamsungSoundbarState:
 
 class SmartThingsTokenStore:
     """
-    Reads /data/smartthings-token.json.
+    Canonical on-disk format (preferred):
 
-    Supported shapes:
-    1) Proper owned SmartApp file:
-       {
-         "access_token": "...",
-         "refresh_token": "...",
-         "expires_at": 1774098857.9,
-         "client_id": "...",
-         "client_secret": "..."
-       }
+    {
+      "access_token": "...",
+      "refresh_token": "...",
+      "expires_at": 1774170582,
+      "client_id": "...",
+      "client_secret": "..."
+    }
 
-    2) HA-style nested dump pasted directly:
-       {
-         "data": {
-           "token": {
-             "access_token": "...",
-             "refresh_token": "...",
-             "expires_at": 1774098857.9
-           }
-         }
-       }
+    Also accepts the older HA-style nested shape:
 
-    If client_id/client_secret are absent, the current access token is used
-    as-is and cannot be refreshed automatically.
+    {
+      "data": {
+        "token": {
+          "access_token": "...",
+          "refresh_token": "...",
+          "expires_at": 1774098857.9627469
+        }
+      }
+    }
+
+    If client_id/client_secret are present, access tokens are refreshed automatically.
     """
 
     def __init__(self, path: str = "/data/smartthings-token.json") -> None:
         self._path = Path(path)
+
+    @property
+    def path(self) -> Path:
+        return self._path
 
     def _read_json(self) -> dict[str, Any]:
         text = self._path.read_text(encoding="utf-8").strip()
@@ -90,22 +92,43 @@ class SmartThingsTokenStore:
         return data
 
     def _extract_token_block(self, data: dict[str, Any]) -> dict[str, Any]:
-        token_block = data
+        # Preferred PiHub-owned flat format
+        if "access_token" in data or "refresh_token" in data:
+            return {
+                "access_token": data.get("access_token"),
+                "refresh_token": data.get("refresh_token"),
+                "expires_at": data.get("expires_at"),
+                "client_id": data.get("client_id"),
+                "client_secret": data.get("client_secret"),
+            }
+
+        # Legacy HA-style nested format
         if isinstance(data.get("data"), dict) and isinstance(data["data"].get("token"), dict):
             token_block = data["data"]["token"]
+            return {
+                "access_token": token_block.get("access_token"),
+                "refresh_token": token_block.get("refresh_token"),
+                "expires_at": token_block.get("expires_at"),
+                "client_id": data.get("client_id"),
+                "client_secret": data.get("client_secret"),
+            }
 
-        return {
-            "access_token": token_block.get("access_token"),
-            "refresh_token": token_block.get("refresh_token"),
-            "expires_at": token_block.get("expires_at"),
-            "client_id": data.get("client_id"),
-            "client_secret": data.get("client_secret"),
-        }
+        raise RuntimeError(
+            f"unsupported SmartThings token file shape: {self._path}"
+        )
 
     def _write_json(self, payload: dict[str, Any]) -> None:
-        self._path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        self._path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
-    async def get_access_token(self, session: aiohttp.ClientSession) -> str:
+    async def get_access_token(
+        self,
+        session: aiohttp.ClientSession,
+        *,
+        force_refresh: bool = False,
+    ) -> str:
         raw = self._read_json()
         token = self._extract_token_block(raw)
 
@@ -121,16 +144,23 @@ class SmartThingsTokenStore:
             expires_at = None
 
         now = time.time()
-        # Refresh 5 minutes early if we have enough information.
-        if access_token and (expires_at is None or now < (expires_at - 300)):
+        refresh_margin_s = 300.0  # refresh 5 minutes early
+
+        if (
+            not force_refresh
+            and access_token
+            and (expires_at is None or now < (expires_at - refresh_margin_s))
+        ):
             return access_token
 
         if not refresh_token:
             raise RuntimeError("SmartThings access token expired and no refresh_token is available")
         if not client_id or not client_secret:
             raise RuntimeError(
-                "SmartThings access token expired and token file has no client_id/client_secret for refresh"
+                "SmartThings token refresh requires client_id and client_secret in token file"
             )
+
+        logger.info("SmartThings token refresh starting token_file=%s", self._path)
 
         auth = aiohttp.BasicAuth(client_id, client_secret)
         async with session.post(
@@ -144,14 +174,16 @@ class SmartThingsTokenStore:
         ) as resp:
             body = await resp.text()
             if resp.status >= 400:
-                raise RuntimeError(f"SmartThings token refresh failed status={resp.status} body={body}")
+                raise RuntimeError(
+                    f"SmartThings token refresh failed status={resp.status} body={body}"
+                )
 
             payload = json.loads(body)
 
         new_access = str(payload.get("access_token") or "").strip()
         new_refresh = str(payload.get("refresh_token") or refresh_token).strip()
         expires_in = int(payload.get("expires_in") or 86400)
-        new_expires_at = time.time() + expires_in
+        new_expires_at = int(time.time() + expires_in)
 
         updated = {
             "access_token": new_access,
@@ -161,7 +193,16 @@ class SmartThingsTokenStore:
             "client_secret": client_secret,
         }
         self._write_json(updated)
+
+        logger.info(
+            "SmartThings token refresh complete token_file=%s expires_at=%s",
+            self._path,
+            new_expires_at,
+        )
         return new_access
+
+    async def refresh_now(self, session: aiohttp.ClientSession) -> str:
+        return await self.get_access_token(session, force_refresh=True)
 
 
 class SamsungSoundbar:
@@ -186,6 +227,9 @@ class SamsungSoundbar:
         self._state = SamsungSoundbarState()
         self._session: aiohttp.ClientSession | None = None
         self._token_store = SmartThingsTokenStore(token_file)
+        self._startup_refresh_logged = False
+        self._startup_connect_logged = False
+
         self._send_lock = asyncio.Lock()
         self._last_send_monotonic = 0.0
 
@@ -233,6 +277,12 @@ class SamsungSoundbar:
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_S)
             self._session = aiohttp.ClientSession(timeout=timeout)
+
+        logger.info(
+            "speaker smartthings starting device_id=%s token_file=%s",
+            self._device_id,
+            self._token_store.path,
+        )
 
         self._task = asyncio.create_task(self._runner(), name=f"smartthings[{self._device_id}]")
 
@@ -291,6 +341,17 @@ class SamsungSoundbar:
         payload = await self._get_device_payload()
         self._parse_payload(payload)
 
+        if not self._startup_refresh_logged:
+            logger.info(
+                "speaker smartthings initial refresh ok device_id=%s power_on=%s source=%r volume=%r muted=%r",
+                self._device_id,
+                self._state.power_on,
+                self._state.source,
+                self._state.volume,
+                self._state.muted,
+            )
+            self._startup_refresh_logged = True
+
         if not old_listen and self._state.listen_active:
             self._emit_state_change(
                 "listen",
@@ -318,7 +379,7 @@ class SamsungSoundbar:
     async def _get_device_payload(self) -> dict[str, Any]:
         session = await self._get_session()
         headers = await self._auth_headers()
-        url = f"{SMARTTHINGS_API_BASE}/devices/{self._device_id}/status"
+        url = f"{SMARTTHINGS_API_BASE}/devices/{self._device_id}"
 
         async with session.get(url, headers=headers, ssl=False) as resp:
             body = await resp.text()
@@ -330,6 +391,11 @@ class SamsungSoundbar:
         self._state.connected = True
         self._state.ready = True
         self._state.last_error = None
+
+        if not self._startup_connect_logged:
+            logger.info("speaker smartthings connected device_id=%s", self._device_id)
+            self._startup_connect_logged = True
+
         return payload
 
     async def _send_command(
