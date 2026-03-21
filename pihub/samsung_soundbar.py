@@ -375,7 +375,7 @@ class SamsungSoundbar:
     async def _get_device_payload(self) -> dict[str, Any]:
         session = await self._get_session()
         headers = await self._auth_headers()
-        url = f"{SMARTTHINGS_API_BASE}/devices/{self._device_id}"
+        url = f"{SMARTTHINGS_API_BASE}/devices/{self._device_id}/status"
 
         async with session.get(url, headers=headers, ssl=False) as resp:
             body = await resp.text()
