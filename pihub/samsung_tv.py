@@ -626,7 +626,7 @@ class TvController:
             RECOVERY_WINDOW_S = 30.0
             WOL_FAST_INTERVAL_S = 0.25
             WOL_SLOW_INTERVAL_S = 1.0
-            WOL_FAST_WINDOW_S = 2.0
+            WOL_FAST_WINDOW_S = 4.0
             WS_FAST_INTERVAL_S = 0.25
             WS_SLOW_INTERVAL_S = 0.8
             WS_FAST_WINDOW_S = 2.0
@@ -658,8 +658,8 @@ class TvController:
                     try:
                         await send_wol_burst(
                             self.tv_mac,
-                            count=3,
-                            gap_s=0.25,
+                            count=5,
+                            gap_s=0.20,
                             port=9,
                             broadcast="255.255.255.255",
                         )
