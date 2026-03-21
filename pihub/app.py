@@ -154,6 +154,7 @@ async def main() -> None:
                     device_id=cfg.smartthings_device_id,
                     poll_interval_s=cfg.smartthings_poll_interval_s,
                     token_file=cfg.smartthings_token_file,
+                    tv=tv,
                 )
         else:
             raise ValueError(f"unsupported SPEAKER_BACKEND={cfg.speaker_backend!r}")

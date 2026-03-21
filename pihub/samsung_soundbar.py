@@ -215,6 +215,7 @@ class SamsungSoundbar:
         poll_interval_s: float = 30.0,
         command_interval_s: float = 0.2,
         token_file: str = "/data/smartthings-token.json",
+        tv: Any = None,
         state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._device_id = (device_id or "").strip()
@@ -236,6 +237,8 @@ class SamsungSoundbar:
         self._last_send_monotonic = 0.0
 
         self._refresh_lock = asyncio.Lock()
+
+        self._tv = tv
 
         self._state_change_callback = state_change_callback
 
@@ -433,6 +436,18 @@ class SamsungSoundbar:
         self._poll_wake_evt.set()
         return True
 
+    def _use_tv_volume_path(self) -> bool:
+        if self._tv is None:
+            return False
+
+        if self._state.power_on is not True:
+            return False
+
+        source = (self._state.source or "").strip().lower()
+        sound_from = (self._state.sound_from or "").strip().lower()
+
+        return source == "hdmi" or sound_from == "tv"
+
     def _parse_payload(self, payload: dict[str, Any]) -> None:
         # Support either /devices payload (components list) or /status payload (components.main dict).
         main_map: dict[str, Any] = {}
@@ -584,9 +599,15 @@ class SamsungSoundbar:
         await self.request_refresh()
 
     async def volume_up(self) -> None:
+        if self._use_tv_volume_path():
+            await self._tv.volume_up()
+            return
         await self._send_command("audioVolume", "volumeUp")
 
     async def volume_down(self) -> None:
+        if self._use_tv_volume_path():
+            await self._tv.volume_down()
+            return
         await self._send_command("audioVolume", "volumeDown")
 
     async def set_volume(self, pct: int) -> None:
@@ -594,12 +615,23 @@ class SamsungSoundbar:
         await self._send_command("audioVolume", "setVolume", [target])
 
     async def set_muted(self, target: bool) -> None:
-        await self._send_command("audioMute", "mute" if target else "unmute")
-        await self.request_refresh()
+        if self._use_tv_volume_path():
+            await self._tv.mute_toggle()
+            return
+
+        cur = bool(self._state.muted) if self._state.muted is not None else False
+        if cur != bool(target):
+            await self._send_command("audioMute", "mute" if target else "unmute")
+            await self.request_refresh()
 
     async def mute_toggle(self) -> None:
+        if self._use_tv_volume_path():
+            await self._tv.mute_toggle()
+            return
+
         cur = bool(self._state.muted) if self._state.muted is not None else False
-        await self.set_muted(not cur)
+        await self._send_command("audioMute", "mute" if not cur else "unmute")
+        await self.request_refresh()
 
     async def play(self) -> None:
         await self._send_command("samsungvd.audioPlayback", "play")
