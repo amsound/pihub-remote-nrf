@@ -290,7 +290,7 @@ class TvWsClient:
 
 @dataclass
 class TvSnapshot:
-    initialized: bool
+    initialised: bool
     presence_on: bool | None
     presence_source: str
     last_change_age_s: int | None
@@ -500,7 +500,7 @@ class TvController:
         if self._presence_last_change_ts is not None:
             last_change_age_s = int(asyncio.get_running_loop().time() - self._presence_last_change_ts)
         return TvSnapshot(
-            initialized=self._presence_cached is not None,
+            initialised=self._presence_cached is not None,
             presence_on=self._presence_cached,
             presence_source=self._presence_source,
             last_change_age_s=last_change_age_s,

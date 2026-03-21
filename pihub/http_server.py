@@ -770,7 +770,7 @@ pre.json {{
       <div class="grid domains">
         {domain_card("USB", snapshot.get("usb") or {}, ["paired_remote", "reader_running", "input_open", "grabbed"])}
         {domain_card("BLE", snapshot.get("ble") or {}, ["transport_open", "advertising", "connected", "proto_report", "last_disc_reason", "conn_params"])}
-        {domain_card("TV", snapshot.get("tv") or {}, ["initialized", "presence_on", "presence_source", "last_change_age_s", "ws_connected", "token_present"])}
+        {domain_card("TV", snapshot.get("tv") or {}, ["initialised", "presence_on", "presence_source", "last_change_age_s", "ws_connected", "token_present"])}
         {domain_card("Speaker", snapshot.get("speaker") or {}, ["backend", "reachable", "connected", "ready", "playback_status", "source", "volume_pct", "muted", "update_age_s"])}
       </div>
     </section>
@@ -1534,7 +1534,7 @@ button:hover {{
                 "error": tv_error,
                 "last_error": tv_last_error,
                 "details": {
-                    "initialized": bool(s.initialized),
+                    "initialised": bool(s.initialised),
                     "presence_on": s.presence_on,
                     "presence_source": s.presence_source,
                     "last_change_age_s": s.last_change_age_s,

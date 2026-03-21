@@ -282,7 +282,7 @@ class SamsungSoundbar:
 
         token_present = self._token_store.path.exists()
         logger.info(
-            "initialised speaker token_present=%s",
+            "initialised smartthings cloud connection token_present=%s",
             str(token_present).lower(),
         )
 

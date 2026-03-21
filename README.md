@@ -240,7 +240,7 @@ Example response:
     "error": false,
     "last_error": null,
     "details": {
-      "initialized": true,
+      "initialised": true,
       "presence_on": true,
       "presence_source": "ssdp_alive",
       "last_change_age_s": 4008,
