@@ -656,22 +656,25 @@ class SamsungSoundbar:
         await self._send_command("audioMute", "mute" if not cur else "unmute")
         await self.request_refresh()
 
+    # ---- No-op methods so existing flows can stay unchanged ----
+
     async def play(self) -> None:
-        await self._send_command("samsungvd.audioPlayback", "play")
+        logger.debug("SamsungSoundbar play ignored")
 
     async def pause(self) -> None:
-        await self._send_command("samsungvd.audioPlayback", "pause")
+        logger.debug("SamsungSoundbar pause ignored")
+
+    async def play_pause(self) -> None:
+        logger.debug("SamsungSoundbar play_pause ignored")
 
     async def stop_playback(self) -> None:
-        await self._send_command("samsungvd.audioPlayback", "stop")
+        logger.debug("SamsungSoundbar stop_playback ignored")
 
     async def next_track(self) -> None:
-        await self._send_command("samsungvd.audioPlayback", "fastForward")
+        logger.debug("SamsungSoundbar next_track ignored")
 
     async def previous_track(self) -> None:
-        await self._send_command("samsungvd.audioPlayback", "rewind")
-
-    # ---- No-op methods so existing flows can stay unchanged ----
+        logger.debug("SamsungSoundbar previous_track ignored")
 
     async def set_source(self, source: str) -> None:
         del source

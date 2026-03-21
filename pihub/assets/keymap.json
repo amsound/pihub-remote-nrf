@@ -116,8 +116,8 @@
       "rem_mute":         [ { "domain": "speaker", "action": "mute_toggle" }],
 
       "rem_rewind":       [ { "domain": "speaker", "action": "previous_track" } ],
-      "rem_play":         [ { "domain": "speaker", "action": "play" } ],
-      "rem_pause":        [ { "domain": "speaker", "action": "pause" } ],
+      "rem_play":         [ { "domain": "speaker", "action": "play_pause" } ],
+      "rem_pause":        [ { "domain": "speaker", "action": "play_pause" } ],
       "rem_fast_forward": [ { "domain": "speaker", "action": "next_track" } ],
       "rem_stop":         [ { "domain": "speaker", "action": "stop_playback" } ],
 
