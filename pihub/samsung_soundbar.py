@@ -389,7 +389,7 @@ class SamsungSoundbar:
         self._state.last_error = None
 
         if not self._startup_connect_logged:
-            logger.info("speaker connected via cloud device_id=%s", self._device_id)
+            logger.info("speaker cloud connected device_id=%s", self._device_id)
             self._startup_connect_logged = True
 
         return payload
