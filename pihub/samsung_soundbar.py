@@ -289,6 +289,14 @@ class SamsungSoundbar:
             str(token_present).lower(),
         )
 
+        # Fetch static device metadata once so friendly_name is available
+        # before the first live-status refresh.
+        try:
+            metadata = await self._get_device_metadata()
+            self._parse_metadata(metadata)
+        except Exception:
+            logger.debug("speaker metadata fetch failed", exc_info=True)
+
         self._task = asyncio.create_task(self._runner(), name=f"smartthings[{self._device_id}]")
 
     async def stop(self) -> None:
@@ -396,6 +404,24 @@ class SamsungSoundbar:
             self._startup_connect_logged = True
 
         return payload
+
+    async def _get_device_metadata(self) -> dict[str, Any]:
+        session = await self._get_session()
+        headers = await self._auth_headers()
+        url = f"{SMARTTHINGS_API_BASE}/devices/{self._device_id}"
+
+        async with session.get(url, headers=headers, ssl=False) as resp:
+            body = await resp.text()
+            if resp.status >= 400:
+                raise RuntimeError(
+                    f"SmartThings metadata GET failed status={resp.status} body={body}"
+                )
+            return json.loads(body)
+
+    def _parse_metadata(self, payload: dict[str, Any]) -> None:
+        friendly_name = self._norm_str(payload.get("label")) or self._norm_str(payload.get("name"))
+        if friendly_name:
+            self._state.friendly_name = friendly_name
 
     async def _send_command(
         self,
