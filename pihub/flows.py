@@ -697,7 +697,11 @@ class SequenceRunner:
 
     async def _wait_for_tv_on(self, *, timeout_s: float) -> None:
         if self._tv is None:
-            raise FlowWaitTimeout(kind="tv_on", timeout_s=timeout_s)
+            logger.debug(
+                "skipping wait_for_tv_on because tv domain is unavailable timeout_s=%s",
+                timeout_s,
+            )
+            return
 
         deadline = asyncio.get_running_loop().time() + timeout_s
         while asyncio.get_running_loop().time() < deadline:
@@ -712,7 +716,11 @@ class SequenceRunner:
 
     async def _wait_for_tv_off(self, *, timeout_s: float) -> None:
         if self._tv is None:
-            raise FlowWaitTimeout(kind="tv_off", timeout_s=timeout_s)
+            logger.debug(
+                "skipping wait_for_tv_off because tv domain is unavailable timeout_s=%s",
+                timeout_s,
+            )
+            return
 
         deadline = asyncio.get_running_loop().time() + timeout_s
         while asyncio.get_running_loop().time() < deadline:
