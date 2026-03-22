@@ -65,10 +65,10 @@ class HttpServer:
                 web.get("/dashboard", self._handle_dashboard),
                 web.get("/tools", self._handle_tools),
                 web.get("/settings", self._handle_settings),
-                web.post("/settings/save", self._handle_settings_save),
-
+                web.get("/history", self._handle_history),
                 web.get("/history/events", self._handle_history_events),
                 web.get("/history/flows", self._handle_history_flows),
+                web.post("/settings/save", self._handle_settings_save),
 
                 web.post("/flow/run/{name}", self._handle_flow_run),
                 web.post("/mode/set/{name}", self._handle_mode_set),
@@ -193,6 +193,7 @@ class HttpServer:
       {link("Dashboard", "/dashboard", "dashboard")}
       {link("Tools", "/tools", "tools")}
       {link("Settings", "/settings", "settings")}
+      {link("History", "/history", "history")}
       {link("Raw Health", "/health", "health")}
     </nav>
   </div>
@@ -1079,6 +1080,482 @@ button:hover {{
             raise web.HTTPFound(location=f"/settings?error={quote(str(exc))}")
 
         raise web.HTTPFound(location="/settings?saved=1")
+
+    async def _handle_history(self, request: web.Request) -> web.Response:
+        snapshot = self.snapshot()
+        hostname = snapshot.get("pihub_id") or socket.gethostname()
+
+        flows = self._history.list_flow_reports(limit=20) if self._history is not None else []
+        events = self._history.list_events(limit=50) if self._history is not None else []
+
+        problem_events = [
+            event for event in events
+            if str(event.get("level") or "").lower() in {"warning", "error"}
+        ]
+
+        def badge_html(result: str) -> str:
+            safe = self._html_escape(result)
+            cls = {
+                "ok": "status-ok",
+                "ok_with_warnings": "status-degraded",
+                "failed": "status-error",
+                "running": "status-disabled",
+            }.get(result, "status-disabled")
+            return f'<span class="status-badge {cls}">{safe}</span>'
+
+        def fmt_duration(ms: object) -> str:
+            try:
+                value = int(ms)
+            except Exception:
+                return ""
+            if value < 1000:
+                return f"{value} ms"
+            return f"{value / 1000.0:.2f} s"
+
+        def kv_row(key: str, value: object) -> str:
+            if value is None:
+                return ""
+            text = str(value).strip()
+            if not text:
+                return ""
+            return (
+                f'<div class="k">{self._html_escape(key)}</div>'
+                f'<div class="v">{self._html_escape(text)}</div>'
+            )
+
+        def step_meta(step: dict) -> str:
+            parts: list[str] = []
+
+            status = str(step.get("status") or "").strip()
+            if status:
+                parts.append(f'<span class="small-badge step-badge">{self._html_escape(status)}</span>')
+
+            outcome_status = str(step.get("outcome_status") or "").strip()
+            if outcome_status:
+                parts.append(
+                    f'<span class="small-badge outcome-badge">{self._html_escape("outcome " + outcome_status)}</span>'
+                )
+
+            duration = fmt_duration(step.get("duration_ms"))
+            if duration:
+                parts.append(f'<span class="small-meta">{self._html_escape(duration)}</span>')
+
+            outcome_duration = fmt_duration(step.get("outcome_duration_ms"))
+            if outcome_duration:
+                parts.append(f'<span class="small-meta">{self._html_escape("settled " + outcome_duration)}</span>')
+
+            return "".join(parts)
+
+        def step_lines(step: dict) -> str:
+            lines: list[str] = []
+
+            reason = str(step.get("reason") or "").strip()
+            if reason:
+                lines.append(f'<div class="step-line muted">{self._html_escape(reason)}</div>')
+
+            error = str(step.get("error") or "").strip()
+            if error:
+                lines.append(f'<div class="step-line error-line"><strong>Error:</strong> {self._html_escape(error)}</div>')
+
+            outcome_error = str(step.get("outcome_error") or "").strip()
+            if outcome_error:
+                lines.append(
+                    f'<div class="step-line error-line"><strong>Dispatch warning:</strong> {self._html_escape(outcome_error)}</div>'
+                )
+
+            iso_started = str(step.get("iso_ts_started") or "").strip()
+            if iso_started:
+                lines.append(f'<div class="step-line muted">Started: {self._html_escape(iso_started)}</div>')
+
+            iso_outcome = str(step.get("iso_ts_outcome") or "").strip()
+            if iso_outcome:
+                lines.append(f'<div class="step-line muted">Outcome: {self._html_escape(iso_outcome)}</div>')
+
+            iso_finished = str(step.get("iso_ts_finished") or "").strip()
+            if iso_finished and not iso_outcome:
+                lines.append(f'<div class="step-line muted">Finished: {self._html_escape(iso_finished)}</div>')
+
+            return "".join(lines)
+
+        def render_step(step: dict) -> str:
+            step_id = str(step.get("step_id") or "").strip()
+            domain = str(step.get("domain") or "").strip()
+            action = str(step.get("action") or "").strip()
+
+            title = " · ".join(part for part in [step_id, f"{domain}.{action}" if domain and action else ""] if part)
+
+            css_classes = ["step-item"]
+            if str(step.get("status") or "") == "skipped":
+                css_classes.append("step-skipped")
+
+            return f"""
+<div class="{' '.join(css_classes)}" data-step-status="{self._html_escape(str(step.get('status') or ''))}">
+  <div class="step-head">
+    <div class="step-title">{self._html_escape(title)}</div>
+    <div class="step-meta">{step_meta(step)}</div>
+  </div>
+  <div class="step-body">
+    {step_lines(step)}
+  </div>
+</div>
+"""
+
+        def render_flow(flow: dict) -> str:
+            flow_name = str(flow.get("flow_name") or "").strip()
+            result = str(flow.get("result") or "").strip()
+            trigger = str(flow.get("trigger") or "").strip()
+            source = str(flow.get("source") or "").strip()
+            started = str(flow.get("iso_ts_started") or "").strip()
+            duration = fmt_duration(flow.get("duration_ms"))
+            warnings = flow.get("warnings") or []
+            error = str(flow.get("error") or "").strip()
+
+            summary_bits: list[str] = []
+            if trigger:
+                summary_bits.append(f"Trigger: {trigger}")
+            if source:
+                summary_bits.append(f"Source: {source}")
+            if started:
+                summary_bits.append(f"Started: {started}")
+            if duration:
+                summary_bits.append(f"Duration: {duration}")
+
+            summary_html = " · ".join(self._html_escape(bit) for bit in summary_bits)
+
+            warnings_html = ""
+            if warnings:
+                items = "".join(
+                    f'<li>{self._html_escape(str(item))}</li>'
+                    for item in warnings
+                    if str(item).strip()
+                )
+                if items:
+                    warnings_html = f"""
+<div class="flow-warning-box">
+  <div class="flow-subheading">Warnings</div>
+  <ul class="flow-list">{items}</ul>
+</div>
+"""
+
+            error_html = ""
+            if error:
+                error_html = f'<div class="error-line"><strong>Flow error:</strong> {self._html_escape(error)}</div>'
+
+            steps = flow.get("steps") or []
+            steps_html = "".join(render_step(step) for step in steps)
+
+            warning_count_html = ""
+            if warnings:
+                warning_count_html = f'<span class="small-badge warn-count">{len(warnings)} warning{"s" if len(warnings) != 1 else ""}</span>'
+
+            return f"""
+<details class="flow-card">
+  <summary class="flow-summary">
+    <div class="flow-summary-left">
+      <div class="flow-title-row">
+        <span class="flow-title">{self._html_escape(flow_name)}</span>
+        {badge_html(result)}
+        {warning_count_html}
+      </div>
+      <div class="flow-summary-meta">{summary_html}</div>
+    </div>
+  </summary>
+
+  <div class="flow-body">
+    {warnings_html}
+    {error_html}
+
+    <div class="flow-subheading">Steps</div>
+    <div class="steps">
+      {steps_html}
+    </div>
+  </div>
+</details>
+"""
+
+        def render_problem_event(event: dict) -> str:
+            iso_ts = str(event.get("iso_ts") or "").strip()
+            kind = str(event.get("kind") or "").strip()
+            level = str(event.get("level") or "").strip()
+            message = str(event.get("message") or "").strip()
+            flow_name = str(event.get("flow_name") or "").strip()
+
+            meta_bits: list[str] = []
+            if iso_ts:
+                meta_bits.append(iso_ts)
+            if flow_name:
+                meta_bits.append(f"flow={flow_name}")
+            if kind:
+                meta_bits.append(f"kind={kind}")
+
+            meta_html = " · ".join(self._html_escape(bit) for bit in meta_bits)
+
+            level_cls = {
+                "warning": "status-degraded",
+                "error": "status-error",
+            }.get(level, "status-disabled")
+
+            return f"""
+<div class="issue-item">
+  <div class="issue-head">
+    <span class="status-badge {level_cls}">{self._html_escape(level)}</span>
+    <span class="issue-message">{self._html_escape(message)}</span>
+  </div>
+  <div class="issue-meta">{meta_html}</div>
+</div>
+"""
+
+        flows_html = "".join(render_flow(flow) for flow in flows)
+        if not flows_html:
+            flows_html = '<div class="muted">No flow history yet.</div>'
+
+        issues_html = "".join(render_problem_event(event) for event in problem_events)
+        if not issues_html:
+            issues_html = '<div class="muted">No recent warnings or errors.</div>'
+
+        html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PiHub History — {self._html_escape(str(hostname))}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+{self._shared_dark_css()}
+
+.controls {{
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}}
+
+.controls label {{
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}}
+
+.controls input[type="checkbox"] {{
+  transform: scale(1.1);
+}}
+
+.flow-card {{
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  margin-bottom: 0.85rem;
+  overflow: hidden;
+}}
+
+.flow-summary {{
+  list-style: none;
+  cursor: pointer;
+  padding: 1rem;
+}}
+
+.flow-summary::-webkit-details-marker {{
+  display: none;
+}}
+
+.flow-summary-left {{
+  min-width: 0;
+}}
+
+.flow-title-row {{
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}}
+
+.flow-title {{
+  font-size: 1.02rem;
+  font-weight: 700;
+}}
+
+.flow-summary-meta {{
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.4;
+  word-break: break-word;
+}}
+
+.flow-body {{
+  border-top: 1px solid var(--border);
+  padding: 1rem;
+}}
+
+.flow-subheading {{
+  font-weight: 700;
+  margin-bottom: 0.6rem;
+}}
+
+.flow-warning-box {{
+  margin-bottom: 1rem;
+  padding: 0.8rem;
+  border-radius: 12px;
+  background: #2b2414;
+  border: 1px solid #6b4f1d;
+}}
+
+.flow-list {{
+  margin: 0.4rem 0 0 1.1rem;
+  padding: 0;
+}}
+
+.warn-count {{
+  background: var(--deg-bg);
+  color: var(--deg-fg);
+  border-color: #6b4f1d;
+}}
+
+.steps {{
+  display: grid;
+  gap: 0.6rem;
+}}
+
+.step-item {{
+  padding: 0.85rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #151b26;
+}}
+
+.step-skipped {{
+  opacity: 0.8;
+}}
+
+.step-head {{
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}}
+
+.step-title {{
+  font-weight: 600;
+  word-break: break-word;
+}}
+
+.step-meta {{
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  align-items: center;
+}}
+
+.step-body {{
+  margin-top: 0.55rem;
+  display: grid;
+  gap: 0.35rem;
+}}
+
+.step-line {{
+  font-size: 0.92rem;
+  line-height: 1.4;
+}}
+
+.small-meta {{
+  color: var(--muted);
+  font-size: 0.85rem;
+}}
+
+.step-badge {{
+  background: #223047;
+  color: #bfdbfe;
+  border-color: #324a6d;
+}}
+
+.outcome-badge {{
+  background: #1d2d21;
+  color: #86efac;
+  border-color: #2f5a3a;
+}}
+
+.issue-item {{
+  padding: 0.85rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #151b26;
+  margin-bottom: 0.7rem;
+}}
+
+.issue-head {{
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}}
+
+.issue-message {{
+  font-weight: 600;
+}}
+
+.issue-meta {{
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  word-break: break-word;
+}}
+
+.hidden-by-filter {{
+  display: none !important;
+}}
+  </style>
+</head>
+<body>
+  {self._nav_html(current="history", hostname=str(hostname))}
+  <main class="page">
+    <section class="section">
+      <h1>History</h1>
+      <p class="muted">Recent flows first. Empty fields are omitted. Skipped steps are hidden by default.</p>
+      <div class="controls">
+        <label><input id="toggle-skipped" type="checkbox"> Show skipped steps</label>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Recent Flows</h2>
+      {flows_html}
+    </section>
+
+    <section class="section">
+      <h2>Recent Issues</h2>
+      {issues_html}
+    </section>
+  </main>
+
+  <script>
+    (function () {{
+      const toggle = document.getElementById("toggle-skipped");
+
+      function applySkippedFilter() {{
+        const showSkipped = !!(toggle && toggle.checked);
+        document.querySelectorAll('[data-step-status="skipped"]').forEach((el) => {{
+          if (showSkipped) {{
+            el.classList.remove("hidden-by-filter");
+          }} else {{
+            el.classList.add("hidden-by-filter");
+          }}
+        }});
+      }}
+
+      if (toggle) {{
+        toggle.addEventListener("change", applySkippedFilter);
+      }}
+
+      applySkippedFilter();
+    }})();
+  </script>
+</body>
+</html>
+"""
+        return web.Response(text=html, content_type="text/html")
 
     def _status_badge_html(self, status: str) -> str:
         safe = self._html_escape(status)
