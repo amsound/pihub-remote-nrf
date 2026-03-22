@@ -70,6 +70,7 @@ class HttpServer:
                 web.get("/tools", self._handle_tools),
                 web.get("/settings", self._handle_settings),
                 web.get("/history", self._handle_history),
+                web.get("/remote", self._handle_remote_page),
                 web.get("/history/events", self._handle_history_events),
                 web.get("/history/flows", self._handle_history_flows),
 
@@ -201,6 +202,7 @@ class HttpServer:
     <nav class="nav">
       {link("Dashboard", "/dashboard", "dashboard")}
       {link("Tools", "/tools", "tools")}
+      {link("Remote", "/remote", "remote")}
       {link("Settings", "/settings", "settings")}
       {link("History", "/history", "history")}
       {link("Raw Health", "/health", "health")}
@@ -1873,6 +1875,614 @@ button:hover {{
         if self._history is not None:
             self._history.clear()
         raise web.HTTPFound(location="/history?cleared=1")
+
+    async def _handle_remote_page(self, request: web.Request) -> web.Response:
+        import json
+
+        snapshot = self.snapshot()
+        hostname = snapshot.get("pihub_id") or socket.gethostname()
+        runtime = snapshot.get("runtime") or {}
+        status = str(snapshot.get("status") or "unknown")
+
+        remote_snapshot = {
+            "status": status,
+            "mode": runtime.get("mode"),
+            "last_flow": runtime.get("last_flow"),
+            "flow_running": runtime.get("flow_running"),
+            "last_result": runtime.get("last_result"),
+            "last_trigger": runtime.get("last_trigger"),
+        }
+        remote_snapshot_json = json.dumps(remote_snapshot)
+
+        html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PiHub Remote — {self._html_escape(hostname)}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+{self._shared_dark_css()}
+
+.remote-wrap {{
+  max-width: 720px;
+  margin: 0 auto;
+}}
+
+.status-grid {{
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin-bottom: 1rem;
+}}
+
+.status-card {{
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0.9rem;
+}}
+
+.status-card .label {{
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-bottom: 0.3rem;
+}}
+
+.status-card .value {{
+  font-size: 1.05rem;
+  font-weight: 700;
+  word-break: break-word;
+}}
+
+.remote-panel {{
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 1rem;
+}}
+
+.remote-grid {{
+  display: grid;
+  gap: 0.85rem;
+}}
+
+.remote-top {{
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: 1fr 1fr 1fr;
+}}
+
+.remote-cluster {{
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: 1fr 1fr;
+}}
+
+.remote-button {{
+  appearance: none;
+  width: 100%;
+  min-height: 64px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.06s ease, border-color 0.12s ease, background 0.12s ease;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+}}
+
+.remote-button:hover {{
+  border-color: var(--accent);
+  background: #1b2740;
+}}
+
+.remote-button.is-pressed {{
+  transform: scale(0.98);
+  border-color: var(--accent);
+  background: #162236;
+}}
+
+.remote-button.is-active {{
+  border: 2px solid var(--accent);
+  background: #162236;
+}}
+
+.remote-button.power {{
+  border-color: #6c2525;
+}}
+
+.remote-button.power.is-active {{
+  border-color: #ef4444;
+  background: #2a1818;
+}}
+
+.remote-button.power:hover {{
+  background: #2a1818;
+}}
+
+.dpad-wrap {{
+  display: grid;
+  gap: 0.75rem;
+  justify-items: center;
+  margin-top: 0.2rem;
+}}
+
+.dpad-row {{
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 88px 88px 88px;
+  align-items: center;
+}}
+
+.dpad-row.center {{
+  grid-template-columns: 88px 110px 88px;
+}}
+
+.dpad-spacer {{
+  width: 88px;
+  height: 64px;
+}}
+
+.dpad-button {{
+  min-height: 64px;
+}}
+
+.ok-button {{
+  min-height: 84px;
+  border-radius: 999px;
+}}
+
+.volume-row {{
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 0.4rem;
+}}
+
+.toast {{
+  position: fixed;
+  left: 50%;
+  bottom: 1rem;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.8rem 1rem;
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 50;
+  max-width: min(92vw, 520px);
+}}
+
+.toast.show {{
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}}
+
+.toast.error {{
+  border-color: #6c2525;
+  background: #2a1818;
+  color: #fecaca;
+}}
+
+.remote-help {{
+  margin-top: 0.85rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}}
+
+@media (max-width: 640px) {{
+  .remote-top {{
+    grid-template-columns: 1fr;
+  }}
+
+  .remote-cluster {{
+    grid-template-columns: 1fr 1fr;
+  }}
+
+  .dpad-row {{
+    grid-template-columns: 80px 80px 80px;
+  }}
+
+  .dpad-row.center {{
+    grid-template-columns: 80px 96px 80px;
+  }}
+
+  .dpad-spacer {{
+    width: 80px;
+  }}
+
+  .remote-button {{
+    min-height: 60px;
+  }}
+}}
+  </style>
+</head>
+<body>
+  {self._nav_html(current="remote", hostname=str(hostname))}
+  <main class="page">
+    <div class="remote-wrap">
+      <section class="section">
+        <h1>Remote</h1>
+        <p class="muted">First pass virtual remote. Mode buttons use safe tap actions. Volume uses edge down/up so hold works naturally later.</p>
+      </section>
+
+      <section class="section">
+        <div class="status-grid">
+          <div class="status-card">
+            <div class="label">Overall status</div>
+            <div class="value" id="remote-status">{self._html_escape(status)}</div>
+          </div>
+          <div class="status-card">
+            <div class="label">Current mode</div>
+            <div class="value" id="remote-mode">{self._html_escape(runtime.get("mode") or "—")}</div>
+          </div>
+          <div class="status-card">
+            <div class="label">Last flow</div>
+            <div class="value" id="remote-last-flow">{self._html_escape(runtime.get("last_flow") or "—")}</div>
+          </div>
+          <div class="status-card">
+            <div class="label">Flow running</div>
+            <div class="value" id="remote-flow-running">{self._html_escape("true" if runtime.get("flow_running") else "false")}</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="remote-panel">
+        <div class="remote-grid">
+          <div class="remote-top">
+            <button
+              type="button"
+              class="remote-button power"
+              data-kind="tap"
+              data-key="rem_power_off"
+              data-refresh="1"
+              data-target-mode="power_off"
+              id="btn-power-off"
+            >
+              Off
+            </button>
+
+            <div class="remote-cluster" style="grid-column: span 2;">
+              <button
+                type="button"
+                class="remote-button"
+                data-kind="tap"
+                data-key="rem_mode_1"
+                data-refresh="1"
+                data-target-mode="listen"
+                id="btn-listen"
+              >
+                Listen
+              </button>
+              <button
+                type="button"
+                class="remote-button"
+                data-kind="tap"
+                data-key="rem_mode_2"
+                data-refresh="1"
+                data-target-mode="watch"
+                id="btn-watch"
+              >
+                Watch
+              </button>
+            </div>
+          </div>
+
+          <div class="dpad-wrap">
+            <div class="dpad-row">
+              <div class="dpad-spacer"></div>
+              <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_up">Up</button>
+              <div class="dpad-spacer"></div>
+            </div>
+
+            <div class="dpad-row center">
+              <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_left">Left</button>
+              <button type="button" class="remote-button ok-button" data-kind="tap" data-key="rem_ok">OK</button>
+              <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_right">Right</button>
+            </div>
+
+            <div class="dpad-row">
+              <div class="dpad-spacer"></div>
+              <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_down">Down</button>
+              <div class="dpad-spacer"></div>
+            </div>
+          </div>
+
+          <div class="volume-row">
+            <button
+              type="button"
+              class="remote-button"
+              data-kind="edge"
+              data-key="rem_vol_down"
+            >
+              Vol-
+            </button>
+            <button
+              type="button"
+              class="remote-button"
+              data-kind="edge"
+              data-key="rem_vol_up"
+            >
+              Vol+
+            </button>
+          </div>
+        </div>
+
+        <div class="remote-help">
+          Tap buttons send a safe logical remote tap. Volume buttons use real down/up edges and release automatically if the pointer is cancelled or the page loses focus.
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <div id="remote-toast" class="toast" aria-live="polite"></div>
+
+  <script>
+    (function () {{
+      const initialState = JSON.parse({json.dumps(remote_snapshot_json)});
+      const toastEl = document.getElementById("remote-toast");
+
+      const statusEl = document.getElementById("remote-status");
+      const modeEl = document.getElementById("remote-mode");
+      const lastFlowEl = document.getElementById("remote-last-flow");
+      const flowRunningEl = document.getElementById("remote-flow-running");
+
+      const activeModeButtons = {{
+        power_off: document.getElementById("btn-power-off"),
+        listen: document.getElementById("btn-listen"),
+        watch: document.getElementById("btn-watch")
+      }};
+
+      const pressedEdgeButtons = new Map();
+
+      function showToast(message, isError) {{
+        if (!toastEl) return;
+        toastEl.textContent = message || "";
+        toastEl.classList.toggle("error", !!isError);
+        toastEl.classList.add("show");
+        window.clearTimeout(showToast._timer);
+        showToast._timer = window.setTimeout(function () {{
+          toastEl.classList.remove("show");
+        }}, 1800);
+      }}
+
+      function setPressed(el, pressed) {{
+        if (!el) return;
+        el.classList.toggle("is-pressed", !!pressed);
+      }}
+
+      function setModeHighlight(mode) {{
+        Object.entries(activeModeButtons).forEach(function ([name, el]) {{
+          if (!el) return;
+          el.classList.toggle("is-active", name === mode);
+        }});
+      }}
+
+      function updateStatusUi(data) {{
+        const status = String((data && data.status) || "unknown");
+        const runtime = (data && data.runtime) || {{}};
+
+        if (statusEl) statusEl.textContent = status;
+        if (modeEl) modeEl.textContent = String(runtime.mode || "—");
+        if (lastFlowEl) lastFlowEl.textContent = String(runtime.last_flow || "—");
+        if (flowRunningEl) flowRunningEl.textContent = runtime.flow_running ? "true" : "false";
+
+        setModeHighlight(String(runtime.mode || ""));
+      }}
+
+      async function fetchHealth() {{
+        const response = await fetch("/health", {{
+          method: "GET",
+          headers: {{
+            "Accept": "application/json"
+          }}
+        }});
+        if (!response.ok) {{
+          throw new Error("health refresh failed");
+        }}
+        return await response.json();
+      }}
+
+      async function settleModeRefresh(expectedMode) {{
+        const deadline = Date.now() + 6000;
+        let last = null;
+
+        while (Date.now() < deadline) {{
+          try {{
+            last = await fetchHealth();
+            updateStatusUi(last);
+
+            const runtime = (last && last.runtime) || {{}};
+            const mode = String(runtime.mode || "");
+            const running = !!runtime.flow_running;
+
+            if (expectedMode) {{
+              if (mode === expectedMode && !running) {{
+                return;
+              }}
+            }} else if (!running) {{
+              return;
+            }}
+          }} catch (_err) {{
+          }}
+
+          await new Promise(function (resolve) {{
+            window.setTimeout(resolve, 350);
+          }});
+        }}
+
+        if (last) {{
+          updateStatusUi(last);
+        }}
+      }}
+
+      async function postJson(url, payload) {{
+        const response = await fetch(url, {{
+          method: "POST",
+          headers: {{
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+          }},
+          body: JSON.stringify(payload || {{}})
+        }});
+
+        let data = {{}};
+        try {{
+          data = await response.json();
+        }} catch (_err) {{
+          data = {{}};
+        }}
+
+        if (!response.ok || !data.ok) {{
+          throw new Error(String(data.error || data.reason || "request failed"));
+        }}
+
+        return data;
+      }}
+
+      async function handleTapButton(el) {{
+        const key = el.getAttribute("data-key") || "";
+        const refresh = el.getAttribute("data-refresh") === "1";
+        const targetMode = el.getAttribute("data-target-mode") || "";
+
+        setPressed(el, true);
+        try {{
+          await postJson("/remote/tap", {{
+            key: key
+          }});
+
+          if (navigator.vibrate) {{
+            navigator.vibrate(10);
+          }}
+
+          if (refresh) {{
+            if (targetMode) {{
+              setModeHighlight(targetMode);
+            }}
+            await settleModeRefresh(targetMode);
+          }}
+        }} catch (err) {{
+          showToast(String(err), true);
+        }} finally {{
+          window.setTimeout(function () {{
+            setPressed(el, false);
+          }}, 90);
+        }}
+      }}
+
+      async function sendEdge(key, edge) {{
+        return await postJson("/remote/edge", {{
+          key: key,
+          edge: edge
+        }});
+      }}
+
+      async function releaseEdgeButton(el) {{
+        if (!el) return;
+        const key = el.getAttribute("data-key") || "";
+        if (!pressedEdgeButtons.has(el)) return;
+
+        pressedEdgeButtons.delete(el);
+        setPressed(el, false);
+
+        try {{
+          await sendEdge(key, "up");
+        }} catch (err) {{
+          showToast(String(err), true);
+        }}
+      }}
+
+      function attachTap(el) {{
+        el.addEventListener("click", function () {{
+          handleTapButton(el);
+        }});
+      }}
+
+      function attachEdge(el) {{
+        const key = el.getAttribute("data-key") || "";
+
+        el.addEventListener("pointerdown", async function (event) {{
+          event.preventDefault();
+          if (pressedEdgeButtons.has(el)) return;
+
+          pressedEdgeButtons.set(el, true);
+          setPressed(el, true);
+
+          try {{
+            el.setPointerCapture(event.pointerId);
+          }} catch (_err) {{
+          }}
+
+          try {{
+            await sendEdge(key, "down");
+          }} catch (err) {{
+            pressedEdgeButtons.delete(el);
+            setPressed(el, false);
+            showToast(String(err), true);
+          }}
+        }});
+
+        const finish = function () {{
+          releaseEdgeButton(el);
+        }};
+
+        el.addEventListener("pointerup", finish);
+        el.addEventListener("pointercancel", finish);
+        el.addEventListener("pointerleave", function (event) {{
+          if (event.buttons === 0) {{
+            finish();
+          }}
+        }});
+      }}
+
+      document.querySelectorAll(".remote-button").forEach(function (el) {{
+        const kind = el.getAttribute("data-kind");
+        if (kind === "edge") {{
+          attachEdge(el);
+        }} else {{
+          attachTap(el);
+        }}
+      }});
+
+      window.addEventListener("blur", function () {{
+        Array.from(pressedEdgeButtons.keys()).forEach(function (el) {{
+          releaseEdgeButton(el);
+        }});
+      }});
+
+      document.addEventListener("visibilitychange", function () {{
+        if (document.hidden) {{
+          Array.from(pressedEdgeButtons.keys()).forEach(function (el) {{
+            releaseEdgeButton(el);
+          }});
+        }}
+      }});
+
+      updateStatusUi({{
+        status: initialState.status,
+        runtime: {{
+          mode: initialState.mode,
+          last_flow: initialState.last_flow,
+          flow_running: initialState.flow_running
+        }}
+      }});
+    }})();
+  </script>
+</body>
+</html>
+"""
+        return web.Response(text=html, content_type="text/html")
 
     def _status_badge_html(self, status: str) -> str:
         safe = self._html_escape(status)
