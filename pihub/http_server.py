@@ -1112,17 +1112,6 @@ button:hover {{
                 return f"{value} ms"
             return f"{value / 1000.0:.2f} s"
 
-        def kv_row(key: str, value: object) -> str:
-            if value is None:
-                return ""
-            text = str(value).strip()
-            if not text:
-                return ""
-            return (
-                f'<div class="k">{self._html_escape(key)}</div>'
-                f'<div class="v">{self._html_escape(text)}</div>'
-            )
-
         def step_meta(step: dict) -> str:
             parts: list[str] = []
 
@@ -1163,17 +1152,30 @@ button:hover {{
                     f'<div class="step-line error-line"><strong>Dispatch warning:</strong> {self._html_escape(outcome_error)}</div>'
                 )
 
-            iso_started = str(step.get("iso_ts_started") or "").strip()
-            if iso_started:
-                lines.append(f'<div class="step-line muted">Started: {self._html_escape(iso_started)}</div>')
+            started = self._format_time_only(step.get("iso_ts_started"))
+            finished = self._format_time_only(step.get("iso_ts_finished"))
+            outcome = self._format_time_only(step.get("iso_ts_outcome"))
 
-            iso_outcome = str(step.get("iso_ts_outcome") or "").strip()
-            if iso_outcome:
-                lines.append(f'<div class="step-line muted">Outcome: {self._html_escape(iso_outcome)}</div>')
+            status = str(step.get("status") or "").strip()
+            duration = fmt_duration(step.get("duration_ms"))
+            outcome_duration = fmt_duration(step.get("outcome_duration_ms"))
 
-            iso_finished = str(step.get("iso_ts_finished") or "").strip()
-            if iso_finished and not iso_outcome:
-                lines.append(f'<div class="step-line muted">Finished: {self._html_escape(iso_finished)}</div>')
+            if started:
+                if status == "dispatched":
+                    lines.append(f'<div class="step-line muted">Dispatched: {self._html_escape(started)}</div>')
+                else:
+                    lines.append(f'<div class="step-line muted">Started: {self._html_escape(started)}</div>')
+
+            if outcome:
+                line = f"Outcome: {outcome}"
+                if outcome_duration:
+                    line += f" ({outcome_duration})"
+                lines.append(f'<div class="step-line muted">{self._html_escape(line)}</div>')
+            elif status != "dispatched":
+                if duration:
+                    lines.append(f'<div class="step-line muted">Took: {self._html_escape(duration)}</div>')
+                elif finished and finished != started:
+                    lines.append(f'<div class="step-line muted">Finished: {self._html_escape(finished)}</div>')
 
             return "".join(lines)
 
@@ -1203,9 +1205,9 @@ button:hover {{
         def render_flow(flow: dict) -> str:
             flow_name = str(flow.get("flow_name") or "").strip()
             result = str(flow.get("result") or "").strip()
-            trigger = str(flow.get("trigger") or "").strip()
-            source = str(flow.get("source") or "").strip()
-            started = str(flow.get("iso_ts_started") or "").strip()
+            trigger = self._prettify_trigger(flow.get("trigger"))
+            source = str(flow.get("source") or "").strip().replace("_", " ")
+            started = self._format_flow_started(flow.get("iso_ts_started"))
             duration = fmt_duration(flow.get("duration_ms"))
             warnings = flow.get("warnings") or []
             error = str(flow.get("error") or "").strip()
@@ -1274,15 +1276,15 @@ button:hover {{
 """
 
         def render_problem_event(event: dict) -> str:
-            iso_ts = str(event.get("iso_ts") or "").strip()
-            kind = str(event.get("kind") or "").strip()
+            event_time = self._format_flow_started(event.get("iso_ts"))
+            kind = str(event.get("kind") or "").strip().replace("_", " ")
             level = str(event.get("level") or "").strip()
             message = str(event.get("message") or "").strip()
             flow_name = str(event.get("flow_name") or "").strip()
 
             meta_bits: list[str] = []
-            if iso_ts:
-                meta_bits.append(iso_ts)
+            if event_time:
+                meta_bits.append(event_time)
             if flow_name:
                 meta_bits.append(f"flow={flow_name}")
             if kind:
@@ -1575,6 +1577,59 @@ button:hover {{
         if value is None:
             return "null"
         return str(value)
+    
+    @staticmethod
+    def _parse_iso_dt(value: object):
+        from datetime import datetime
+
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text)
+        except Exception:
+            return None
+
+    def _format_flow_started(self, iso_value: object) -> str:
+        dt = self._parse_iso_dt(iso_value)
+        if dt is None:
+            return ""
+        return dt.strftime("%d-%m-%Y %H:%M:%S")
+
+    def _format_time_only(self, iso_value: object) -> str:
+        dt = self._parse_iso_dt(iso_value)
+        if dt is None:
+            return ""
+        return dt.strftime("%H:%M:%S.%f")[:-3]
+
+    @staticmethod
+    def _prettify_trigger(value: object) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+
+        mapping = {
+            "http.flow": "Web UI flow",
+            "http.mode": "Web UI mode set",
+            "http.command": "Web UI command",
+            "startup_reconcile": "Startup reconcile",
+        }
+        if text in mapping:
+            return mapping[text]
+
+        if text.startswith("device_state_change."):
+            suffix = text.split(".", 1)[1].replace("_", " ").strip()
+            return f"Device state: {suffix}"
+
+        if text.startswith("remote."):
+            suffix = text.split(".", 1)[1].replace("_", " ").strip()
+            return f"Remote: {suffix}"
+
+        if text.startswith("flow."):
+            suffix = text.split(".", 1)[1].replace("_", " ").strip()
+            return f"Flow: {suffix}"
+
+        return text.replace("_", " ")
 
     async def _handle_refresh_tv(self, _: web.Request) -> web.Response:
         if self._tv is None:

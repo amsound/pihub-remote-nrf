@@ -71,7 +71,7 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "wait_1",
+                        "wait_2s",
                         "system",
                         "sleep",
                         {"seconds": 2.0},
@@ -85,7 +85,7 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "wait_2",
+                        "wait_1s",
                         "system",
                         "sleep",
                         {"seconds": 1.0}, # If tv was on
@@ -94,14 +94,14 @@ class SequenceRunner:
 
                     # If tv not on proceed anyway
                     SequenceStep(
-                        "speaker_volume",
+                        "speaker_set_volume",
                         "speaker",
                         "set_volume",
                         {"setting": "listen_volume_pct"},
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "speaker_preset",
+                        "speaker_set_preset",
                         "speaker",
                         "play_listen_target",
                         {},
@@ -136,7 +136,7 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "wait_1",
+                        "wait_2s",
                         "system",
                         "sleep",
                         {"seconds": 2.0},
@@ -150,21 +150,21 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "wait_2",
+                        "wait_1s",
                         "system",
                         "sleep",
                         {"seconds": 1.0},
                         when="tv_was_off",
                     ),
                     SequenceStep(
-                        "speaker_volume",
+                        "speaker_set_volume",
                         "speaker",
                         "set_volume",
                         {"setting": "watch_volume_pct"},
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "wait_3",
+                        "wait_0.5s",
                         "system",
                         "sleep",
                         {"seconds": 0.5},
@@ -201,7 +201,7 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "wait_1",
+                        "wait_2s",
                         "system",
                         "sleep",
                         {"seconds": 2.0},
@@ -229,23 +229,23 @@ class SequenceRunner:
                 steps=(
                     SequenceStep("set_mode", "mode", "set", {"name": "watch"}),
                     SequenceStep(
-                        "wait_1",
-                        "wait",
-                        "tv_on",
-                        {"timeout_s": 3.0},
+                        "wait_2s",
+                        "system",
+                        "sleep",
+                        {"seconds": 2.0},
                     ),
                     SequenceStep(
-                        "speaker_volume",
+                        "speaker_set_volume",
                         "speaker",
                         "set_volume",
                         {"setting": "watch_volume_pct"},
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "wait",
-                        "wait",
-                        "tv_on",
-                        {"timeout_s": 0.5},
+                        "wait_0.5s",
+                        "system",
+                        "sleep",
+                        {"seconds": 0.5},
                     ),
                     SequenceStep(
                         "speaker_set_hdmi",
@@ -277,7 +277,7 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "wait_1",
+                        "wait_2.5s",
                         "system",
                         "sleep",
                         {"seconds": 2.5},
@@ -307,7 +307,7 @@ class SequenceRunner:
                         mode="dispatch",
                     ),
                     SequenceStep(
-                        "wait_1",
+                        "wait_0.5s",
                         "system",
                         "sleep",
                         {"seconds": 0.5},
