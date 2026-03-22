@@ -67,6 +67,10 @@ class RuntimeEngine:
             "last_result": self._last_result,
         }
 
+    def flush_history(self) -> None:
+        if self._history is not None:
+            self._history.flush()
+
     def note_dispatch_outcome(
         self,
         *,
@@ -99,9 +103,12 @@ class RuntimeEngine:
                         "error": error,
                     },
                 )
+                self._history.flush()
             return
 
         step_report.settle_outcome(status="ok")
+        if self._history is not None:
+            self._history.flush()
 
     def _set_runtime_ok(self, result: str = "ok") -> None:
         self._error = False

@@ -54,6 +54,7 @@ async def main() -> None:
     settings.load()
 
     history = HistoryStore()
+    history.load()
 
     cleanup_hooks = []
 

@@ -68,6 +68,8 @@ class HttpServer:
                 web.get("/history", self._handle_history),
                 web.get("/history/events", self._handle_history_events),
                 web.get("/history/flows", self._handle_history_flows),
+
+                web.post("/history/clear", self._handle_history_clear),
                 web.post("/settings/save", self._handle_settings_save),
 
                 web.post("/flow/run/{name}", self._handle_flow_run),
@@ -1084,6 +1086,7 @@ button:hover {{
     async def _handle_history(self, request: web.Request) -> web.Response:
         snapshot = self.snapshot()
         hostname = snapshot.get("pihub_id") or socket.gethostname()
+        cleared = request.query.get("cleared") == "1"
 
         flows = self._history.list_flow_reports(limit=20) if self._history is not None else []
         events = self._history.list_events(limit=50) if self._history is not None else []
@@ -1092,6 +1095,11 @@ button:hover {{
             event for event in events
             if str(event.get("level") or "").lower() in {"warning", "error"}
         ]
+
+        cleared_html = (
+            '<div class="chip" style="background:#123222;border-color:#1d4d32;color:#86efac;">History cleared</div>'
+            if cleared else ""
+        )
 
         def badge_html(result: str) -> str:
             safe = self._html_escape(result)
@@ -1343,6 +1351,21 @@ button:hover {{
   transform: scale(1.1);
 }}
 
+.secondary-button {{
+  padding: 0.65rem 0.9rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}}
+
+.secondary-button:hover {{
+  border-color: #6c2525;
+  background: #2a1818;
+}}
+
 .flow-card {{
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -1518,6 +1541,10 @@ button:hover {{
       <p class="muted">Recent flows first. Empty fields are omitted. Skipped steps are hidden by default.</p>
       <div class="controls">
         <label><input id="toggle-skipped" type="checkbox"> Show skipped steps</label>
+        <form method="post" action="/history/clear" onsubmit="return confirm('Clear all persisted history?');" style="margin:0;">
+          <button type="submit" class="secondary-button">Clear history</button>
+        </form>
+        {cleared_html}
       </div>
     </section>
 
@@ -1558,6 +1585,11 @@ button:hover {{
 </html>
 """
         return web.Response(text=html, content_type="text/html")
+
+    async def _handle_history_clear(self, _: web.Request) -> web.Response:
+        if self._history is not None:
+            self._history.clear()
+        raise web.HTTPFound(location="/history?cleared=1")
 
     def _status_badge_html(self, status: str) -> str:
         safe = self._html_escape(status)
