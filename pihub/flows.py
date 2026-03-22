@@ -404,6 +404,9 @@ class SequenceRunner:
                 step.id,
                 index,
             )
+            
+        logger.debug("sequence completed name=%s trigger=%s source=%s", seq.name, trigger, source)
+        return True
 
     def _build_snapshot(self) -> dict[str, Any]:
         speaker_source = self._speaker_source()
