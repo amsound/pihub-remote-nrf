@@ -107,8 +107,7 @@ class HttpServer:
 
     async def _handle_health(self, _: web.Request) -> web.Response:
         snapshot = self.snapshot()
-        status = 200 if snapshot["status"] == "ok" else 503
-        return web.json_response(snapshot, status=status)
+        return web.json_response(snapshot, status=200)
 
     async def _handle_flow_run(self, request: web.Request) -> web.Response:
         if self._runtime is None:
@@ -2288,10 +2287,15 @@ button:hover {{
             "Accept": "application/json"
           }}
         }});
-        if (!response.ok) {{
+
+        let data = {{}};
+        try {{
+          data = await response.json();
+        }} catch (_err) {{
           throw new Error("health refresh failed");
         }}
-        return await response.json();
+
+        return data;
       }}
 
       async function settleModeRefresh(expectedMode) {{
