@@ -60,6 +60,11 @@ class FlowStepReport:
     ts_started: float = field(default_factory=_now_ts)
     ts_finished: float | None = None
 
+    outcome_status: str | None = None
+    outcome_reason: str | None = None
+    outcome_error: str | None = None
+    ts_outcome: float | None = None
+
     def finish(
         self,
         *,
@@ -72,10 +77,29 @@ class FlowStepReport:
         self.error = error
         self.ts_finished = _now_ts()
 
+    def mark_dispatched(self) -> None:
+        self.finish(status="dispatched")
+
+    def settle_outcome(
+        self,
+        *,
+        status: str,
+        reason: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        self.outcome_status = status
+        self.outcome_reason = reason
+        self.outcome_error = error
+        self.ts_outcome = _now_ts()
+
     def to_dict(self) -> dict[str, Any]:
         duration_ms: int | None = None
         if self.ts_finished is not None:
             duration_ms = max(0, int(round((self.ts_finished - self.ts_started) * 1000.0)))
+
+        outcome_duration_ms: int | None = None
+        if self.ts_outcome is not None:
+            outcome_duration_ms = max(0, int(round((self.ts_outcome - self.ts_started) * 1000.0)))
 
         return {
             "step_id": self.step_id,
@@ -90,6 +114,12 @@ class FlowStepReport:
             "ts_finished": self.ts_finished,
             "iso_ts_finished": _iso_ts(self.ts_finished),
             "duration_ms": duration_ms,
+            "outcome_status": self.outcome_status,
+            "outcome_reason": self.outcome_reason,
+            "outcome_error": self.outcome_error,
+            "ts_outcome": self.ts_outcome,
+            "iso_ts_outcome": _iso_ts(self.ts_outcome),
+            "outcome_duration_ms": outcome_duration_ms,
         }
 
 
@@ -127,6 +157,10 @@ class FlowRunReport:
         text = str(message or "").strip()
         if text and text not in self.warnings:
             self.warnings.append(text)
+
+    def promote_to_warning(self) -> None:
+        if self.result == "ok":
+            self.result = "ok_with_warnings"
 
     def finish(self, *, result: str, error: str | None = None) -> None:
         self.result = result

@@ -378,7 +378,12 @@ class SequenceRunner:
                 step.action,
             )
             try:
-                await self._run_step(sequence_name=seq.name, step=step)
+                await self._run_step(
+                    sequence_name=seq.name,
+                    step=step,
+                    report=report,
+                    step_report=step_report,
+                )
             except Exception as exc:
                 if step_report is not None and step_report.ts_finished is None:
                     step_report.finish(status="failed", error=str(exc))
@@ -393,10 +398,7 @@ class SequenceRunner:
                 raise
 
             if step_report is not None and step_report.ts_finished is None:
-                if step.mode == "dispatch":
-                    step_report.finish(status="dispatched")
-                else:
-                    step_report.finish(status="ok")
+                step_report.finish(status="ok")
 
             logger.debug(
                 "sequence step ok sequence=%s step=%s index=%d",
@@ -404,7 +406,7 @@ class SequenceRunner:
                 step.id,
                 index,
             )
-            
+
         logger.debug("sequence completed name=%s trigger=%s source=%s", seq.name, trigger, source)
         return True
 
@@ -424,13 +426,88 @@ class SequenceRunner:
             raise KeyError(name)
         return bool(fn(snapshot))
 
-    async def _run_step(self, *, sequence_name: str, step: SequenceStep) -> None:
+    def _track_dispatch_task(
+        self,
+        *,
+        sequence_name: str,
+        step: SequenceStep,
+        report: FlowRunReport | None,
+        step_report: FlowStepReport | None,
+        task: asyncio.Task,
+    ) -> None:
+        def _done_callback(done_task: asyncio.Task) -> None:
+            if report is None or step_report is None:
+                return
+
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                logger.warning(
+                    "dispatch step cancelled sequence=%s step=%s domain=%s action=%s",
+                    sequence_name,
+                    step.id,
+                    step.domain,
+                    step.action,
+                )
+                self._runtime.note_dispatch_outcome(
+                    report=report,
+                    step_report=step_report,
+                    sequence_name=sequence_name,
+                    step=step,
+                    error="cancelled",
+                )
+            except Exception as exc:
+                logger.exception(
+                    "dispatch step failed sequence=%s step=%s domain=%s action=%s",
+                    sequence_name,
+                    step.id,
+                    step.domain,
+                    step.action,
+                )
+                self._runtime.note_dispatch_outcome(
+                    report=report,
+                    step_report=step_report,
+                    sequence_name=sequence_name,
+                    step=step,
+                    error=str(exc),
+                )
+            else:
+                self._runtime.note_dispatch_outcome(
+                    report=report,
+                    step_report=step_report,
+                    sequence_name=sequence_name,
+                    step=step,
+                    error=None,
+                )
+
+        task.add_done_callback(_done_callback)
+
+    async def _run_step(
+        self,
+        *,
+        sequence_name: str,
+        step: SequenceStep,
+        report: FlowRunReport | None = None,
+        step_report: FlowStepReport | None = None,
+    ) -> None:
         async def _invoke() -> None:
             await self._dispatch_step(sequence_name=sequence_name, step=step)
 
         try:
             if step.mode == "dispatch":
-                asyncio.create_task(_invoke())
+                dispatch_task = asyncio.create_task(
+                    _invoke(),
+                    name=f"dispatch:{sequence_name}:{step.id}",
+                )
+                if step_report is not None and step_report.ts_finished is None:
+                    step_report.mark_dispatched()
+                self._track_dispatch_task(
+                    sequence_name=sequence_name,
+                    step=step,
+                    report=report,
+                    step_report=step_report,
+                    task=dispatch_task,
+                )
                 return
 
             if step.timeout_s is None:
@@ -494,7 +571,7 @@ class SequenceRunner:
                     volume = int(args["volume"])
                 await self._speaker.set_volume(int(volume))
             return
-        
+
         if step.domain == "speaker" and step.action == "play_listen_target":
             if self._speaker is not None:
                 target = self._listen_target()

@@ -67,6 +67,42 @@ class RuntimeEngine:
             "last_result": self._last_result,
         }
 
+    def note_dispatch_outcome(
+        self,
+        *,
+        report: FlowRunReport,
+        step_report: Any,
+        sequence_name: str,
+        step: Any,
+        error: str | None = None,
+    ) -> None:
+        if error:
+            step_report.settle_outcome(status="warning", error=error)
+
+            warning_text = f"{step.id} dispatch warning: {error}"
+            report.add_warning(warning_text)
+            report.promote_to_warning()
+
+            if self._history is not None:
+                self._history.emit(
+                    kind="flow_warning",
+                    level="warning",
+                    message=f"flow {report.flow_name} dispatch warning",
+                    flow_name=report.flow_name,
+                    trigger=report.trigger,
+                    metadata={
+                        "report_id": report.id,
+                        "sequence_name": sequence_name,
+                        "step_id": step.id,
+                        "domain": step.domain,
+                        "action": step.action,
+                        "error": error,
+                    },
+                )
+            return
+
+        step_report.settle_outcome(status="ok")
+
     def _set_runtime_ok(self, result: str = "ok") -> None:
         self._error = False
         self._last_error = None
