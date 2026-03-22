@@ -2308,7 +2308,7 @@ button:hover {{
               type="button"
               class="remote-button"
               data-kind="tap"
-              data-key="rem_dvr"
+              data-key="rem_back"
             >
               Home
             </button>
