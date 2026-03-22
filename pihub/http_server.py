@@ -1903,32 +1903,32 @@ button:hover {{
 {self._shared_dark_css()}
 
 .remote-wrap {{
-  max-width: 720px;
+  max-width: 560px;
   margin: 0 auto;
 }}
 
 .status-grid {{
   display: grid;
-  gap: 0.75rem;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  margin-bottom: 1rem;
+  gap: 0.55rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 0.85rem;
 }}
 
 .status-card {{
   background: var(--panel-2);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 0.9rem;
+  border-radius: 12px;
+  padding: 0.7rem 0.8rem;
 }}
 
 .status-card .label {{
   color: var(--muted);
-  font-size: 0.9rem;
-  margin-bottom: 0.3rem;
+  font-size: 0.8rem;
+  margin-bottom: 0.2rem;
 }}
 
 .status-card .value {{
-  font-size: 1.05rem;
+  font-size: 0.95rem;
   font-weight: 700;
   word-break: break-word;
 }}
@@ -1937,36 +1937,36 @@ button:hover {{
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 18px;
-  padding: 1rem;
+  padding: 0.9rem;
 }}
 
 .remote-grid {{
   display: grid;
-  gap: 0.85rem;
+  gap: 0.75rem;
 }}
 
 .remote-top {{
   display: grid;
-  gap: 0.85rem;
+  gap: 0.65rem;
   grid-template-columns: 1fr 1fr 1fr;
 }}
 
 .remote-cluster {{
   display: grid;
-  gap: 0.85rem;
+  gap: 0.65rem;
   grid-template-columns: 1fr 1fr;
 }}
 
 .remote-button {{
   appearance: none;
   width: 100%;
-  min-height: 64px;
+  min-height: 58px;
   border-radius: 16px;
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
   font: inherit;
-  font-size: 1rem;
+  font-size: 0.98rem;
   font-weight: 700;
   cursor: pointer;
   transition: transform 0.06s ease, border-color 0.12s ease, background 0.12s ease;
@@ -2005,43 +2005,57 @@ button:hover {{
   background: #2a1818;
 }}
 
-.dpad-wrap {{
+.remote-main {{
   display: grid;
   gap: 0.75rem;
+  grid-template-columns: 88px 1fr 88px;
+  align-items: center;
+}}
+
+.side-stack {{
+  display: grid;
+  gap: 0.65rem;
+}}
+
+.side-button {{
+  min-height: 62px;
+}}
+
+.dpad-wrap {{
+  display: grid;
+  gap: 0.65rem;
   justify-items: center;
-  margin-top: 0.2rem;
 }}
 
 .dpad-row {{
   display: grid;
-  gap: 0.75rem;
-  grid-template-columns: 88px 88px 88px;
+  gap: 0.65rem;
+  grid-template-columns: 84px 84px 84px;
   align-items: center;
 }}
 
 .dpad-row.center {{
-  grid-template-columns: 88px 110px 88px;
+  grid-template-columns: 84px 104px 84px;
 }}
 
 .dpad-spacer {{
-  width: 88px;
-  height: 64px;
+  width: 84px;
+  height: 58px;
 }}
 
 .dpad-button {{
-  min-height: 64px;
+  min-height: 58px;
 }}
 
 .ok-button {{
-  min-height: 84px;
+  min-height: 76px;
   border-radius: 999px;
 }}
 
-.volume-row {{
+.bottom-row {{
   display: grid;
-  gap: 0.85rem;
+  gap: 0.65rem;
   grid-template-columns: 1fr 1fr;
-  margin-top: 0.4rem;
 }}
 
 .toast {{
@@ -2074,35 +2088,86 @@ button:hover {{
 }}
 
 .remote-help {{
-  margin-top: 0.85rem;
+  margin-top: 0.65rem;
   color: var(--muted);
-  font-size: 0.92rem;
-  line-height: 1.45;
+  font-size: 0.88rem;
+  line-height: 1.4;
 }}
 
 @media (max-width: 640px) {{
+  .remote-wrap {{
+    max-width: 100%;
+  }}
+
+  .status-grid {{
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.45rem;
+  }}
+
+  .status-card {{
+    padding: 0.6rem 0.65rem;
+  }}
+
+  .status-card .label {{
+    font-size: 0.76rem;
+  }}
+
+  .status-card .value {{
+    font-size: 0.9rem;
+  }}
+
   .remote-top {{
-    grid-template-columns: 1fr;
+    gap: 0.55rem;
   }}
 
   .remote-cluster {{
-    grid-template-columns: 1fr 1fr;
-  }}
-
-  .dpad-row {{
-    grid-template-columns: 80px 80px 80px;
-  }}
-
-  .dpad-row.center {{
-    grid-template-columns: 80px 96px 80px;
-  }}
-
-  .dpad-spacer {{
-    width: 80px;
+    gap: 0.55rem;
   }}
 
   .remote-button {{
-    min-height: 60px;
+    min-height: 52px;
+    font-size: 0.94rem;
+  }}
+
+  .remote-main {{
+    grid-template-columns: 74px 1fr 74px;
+    gap: 0.6rem;
+  }}
+
+  .side-stack {{
+    gap: 0.55rem;
+  }}
+
+  .side-button {{
+    min-height: 56px;
+    font-size: 0.88rem;
+  }}
+
+  .dpad-row {{
+    gap: 0.55rem;
+    grid-template-columns: 72px 72px 72px;
+  }}
+
+  .dpad-row.center {{
+    grid-template-columns: 72px 88px 72px;
+  }}
+
+  .dpad-spacer {{
+    width: 72px;
+    height: 52px;
+  }}
+
+  .dpad-button {{
+    min-height: 52px;
+    font-size: 0.88rem;
+  }}
+
+  .ok-button {{
+    min-height: 68px;
+  }}
+
+  .bottom-row {{
+    gap: 0.55rem;
   }}
 }}
   </style>
@@ -2113,7 +2178,7 @@ button:hover {{
     <div class="remote-wrap">
       <section class="section">
         <h1>Remote</h1>
-        <p class="muted">First pass virtual remote. Mode buttons use safe tap actions. Volume uses edge down/up so hold works naturally later.</p>
+        <p class="muted">First pass virtual remote. Mode buttons use safe tap actions. Volume and channel use edge down/up so hold works naturally later.</p>
       </section>
 
       <section class="section">
@@ -2178,48 +2243,88 @@ button:hover {{
             </div>
           </div>
 
-          <div class="dpad-wrap">
-            <div class="dpad-row">
-              <div class="dpad-spacer"></div>
-              <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_up">Up</button>
-              <div class="dpad-spacer"></div>
+          <div class="remote-main">
+            <div class="side-stack">
+              <button
+                type="button"
+                class="remote-button side-button"
+                data-kind="edge"
+                data-key="rem_vol_up"
+              >
+                Vol+
+              </button>
+              <button
+                type="button"
+                class="remote-button side-button"
+                data-kind="edge"
+                data-key="rem_vol_down"
+              >
+                Vol-
+              </button>
             </div>
 
-            <div class="dpad-row center">
-              <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_left">Left</button>
-              <button type="button" class="remote-button ok-button" data-kind="tap" data-key="rem_ok">OK</button>
-              <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_right">Right</button>
+            <div class="dpad-wrap">
+              <div class="dpad-row">
+                <div class="dpad-spacer"></div>
+                <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_up">Up</button>
+                <div class="dpad-spacer"></div>
+              </div>
+
+              <div class="dpad-row center">
+                <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_left">Left</button>
+                <button type="button" class="remote-button ok-button" data-kind="tap" data-key="rem_ok">OK</button>
+                <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_right">Right</button>
+              </div>
+
+              <div class="dpad-row">
+                <div class="dpad-spacer"></div>
+                <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_down">Down</button>
+                <div class="dpad-spacer"></div>
+              </div>
             </div>
 
-            <div class="dpad-row">
-              <div class="dpad-spacer"></div>
-              <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_down">Down</button>
-              <div class="dpad-spacer"></div>
+            <div class="side-stack">
+              <button
+                type="button"
+                class="remote-button side-button"
+                data-kind="edge"
+                data-key="rem_ch_up"
+              >
+                Ch+
+              </button>
+              <button
+                type="button"
+                class="remote-button side-button"
+                data-kind="edge"
+                data-key="rem_ch_down"
+              >
+                Ch-
+              </button>
             </div>
           </div>
 
-          <div class="volume-row">
+          <div class="bottom-row">
             <button
               type="button"
               class="remote-button"
-              data-kind="edge"
-              data-key="rem_vol_down"
+              data-kind="tap"
+              data-key="rem_dvr"
             >
-              Vol-
+              Home
             </button>
             <button
               type="button"
               class="remote-button"
-              data-kind="edge"
-              data-key="rem_vol_up"
+              data-kind="tap"
+              data-key="rem_menu"
             >
-              Vol+
+              Menu
             </button>
           </div>
         </div>
 
         <div class="remote-help">
-          Tap buttons send a safe logical remote tap. Volume buttons use real down/up edges and release automatically if the pointer is cancelled or the page loses focus.
+          Tap buttons send a safe logical remote tap. Volume and channel buttons use real down/up edges and release automatically if the pointer is cancelled or the page loses focus.
         </div>
       </section>
     </div>
