@@ -39,6 +39,7 @@ class HttpServer:
         runtime: Optional[RuntimeEngine] = None,
         history: HistoryStore | None = None,
         speaker_backend: str | None = None,
+        dispatcher: Any = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -50,6 +51,7 @@ class HttpServer:
         self._runtime = runtime
         self._history = history
         self._speaker_backend = str(speaker_backend or "").strip().lower()
+        self._dispatcher = dispatcher
 
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -77,6 +79,9 @@ class HttpServer:
                 web.post("/flow/run/{name}", self._handle_flow_run),
                 web.post("/mode/set/{name}", self._handle_mode_set),
                 web.post("/command", self._handle_command),
+
+                web.post("/remote/edge", self._handle_remote_edge),
+                web.post("/remote/tap", self._handle_remote_tap),
 
                 web.post("/refresh/tv", self._handle_refresh_tv),
                 web.post("/refresh/speaker", self._handle_refresh_speaker),
@@ -1985,6 +1990,100 @@ button:hover {{
 
         asyncio.create_task(_delayed_exit(), name="pihub_restart")
         return web.json_response({"ok": True, "action": "restart"})
+    
+    async def _handle_remote_edge(self, request: web.Request) -> web.Response:
+        if self._dispatcher is None:
+            return web.json_response({"ok": False, "error": "dispatcher unavailable"}, status=503)
+
+        payload = await self._maybe_json(request)
+        if payload is None:
+            return web.json_response({"ok": False, "error": "json body required"}, status=400)
+
+        key = self._norm_remote_key(payload.get("key"))
+        edge = self._norm_remote_edge(payload.get("edge"))
+        trigger = str(payload.get("trigger") or "http.remote.edge")
+
+        key_error = self._validate_remote_key(key)
+        if key_error:
+            return web.json_response({"ok": False, "error": key_error}, status=400)
+
+        if edge not in {"down", "up"}:
+            return web.json_response({"ok": False, "error": "edge must be 'down' or 'up'"}, status=400)
+
+        try:
+            await self._dispatcher.on_usb_edge(key, edge)
+        except Exception as exc:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "key": key,
+                    "edge": edge,
+                    "trigger": trigger,
+                },
+                status=500,
+            )
+
+        return web.json_response(
+            {
+                "ok": True,
+                "action": "remote_edge",
+                "key": key,
+                "edge": edge,
+                "trigger": trigger,
+            }
+        )
+
+    async def _handle_remote_tap(self, request: web.Request) -> web.Response:
+        if self._dispatcher is None:
+            return web.json_response({"ok": False, "error": "dispatcher unavailable"}, status=503)
+
+        payload = await self._maybe_json(request)
+        if payload is None:
+            return web.json_response({"ok": False, "error": "json body required"}, status=400)
+
+        key = self._norm_remote_key(payload.get("key"))
+        trigger = str(payload.get("trigger") or "http.remote.tap")
+
+        key_error = self._validate_remote_key(key)
+        if key_error:
+            return web.json_response({"ok": False, "error": key_error}, status=400)
+
+        hold_ms_raw = payload.get("hold_ms", 80)
+        try:
+            hold_ms = int(hold_ms_raw)
+        except Exception:
+            return web.json_response({"ok": False, "error": "hold_ms must be an integer"}, status=400)
+
+        hold_ms = max(20, min(hold_ms, 2000))
+
+        try:
+            await self._dispatcher.on_usb_edge(key, "down")
+            try:
+                await asyncio.sleep(hold_ms / 1000.0)
+            finally:
+                await self._dispatcher.on_usb_edge(key, "up")
+        except Exception as exc:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "key": key,
+                    "hold_ms": hold_ms,
+                    "trigger": trigger,
+                },
+                status=500,
+            )
+
+        return web.json_response(
+            {
+                "ok": True,
+                "action": "remote_tap",
+                "key": key,
+                "hold_ms": hold_ms,
+                "trigger": trigger,
+            }
+        )
 
     async def _maybe_json(self, request: web.Request) -> dict | None:
         if request.content_length in (None, 0):
@@ -1994,6 +2093,30 @@ button:hover {{
         except Exception:
             return None
         return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _norm_remote_key(value: object) -> str:
+        key = str(value or "").strip()
+        return key
+
+    @staticmethod
+    def _norm_remote_edge(value: object) -> str:
+        edge = str(value or "").strip().lower()
+        return edge
+
+    def _validate_remote_key(self, key: str) -> str | None:
+        if not key:
+            return "key required"
+        if not key.startswith("rem_"):
+            return "key must start with rem_"
+        if self._dispatcher is None:
+            return "dispatcher unavailable"
+
+        known = set(getattr(self._dispatcher, "scancode_map", {}).values())
+        if known and key not in known:
+            return f"unknown remote key: {key}"
+
+        return None
 
     @staticmethod
     def _domain_status(*, configured: bool, enabled: bool, degraded: bool) -> str:

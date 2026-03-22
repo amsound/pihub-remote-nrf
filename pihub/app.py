@@ -231,6 +231,7 @@ async def main() -> None:
         runtime=runtime,
         history=history,
         speaker_backend=cfg.speaker_backend,
+        dispatcher=dispatcher,
     )
 
     try:
