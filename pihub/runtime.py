@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from .flows import FlowRunner, FlowWaitTimeout
+from .history import FlowRunReport, HistoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class RuntimeEngine:
         speaker: Any = None,
         ble: Any = None,
         settings: Any = None,
+        history: HistoryStore | None = None,
         initial_mode: str = "power_off",
     ) -> None:
         self._dispatcher = dispatcher
@@ -36,6 +38,7 @@ class RuntimeEngine:
         self._lock = asyncio.Lock()
         self._active_sequence_task: asyncio.Task | None = None
         self._flows = FlowRunner(runtime=self, tv=tv, speaker=speaker, ble=ble, settings=settings)
+        self._history = history
 
     @property
     def mode(self) -> str:
@@ -189,7 +192,7 @@ class RuntimeEngine:
         if not name:
             self._set_runtime_error("flow_name_required", result="invalid")
             return {"ok": False, "error": "flow name required"}
-        
+
         if self._lock.locked():
             if source == "device_state_change":
                 logger.info("device-state %s ignored (flow running)", name)
@@ -207,13 +210,31 @@ class RuntimeEngine:
                 "reason": "runner_busy",
             }
 
+        report = FlowRunReport(
+            flow_name=name,
+            trigger=trigger,
+            source=source,
+        )
+        if self._history is not None:
+            self._history.add_flow_report(report)
+
         async with self._lock:
             self._flow_running = True
             self._last_trigger = trigger
+
+            if self._history is not None:
+                self._history.emit(
+                    kind="flow_started",
+                    message=f"flow {name} started",
+                    flow_name=name,
+                    trigger=trigger,
+                    metadata={"source": source, "report_id": report.id},
+                )
+
             logger.info("flow %s started (trigger=%s)", name, self._log_trigger_kind(trigger))
 
             seq_task = asyncio.create_task(
-                self._flows.run(name=name, trigger=trigger, args=args, source=source),
+                self._flows.run(name=name, trigger=trigger, args=args, source=source, report=report),
                 name=f"sequence:{name}",
             )
             self._active_sequence_task = seq_task
@@ -222,7 +243,6 @@ class RuntimeEngine:
                 try:
                     ok = await asyncio.shield(seq_task)
                 except asyncio.CancelledError:
-                    # Caller task was cancelled; keep the sequence running to completion.
                     logger.exception(
                         "sequence caller cancelled name=%s trigger=%s source=%s; waiting for sequence task to finish",
                         name,
@@ -238,28 +258,65 @@ class RuntimeEngine:
                     }.get(name, name)
                     self._last_flow = logical_name
                     self._set_runtime_ok("ok")
-                else:
-                    self._set_runtime_error("flow_failed", result="failed")
+
+                    result_name = "ok_with_warnings" if report.warnings else "ok"
+                    report.finish(result=result_name)
+
+                    if self._history is not None:
+                        self._history.emit(
+                            kind="flow_finished",
+                            message=f"flow {name} completed",
+                            flow_name=name,
+                            trigger=trigger,
+                            metadata={
+                                "source": source,
+                                "report_id": report.id,
+                                "result": result_name,
+                                "warning_count": len(report.warnings),
+                                "duration_ms": report.to_dict().get("duration_ms"),
+                            },
+                        )
+
+                    logger.info("flow %s completed", name)
                     return {
-                        "ok": False,
+                        "ok": True,
                         "domain": "flow",
                         "action": "run",
                         "name": name,
+                        "mode": self._mode,
+                        "last_flow": self._last_flow,
                         "trigger": trigger,
                         "source": source,
-                        "error": "flow_failed",
+                        "report_id": report.id,
+                        "result": result_name,
                     }
 
-                logger.info("flow %s completed", name)
+                self._set_runtime_error("flow_failed", result="failed")
+                report.finish(result="failed", error="flow_failed")
+
+                if self._history is not None:
+                    self._history.emit(
+                        kind="flow_failed",
+                        message=f"flow {name} failed",
+                        level="error",
+                        flow_name=name,
+                        trigger=trigger,
+                        metadata={
+                            "source": source,
+                            "report_id": report.id,
+                            "error": "flow_failed",
+                        },
+                    )
+
                 return {
-                    "ok": True,
+                    "ok": False,
                     "domain": "flow",
                     "action": "run",
                     "name": name,
-                    "mode": self._mode,
-                    "last_flow": self._last_flow,
                     "trigger": trigger,
                     "source": source,
+                    "error": "flow_failed",
+                    "report_id": report.id,
                 }
 
             except FlowWaitTimeout as exc:
@@ -271,6 +328,22 @@ class RuntimeEngine:
                     str(exc),
                 )
                 self._set_runtime_error(str(exc), result="failed")
+                report.finish(result="failed", error=str(exc))
+
+                if self._history is not None:
+                    self._history.emit(
+                        kind="flow_failed",
+                        message=f"flow {name} failed",
+                        level="error",
+                        flow_name=name,
+                        trigger=trigger,
+                        metadata={
+                            "source": source,
+                            "report_id": report.id,
+                            "error": str(exc),
+                        },
+                    )
+
                 return {
                     "ok": False,
                     "domain": "flow",
@@ -279,11 +352,28 @@ class RuntimeEngine:
                     "trigger": trigger,
                     "source": source,
                     "error": str(exc),
+                    "report_id": report.id,
                 }
 
             except Exception as exc:
                 logger.exception("sequence failed name=%s trigger=%s source=%s", name, trigger, source)
                 self._set_runtime_error(str(exc), result="failed")
+                report.finish(result="failed", error=str(exc))
+
+                if self._history is not None:
+                    self._history.emit(
+                        kind="flow_failed",
+                        message=f"flow {name} failed",
+                        level="error",
+                        flow_name=name,
+                        trigger=trigger,
+                        metadata={
+                            "source": source,
+                            "report_id": report.id,
+                            "error": str(exc),
+                        },
+                    )
+
                 return {
                     "ok": False,
                     "domain": "flow",
@@ -292,6 +382,7 @@ class RuntimeEngine:
                     "trigger": trigger,
                     "source": source,
                     "error": str(exc),
+                    "report_id": report.id,
                 }
 
             finally:

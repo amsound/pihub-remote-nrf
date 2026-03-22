@@ -8,16 +8,16 @@ import socket
 import os
 import shutil
 import time
-from typing import Optional
 
+from typing import Any, Optional
 from aiohttp import web
 
 from .runtime import RuntimeEngine
-
 from .ble_dongle import BleDongleLink
 from .unifying_input import UnifyingReader
 from .speaker import SpeakerLike
 from .samsung_tv import TvController
+from .history import HistoryStore
 
 def _norm_error(value: object) -> str | None:
     text = str(value or "").strip()
@@ -37,6 +37,7 @@ class HttpServer:
         speaker: Optional[SpeakerLike] = None,
         settings: Any = None,
         runtime: Optional[RuntimeEngine] = None,
+        history: HistoryStore | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -46,6 +47,7 @@ class HttpServer:
         self._speaker = speaker
         self._settings = settings
         self._runtime = runtime
+        self._history = history
 
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -64,6 +66,9 @@ class HttpServer:
                 web.get("/tools", self._handle_tools),
                 web.get("/settings", self._handle_settings),
                 web.post("/settings/save", self._handle_settings_save),
+
+                web.get("/history/events", self._handle_history_events),
+                web.get("/history/flows", self._handle_history_flows),
 
                 web.post("/flow/run/{name}", self._handle_flow_run),
                 web.post("/mode/set/{name}", self._handle_mode_set),
@@ -128,6 +133,38 @@ class HttpServer:
         result = await self._runtime.on_cmd(payload)
         status = 200 if result.get("ok") else 409 if result.get("reason") == "runner_busy" else 400
         return web.json_response(result, status=status)
+
+    async def _handle_history_events(self, request: web.Request) -> web.Response:
+        try:
+            limit = int(request.query.get("limit", "50"))
+        except ValueError:
+            limit = 50
+
+        if self._history is None:
+            return web.json_response({"ok": True, "events": []})
+
+        return web.json_response(
+            {
+                "ok": True,
+                "events": self._history.list_events(limit=limit),
+            }
+        )
+
+    async def _handle_history_flows(self, request: web.Request) -> web.Response:
+        try:
+            limit = int(request.query.get("limit", "20"))
+        except ValueError:
+            limit = 20
+
+        if self._history is None:
+            return web.json_response({"ok": True, "flows": []})
+
+        return web.json_response(
+            {
+                "ok": True,
+                "flows": self._history.list_flow_reports(limit=limit),
+            }
+        )
 
     def _status_badge_html(self, status: str) -> str:
         safe = self._html_escape(status)

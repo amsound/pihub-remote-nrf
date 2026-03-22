@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from .history import FlowRunReport, FlowStepReport
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +331,7 @@ class SequenceRunner:
         trigger: str,
         args: dict[str, Any] | None = None,
         source: str = "intent",
+        report: FlowRunReport | None = None,
     ) -> bool:
         seq = self._defs.get((name or "").strip())
         if seq is None:
@@ -345,6 +348,15 @@ class SequenceRunner:
         )
 
         for index, step in enumerate(seq.steps, start=1):
+            step_report: FlowStepReport | None = None
+            if report is not None:
+                step_report = report.add_step(
+                    step_id=step.id,
+                    domain=step.domain,
+                    action=step.action,
+                    mode=step.mode,
+                )
+
             if step.when and not self._predicate(step.when, snapshot):
                 logger.debug(
                     "sequence step skipped sequence=%s step=%s index=%d reason=when_false when=%s",
@@ -353,7 +365,10 @@ class SequenceRunner:
                     index,
                     step.when,
                 )
+                if step_report is not None:
+                    step_report.finish(status="skipped", reason=f"when_false:{step.when}")
                 continue
+
             logger.debug(
                 "sequence step start sequence=%s step=%s index=%d domain=%s action=%s",
                 seq.name,
@@ -364,7 +379,9 @@ class SequenceRunner:
             )
             try:
                 await self._run_step(sequence_name=seq.name, step=step)
-            except Exception:
+            except Exception as exc:
+                if step_report is not None and step_report.ts_finished is None:
+                    step_report.finish(status="failed", error=str(exc))
                 logger.exception(
                     "sequence step failed sequence=%s step=%s index=%d domain=%s action=%s",
                     seq.name,
@@ -374,15 +391,19 @@ class SequenceRunner:
                     step.action,
                 )
                 raise
+
+            if step_report is not None and step_report.ts_finished is None:
+                if step.mode == "dispatch":
+                    step_report.finish(status="dispatched")
+                else:
+                    step_report.finish(status="ok")
+
             logger.debug(
                 "sequence step ok sequence=%s step=%s index=%d",
                 seq.name,
                 step.id,
                 index,
             )
-
-        logger.debug("sequence completed name=%s trigger=%s source=%s", seq.name, trigger, source)
-        return True
 
     def _build_snapshot(self) -> dict[str, Any]:
         speaker_source = self._speaker_source()
@@ -651,6 +672,13 @@ class FlowRunner:
         trigger: str,
         args: dict[str, Any] | None = None,
         source: str = "intent",
+        report: FlowRunReport | None = None,
     ) -> bool:
         del args
-        return await self._sequences.run(name=name, trigger=trigger, args=None, source=source)
+        return await self._sequences.run(
+            name=name,
+            trigger=trigger,
+            args=None,
+            source=source,
+            report=report,
+        )

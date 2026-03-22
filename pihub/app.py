@@ -28,6 +28,7 @@ from .audiopro_speaker import AudioProSpeaker
 from .samsung_soundbar import SamsungSoundbar
 from .speaker import SpeakerLike
 from .settings import SettingsStore
+from .history import HistoryStore
 
 
 def _debug_enabled() -> bool:
@@ -51,6 +52,8 @@ async def main() -> None:
 
     settings = SettingsStore()
     settings.load()
+
+    history = HistoryStore()
 
     cleanup_hooks = []
 
@@ -175,6 +178,7 @@ async def main() -> None:
         speaker=speaker,
         ble=ble,
         settings=settings,
+        history=history,
         initial_mode="power_off",
     )
 
@@ -224,6 +228,7 @@ async def main() -> None:
         speaker=speaker,
         settings=settings,
         runtime=runtime,
+        history=history,
     )
 
     try:
