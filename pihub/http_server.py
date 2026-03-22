@@ -439,6 +439,9 @@ pre.json {
         def display_value(value: str, fallback: str = "—") -> str:
             text = str(value or "").strip()
             return self._html_escape(text if text else fallback)
+        
+        import json
+        snapshot_json = json.dumps(snapshot)
 
         html = f"""<!doctype html>
 <html lang="en">
@@ -777,7 +780,7 @@ pre.json {{
   <script>
     (function () {{
       const rawPre = document.getElementById("tools-raw-json");
-      const snapshot = {self._html_escape(__import__("json").dumps(snapshot))};
+      const snapshot = JSON.parse({json.dumps(snapshot_json)});
       if (rawPre) {{
         rawPre.textContent = JSON.stringify(snapshot, null, 2);
       }}
@@ -893,7 +896,6 @@ pre.json {{
         hostname = snapshot.get("pihub_id") or socket.gethostname()
         runtime = snapshot.get("runtime") or {}
         system = snapshot.get("system") or {}
-        ha = snapshot.get("ha") or {}
 
         def kv_row(key: str, value: object) -> str:
             return (
@@ -1053,32 +1055,6 @@ pre.json {{
           </div>
         </div>
       </div>
-    </section>
-
-    <section class="section">
-      <h2>Home Assistant</h2>
-      <div class="grid summary">
-        <div class="card">
-          <h3>Automation state</h3>
-          <div class="kv">
-            {kv_row("Overall status", ha.get("overall_status"))}
-            {kv_row("Current mode", ha.get("current_mode"))}
-            {kv_row("Last flow", ha.get("last_flow"))}
-            {kv_row("Flow running", ha.get("flow_running"))}
-            {kv_row("Last result", ha.get("last_result"))}
-          </div>
-        </div>
-        <div class="card">
-          <h3>Binary sensors</h3>
-          <div class="kv">
-            {kv_row("Runtime error", (ha.get("binary_sensors") or {{}}).get("runtime_error"))}
-            {kv_row("BLE ready", (ha.get("binary_sensors") or {{}}).get("ble_ready"))}
-            {kv_row("TV on", (ha.get("binary_sensors") or {{}}).get("tv_on"))}
-            {kv_row("Speaker ready", (ha.get("binary_sensors") or {{}}).get("speaker_ready"))}
-          </div>
-        </div>
-      </div>
-      <p class="muted">These fields are also available in raw <a href="/health">/health</a> under <code>ha</code>.</p>
     </section>
 
     <section class="section">
