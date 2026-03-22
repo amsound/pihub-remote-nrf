@@ -38,6 +38,7 @@ class HttpServer:
         settings: Any = None,
         runtime: Optional[RuntimeEngine] = None,
         history: HistoryStore | None = None,
+        speaker_backend: str | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -48,6 +49,7 @@ class HttpServer:
         self._settings = settings
         self._runtime = runtime
         self._history = history
+        self._speaker_backend = str(speaker_backend or "").strip().lower()
 
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -422,20 +424,21 @@ pre.json {
 """
 
     async def _handle_tools(self, request: web.Request) -> web.Response:
-        import json
-
-        host = request.host or "localhost"
-
         snapshot = self.snapshot()
         hostname = snapshot.get("pihub_id") or socket.gethostname()
-        pretty_json = json.dumps(snapshot, indent=2)
 
         runtime = snapshot.get("runtime") or {}
         current_mode = str(runtime.get("mode") or "")
         current_flow = str(runtime.get("last_flow") or "")
+        last_trigger = str(runtime.get("last_trigger") or "")
+        last_result = str(runtime.get("last_result") or "")
 
         def active_class(value: str, current: str) -> str:
             return "active" if value == current else ""
+
+        def display_value(value: str, fallback: str = "—") -> str:
+            text = str(value or "").strip()
+            return self._html_escape(text if text else fallback)
 
         html = f"""<!doctype html>
 <html lang="en">
@@ -528,6 +531,28 @@ form.active button {{
   font-weight: 600;
 }}
 
+.raw-toggle {{
+  margin-top: 1rem;
+}}
+
+.raw-toggle details {{
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+  overflow: hidden;
+}}
+
+.raw-toggle summary {{
+  cursor: pointer;
+  padding: 0.85rem 1rem;
+  font-weight: 600;
+}}
+
+.raw-toggle .raw-body {{
+  border-top: 1px solid var(--border);
+  padding: 1rem;
+}}
+
 pre.json {{
   margin: 0;
   background: #0b0e13;
@@ -548,10 +573,82 @@ pre.json {{
   background: #2a1818;
 }}
 
+.command-form.busy button {{
+  opacity: 0.7;
+  cursor: wait;
+}}
+
+.modal-backdrop {{
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.58);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 50;
+}}
+
+.modal-backdrop.open {{
+  display: flex;
+}}
+
+.modal {{
+  width: min(640px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}}
+
+.modal-header {{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  border-bottom: 1px solid var(--border);
+}}
+
+.modal-title {{
+  font-size: 1.05rem;
+  font-weight: 700;
+}}
+
+.modal-body {{
+  padding: 1rem;
+}}
+
+.modal-actions {{
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-top: 1px solid var(--border);
+}}
+
+.modal-status {{
+  margin-bottom: 0.85rem;
+}}
+
+.modal-json {{
+  margin-top: 0.85rem;
+}}
+
+.small-button {{
+  min-width: 0;
+  padding: 0.7rem 0.9rem;
+  font-size: 0.95rem;
+}}
+
 @media (max-width: 640px) {{
   button {{
     width: 100%;
     min-width: 0;
+  }}
+  .modal-actions {{
+    flex-direction: column;
   }}
 }}
   </style>
@@ -567,19 +664,19 @@ pre.json {{
       <div class="meta-grid">
         <div class="meta-card">
           <h3>Last flow</h3>
-          <div class="meta-value">{self._html_escape(current_flow or "none")}</div>
+          <div class="meta-value">{display_value(current_flow)}</div>
         </div>
         <div class="meta-card">
           <h3>Current mode</h3>
-          <div class="meta-value">{self._html_escape(current_mode or "none")}</div>
+          <div class="meta-value">{display_value(current_mode)}</div>
         </div>
         <div class="meta-card">
           <h3>Last trigger</h3>
-          <div class="meta-value">{self._html_escape(runtime.get("last_trigger") or "none")}</div>
+          <div class="meta-value">{display_value(last_trigger)}</div>
         </div>
         <div class="meta-card">
           <h3>Runtime result</h3>
-          <div class="meta-value">{self._html_escape(runtime.get("last_result") or "none")}</div>
+          <div class="meta-value">{display_value(last_result)}</div>
         </div>
       </div>
     </section>
@@ -588,16 +685,16 @@ pre.json {{
       <section class="section">
         <div class="section-header">
           <h2>Run Flow</h2>
-          <span class="badge">{self._html_escape(current_flow or "none")}</span>
+          <span class="badge">{display_value(current_flow)}</span>
         </div>
         <div class="row">
-          <form method="post" action="/flow/run/watch" class="{active_class('watch', current_flow)}">
+          <form method="post" action="/flow/run/watch" class="command-form {active_class('watch', current_flow)}" data-refresh="1" data-title="Run watch">
             <button type="submit">Run watch</button>
           </form>
-          <form method="post" action="/flow/run/listen" class="{active_class('listen', current_flow)}">
+          <form method="post" action="/flow/run/listen" class="command-form {active_class('listen', current_flow)}" data-refresh="1" data-title="Run listen">
             <button type="submit">Run listen</button>
           </form>
-          <form method="post" action="/flow/run/power_off" class="{active_class('power_off', current_flow)}">
+          <form method="post" action="/flow/run/power_off" class="command-form {active_class('power_off', current_flow)}" data-refresh="1" data-title="Run power_off">
             <button type="submit">Run power_off</button>
           </form>
         </div>
@@ -606,16 +703,16 @@ pre.json {{
       <section class="section">
         <div class="section-header">
           <h2>Set Mode</h2>
-          <span class="badge">{self._html_escape(current_mode or "none")}</span>
+          <span class="badge">{display_value(current_mode)}</span>
         </div>
         <div class="row">
-          <form method="post" action="/mode/set/watch" class="{active_class('watch', current_mode)}">
+          <form method="post" action="/mode/set/watch" class="command-form {active_class('watch', current_mode)}" data-refresh="1" data-title="Set mode watch">
             <button type="submit">Set mode watch</button>
           </form>
-          <form method="post" action="/mode/set/listen" class="{active_class('listen', current_mode)}">
+          <form method="post" action="/mode/set/listen" class="command-form {active_class('listen', current_mode)}" data-refresh="1" data-title="Set mode listen">
             <button type="submit">Set mode listen</button>
           </form>
-          <form method="post" action="/mode/set/power_off" class="{active_class('power_off', current_mode)}">
+          <form method="post" action="/mode/set/power_off" class="command-form {active_class('power_off', current_mode)}" data-refresh="1" data-title="Set mode power_off">
             <button type="submit">Set mode power_off</button>
           </form>
         </div>
@@ -624,13 +721,13 @@ pre.json {{
       <section class="section">
         <h2>Refresh</h2>
         <div class="row">
-          <form method="post" action="/refresh/tv">
+          <form method="post" action="/refresh/tv" class="command-form" data-refresh="1" data-title="Refresh TV">
             <button type="submit">Refresh TV</button>
           </form>
-          <form method="post" action="/refresh/speaker">
+          <form method="post" action="/refresh/speaker" class="command-form" data-refresh="1" data-title="Refresh Speaker">
             <button type="submit">Refresh Speaker</button>
           </form>
-          <form method="post" action="/refresh/networked">
+          <form method="post" action="/refresh/networked" class="command-form" data-refresh="1" data-title="Refresh Networked">
             <button type="submit">Refresh Networked</button>
           </form>
         </div>
@@ -639,7 +736,7 @@ pre.json {{
       <section class="section danger">
         <h2>Admin</h2>
         <div class="row">
-          <form method="post" action="/admin/restart">
+          <form method="post" action="/admin/restart" class="command-form" data-refresh="1" data-title="Restart PiHub">
             <button type="submit">Restart PiHub</button>
           </form>
         </div>
@@ -647,12 +744,143 @@ pre.json {{
       </section>
     </div>
 
-    <section class="section">
-      <h2>Health snapshot</h2>
-      <p><a href="/health">Open raw /health</a></p>
-      <pre class="json">{self._html_escape(pretty_json)}</pre>
+    <section class="section raw-toggle">
+      <h2>Raw health JSON</h2>
+      <details>
+        <summary>Show raw /health JSON</summary>
+        <div class="raw-body">
+          <p><a href="/health">Open raw /health</a></p>
+          <pre id="tools-raw-json" class="json"></pre>
+        </div>
+      </details>
     </section>
   </main>
+
+  <div id="command-modal-backdrop" class="modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="command-modal-title">
+      <div class="modal-header">
+        <div id="command-modal-title" class="modal-title">Command result</div>
+      </div>
+      <div class="modal-body">
+        <div id="command-modal-status" class="modal-status"></div>
+        <div id="command-modal-message" class="muted"></div>
+        <div class="modal-json">
+          <pre id="command-modal-json" class="json"></pre>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="command-modal-close" type="button" class="small-button">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {{
+      const rawPre = document.getElementById("tools-raw-json");
+      const snapshot = {self._html_escape(__import__("json").dumps(snapshot))};
+      if (rawPre) {{
+        rawPre.textContent = JSON.stringify(snapshot, null, 2);
+      }}
+
+      const forms = Array.from(document.querySelectorAll(".command-form"));
+      const backdrop = document.getElementById("command-modal-backdrop");
+      const modalTitle = document.getElementById("command-modal-title");
+      const modalStatus = document.getElementById("command-modal-status");
+      const modalMessage = document.getElementById("command-modal-message");
+      const modalJson = document.getElementById("command-modal-json");
+      const modalClose = document.getElementById("command-modal-close");
+
+      let refreshOnClose = false;
+
+      function badgeHtml(ok) {{
+        const cls = ok ? "status-ok" : "status-error";
+        const label = ok ? "Success" : "Failed";
+        return '<span class="status-badge ' + cls + '">' + label + '</span>';
+      }}
+
+      function openModal(title, ok, message, payload, shouldRefresh) {{
+        refreshOnClose = !!shouldRefresh;
+        if (modalTitle) modalTitle.textContent = title || "Command result";
+        if (modalStatus) modalStatus.innerHTML = badgeHtml(ok);
+        if (modalMessage) modalMessage.textContent = message || "";
+        if (modalJson) modalJson.textContent = JSON.stringify(payload, null, 2);
+        if (backdrop) {{
+          backdrop.classList.add("open");
+          backdrop.setAttribute("aria-hidden", "false");
+        }}
+      }}
+
+      function closeModal() {{
+        if (backdrop) {{
+          backdrop.classList.remove("open");
+          backdrop.setAttribute("aria-hidden", "true");
+        }}
+        if (refreshOnClose) {{
+          window.location.reload();
+        }}
+      }}
+
+      if (modalClose) {{
+        modalClose.addEventListener("click", closeModal);
+      }}
+
+      if (backdrop) {{
+        backdrop.addEventListener("click", function (event) {{
+          if (event.target === backdrop) {{
+            closeModal();
+          }}
+        }});
+      }}
+
+      forms.forEach(function (form) {{
+        form.addEventListener("submit", async function (event) {{
+          event.preventDefault();
+
+          const button = form.querySelector("button");
+          const title = form.getAttribute("data-title") || "Command result";
+          const shouldRefresh = form.getAttribute("data-refresh") === "1";
+
+          form.classList.add("busy");
+          if (button) button.disabled = true;
+
+          try {{
+            const response = await fetch(form.action, {{
+              method: "POST",
+              headers: {{
+                "Accept": "application/json"
+              }}
+            }});
+
+            let payload = null;
+            try {{
+              payload = await response.json();
+            }} catch (_err) {{
+              payload = {{}};
+            }}
+
+            const ok = !!(payload && payload.ok);
+            let message = "";
+            if (payload && payload.error) {{
+              message = String(payload.error);
+            }} else if (payload && payload.reason) {{
+              message = String(payload.reason);
+            }} else if (payload && payload.action) {{
+              message = String(payload.action);
+            }} else {{
+              message = response.ok ? "Request completed." : "Request failed.";
+            }}
+
+            openModal(title, ok && response.ok, message, payload, shouldRefresh);
+          }} catch (err) {{
+            openModal(title, false, String(err), {{"ok": false, "error": String(err)}}, false);
+          }} finally {{
+            form.classList.remove("busy");
+            if (button) button.disabled = false;
+          }}
+        }});
+      }});
+    }})();
+  </script>
 </body>
 </html>
 """
@@ -665,6 +893,7 @@ pre.json {{
         hostname = snapshot.get("pihub_id") or socket.gethostname()
         runtime = snapshot.get("runtime") or {}
         system = snapshot.get("system") or {}
+        ha = snapshot.get("ha") or {}
 
         def kv_row(key: str, value: object) -> str:
             return (
@@ -743,7 +972,6 @@ pre.json {{
             )
 
         pretty_json = json.dumps(snapshot, indent=2)
-
         degraded_reasons = snapshot.get("degraded_reasons") or []
 
         attention_html = ""
@@ -764,6 +992,28 @@ pre.json {{
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
 {self._shared_dark_css()}
+
+.raw-toggle {{
+  margin-top: 1rem;
+}}
+
+.raw-toggle details {{
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+  overflow: hidden;
+}}
+
+.raw-toggle summary {{
+  cursor: pointer;
+  padding: 0.85rem 1rem;
+  font-weight: 600;
+}}
+
+.raw-toggle .raw-body {{
+  border-top: 1px solid var(--border);
+  padding: 1rem;
+}}
   </style>
 </head>
 <body>
@@ -806,12 +1056,38 @@ pre.json {{
     </section>
 
     <section class="section">
+      <h2>Home Assistant</h2>
+      <div class="grid summary">
+        <div class="card">
+          <h3>Automation state</h3>
+          <div class="kv">
+            {kv_row("Overall status", ha.get("overall_status"))}
+            {kv_row("Current mode", ha.get("current_mode"))}
+            {kv_row("Last flow", ha.get("last_flow"))}
+            {kv_row("Flow running", ha.get("flow_running"))}
+            {kv_row("Last result", ha.get("last_result"))}
+          </div>
+        </div>
+        <div class="card">
+          <h3>Binary sensors</h3>
+          <div class="kv">
+            {kv_row("Runtime error", (ha.get("binary_sensors") or {{}}).get("runtime_error"))}
+            {kv_row("BLE ready", (ha.get("binary_sensors") or {{}}).get("ble_ready"))}
+            {kv_row("TV on", (ha.get("binary_sensors") or {{}}).get("tv_on"))}
+            {kv_row("Speaker ready", (ha.get("binary_sensors") or {{}}).get("speaker_ready"))}
+          </div>
+        </div>
+      </div>
+      <p class="muted">These fields are also available in raw <a href="/health">/health</a> under <code>ha</code>.</p>
+    </section>
+
+    <section class="section">
       <h2>Domains</h2>
       <div class="grid domains">
-        {domain_card("USB", snapshot.get("usb") or {}, ["paired_remote", "reader_running", "input_open", "grabbed"])}
-        {domain_card("BLE", snapshot.get("ble") or {}, ["transport_open", "advertising", "connected", "proto_report", "last_disc_reason", "conn_params"])}
-        {domain_card("TV", snapshot.get("tv") or {}, ["initialised", "presence_on", "presence_source", "last_change_age_s", "ws_connected", "token_present"])}
-        {domain_card("Speaker", snapshot.get("speaker") or {}, ["backend", "reachable", "connected", "ready", "playback_status", "source", "volume_pct", "muted", "update_age_s"])}
+        {domain_card("USB", snapshot.get("usb") or {{}}, ["paired_remote", "reader_running", "input_open", "grabbed"])}
+        {domain_card("BLE", snapshot.get("ble") or {{}}, ["transport_open", "advertising", "connected", "proto_report", "last_disc_reason", "conn_params"])}
+        {domain_card("TV", snapshot.get("tv") or {{}}, ["initialised", "presence_on", "presence_source", "last_change_age_s", "ws_connected", "token_present"])}
+        {domain_card("Speaker", snapshot.get("speaker") or {{}}, ["backend", "reachable", "connected", "ready", "playback_status", "source", "volume_pct", "muted", "update_age_s"])}
       </div>
     </section>
 
@@ -847,31 +1123,35 @@ pre.json {{
           <h3>Power / Temp</h3>
           <div class="kv">
             {kv_row("CPU temp", f"{system.get('cpu_temp_c')} °C" if system.get("cpu_temp_c") is not None else "unknown")}
-            {kv_row("Power status", (system.get("throttling") or {}).get("status"))}
-            {kv_row("Undervoltage now", (system.get("throttling") or {}).get("undervoltage_now"))}
-            {kv_row("Throttled now", (system.get("throttling") or {}).get("throttled_now"))}
+            {kv_row("Power status", (system.get("throttling") or {{}}).get("status"))}
+            {kv_row("Undervoltage now", (system.get("throttling") or {{}}).get("undervoltage_now"))}
+            {kv_row("Throttled now", (system.get("throttling") or {{}}).get("throttled_now"))}
             {kv_row("Historical events", (
                 (
-                    (system.get("throttling") or {}).get("undervoltage_occurred")
-                    or (system.get("throttling") or {}).get("freq_capped_occurred")
-                    or (system.get("throttling") or {}).get("throttled_occurred")
-                    or (system.get("throttling") or {}).get("temp_limit_occurred")
+                    (system.get("throttling") or {{}}).get("undervoltage_occurred")
+                    or (system.get("throttling") or {{}}).get("freq_capped_occurred")
+                    or (system.get("throttling") or {{}}).get("throttled_occurred")
+                    or (system.get("throttling") or {{}}).get("temp_limit_occurred")
                 )
-                if (system.get("throttling") or {}).get("available")
+                if (system.get("throttling") or {{}}).get("available")
                 else "unknown"
             ))}
           </div>
-        </div>
         </div>
       </div>
     </section>
 
     {attention_html}
 
-    <section class="section">
-      <h2>Health snapshot</h2>
-      <p><a href="/health">Open raw /health</a></p>
-      <pre class="json">{self._html_escape(pretty_json)}</pre>
+    <section class="section raw-toggle">
+      <h2>Raw health JSON</h2>
+      <details>
+        <summary>Show raw /health JSON</summary>
+        <div class="raw-body">
+          <p><a href="/health">Open raw /health</a></p>
+          <pre class="json">{self._html_escape(pretty_json)}</pre>
+        </div>
+      </details>
     </section>
 
   </main>
@@ -891,6 +1171,9 @@ pre.json {{
         hostname = snapshot.get("pihub_id") or socket.gethostname()
         settings = self._settings.snapshot()
 
+        backend = self._speaker_backend
+        is_soundbar = backend == "samsung_soundbar"
+
         def selected(name: str, value: str) -> str:
             return ' selected="selected"' if str(settings.get(name)) == value else ""
 
@@ -905,6 +1188,60 @@ pre.json {{
             f'<div class="section"><div class="error-line"><strong>Save failed:</strong> {self._html_escape(error)}</div></div>'
             if error else ""
         )
+
+        listen_target_html = ""
+        stream_urls_html = ""
+        backend_note_html = ""
+
+        if is_soundbar:
+            backend_note_html = """
+    <section class="section">
+      <div class="chip">Samsung Soundbar backend detected</div>
+      <p class="muted" style="margin-top:0.75rem;">Listen target preset and stream URL settings are hidden because they are not used by the SmartThings soundbar backend.</p>
+    </section>
+"""
+        else:
+            listen_target_html = f"""
+        <h2 style="margin-top:1.25rem;">Listen Flow Preset</h2>
+        <div class="form-grid">
+          <div class="field">
+            <label for="listen_target_type">Type</label>
+            <select id="listen_target_type" name="listen_target_type">
+              <option value="preset"{selected('listen_target_type', 'preset')}>Speaker native preset</option>
+              <option value="stream"{selected('listen_target_type', 'stream')}>Stream URL</option>
+            </select>
+          </div>
+          <div class="field" id="listen-target-preset-field">
+            <label for="listen_target_preset">Speaker preset (1–6)</label>
+            <input id="listen_target_preset" name="listen_target_preset" type="number" min="1" max="6" value="{field('listen_target_preset')}">
+          </div>
+          <div class="field" id="listen-target-stream-field">
+            <label for="listen_target_stream">Stream URL slot (1–4)</label>
+            <input id="listen_target_stream" name="listen_target_stream" type="number" min="1" max="4" value="{field('listen_target_stream')}">
+          </div>
+        </div>
+"""
+            stream_urls_html = f"""
+        <h2 style="margin-top:1.25rem;">Extra Stream URLs</h2>
+        <div class="form-grid">
+          <div class="field">
+            <label for="stream_url_1">Key 7 stream URL</label>
+            <input id="stream_url_1" name="stream_url_1" type="url" value="{field('stream_url_1')}">
+          </div>
+          <div class="field">
+            <label for="stream_url_2">Key 8 stream URL</label>
+            <input id="stream_url_2" name="stream_url_2" type="url" value="{field('stream_url_2')}">
+          </div>
+          <div class="field">
+            <label for="stream_url_3">Key 9 stream URL</label>
+            <input id="stream_url_3" name="stream_url_3" type="url" value="{field('stream_url_3')}">
+          </div>
+          <div class="field">
+            <label for="stream_url_4">Key 0 stream URL</label>
+            <input id="stream_url_4" name="stream_url_4" type="url" value="{field('stream_url_4')}">
+          </div>
+        </div>
+"""
 
         html = f"""<!doctype html>
 <html lang="en">
@@ -975,6 +1312,7 @@ button:hover {{
 
     {saved_html}
     {error_html}
+    {backend_note_html}
 
     <section class="section">
       <form method="post" action="/settings/save">
@@ -990,44 +1328,8 @@ button:hover {{
           </div>
         </div>
 
-        <h2 style="margin-top:1.25rem;">Listen Flow Preset</h2>
-        <div class="form-grid">
-          <div class="field">
-            <label for="listen_target_type">Type</label>
-            <select id="listen_target_type" name="listen_target_type">
-              <option value="preset"{selected('listen_target_type', 'preset')}>Speaker native preset</option>
-              <option value="stream"{selected('listen_target_type', 'stream')}>Stream URL</option>
-            </select>
-          </div>
-          <div class="field" id="listen-target-preset-field">
-            <label for="listen_target_preset">Speaker preset (1–6)</label>
-            <input id="listen_target_preset" name="listen_target_preset" type="number" min="1" max="6" value="{field('listen_target_preset')}">
-          </div>
-          <div class="field" id="listen-target-stream-field">
-            <label for="listen_target_stream">Stream URL slot (1–4)</label>
-            <input id="listen_target_stream" name="listen_target_stream" type="number" min="1" max="4" value="{field('listen_target_stream')}">
-          </div>
-        </div>
-
-        <h2 style="margin-top:1.25rem;">Extra Stream URLs</h2>
-        <div class="form-grid">
-          <div class="field">
-            <label for="stream_url_1">Key 7 stream URL</label>
-            <input id="stream_url_1" name="stream_url_1" type="url" value="{field('stream_url_1')}">
-          </div>
-          <div class="field">
-            <label for="stream_url_2">Key 8 stream URL</label>
-            <input id="stream_url_2" name="stream_url_2" type="url" value="{field('stream_url_2')}">
-          </div>
-          <div class="field">
-            <label for="stream_url_3">Key 9 stream URL</label>
-            <input id="stream_url_3" name="stream_url_3" type="url" value="{field('stream_url_3')}">
-          </div>
-          <div class="field">
-            <label for="stream_url_4">Key 0 stream URL</label>
-            <input id="stream_url_4" name="stream_url_4" type="url" value="{field('stream_url_4')}">
-          </div>
-        </div>
+        {listen_target_html}
+        {stream_urls_html}
 
         <div style="margin-top:1.25rem;">
           <button type="submit">Save settings</button>
@@ -1076,7 +1378,7 @@ button:hover {{
         payload = dict(data)
 
         try:
-            self._settings.save_from_payload(payload)
+            self._settings.save_from_payload(payload, speaker_backend=self._speaker_backend)
         except Exception as exc:
             from urllib.parse import quote
             raise web.HTTPFound(location=f"/settings?error={quote(str(exc))}")
@@ -2218,6 +2520,29 @@ button:hover {{
             "tv": tv_state["status"],
             "speaker": speaker_state["status"],
         }
+        
+        ha = {
+            "overall_status": status,
+            "current_mode": runtime_state.get("mode"),
+            "last_flow": runtime_state.get("last_flow"),
+            "flow_running": runtime_state.get("flow_running"),
+            "last_result": runtime_state.get("last_result"),
+            "last_error": runtime_state.get("last_error"),
+            "degraded_reasons": degraded_reasons,
+            "binary_sensors": {
+                "runtime_error": bool(runtime_state.get("error")),
+                "flow_running": bool(runtime_state.get("flow_running")),
+                "ble_ready": bool(ble_state.get("link_ready")),
+                "tv_on": (tv_state.get("details") or {}).get("presence_on"),
+                "speaker_ready": bool(speaker_state.get("link_ready")),
+            },
+            "domains": {
+                "usb": usb_state.get("status"),
+                "ble": ble_state.get("status"),
+                "tv": tv_state.get("status"),
+                "speaker": speaker_state.get("status"),
+            },
+        }
 
         return {
             "pihub_id": pihub_id,
@@ -2230,4 +2555,5 @@ button:hover {{
             "tv": tv_state,
             "speaker": speaker_state,
             "system": system_state,
+            "ha": ha,
         }

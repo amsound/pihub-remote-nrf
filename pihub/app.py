@@ -230,6 +230,7 @@ async def main() -> None:
         settings=settings,
         runtime=runtime,
         history=history,
+        speaker_backend=cfg.speaker_backend,
     )
 
     try:

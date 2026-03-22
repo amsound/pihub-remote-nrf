@@ -13,11 +13,11 @@ DEFAULT_SETTINGS_PATH = "/data/settings.json"
 
 @dataclass
 class SettingsData:
-    watch_volume_pct: int = 30
-    listen_volume_pct: int = 22
+    watch_volume_pct: int = 0
+    listen_volume_pct: int = 0
 
     # listen target: preset or stream URL slot
-    listen_target_type: str = "stream"   # "preset" | "stream"
+    listen_target_type: str = "preset"   # "preset" | "stream"
     listen_target_preset: int = 1        # 1..6
     listen_target_stream: int = 1        # 1..4
 
@@ -76,14 +76,14 @@ class SettingsStore:
         with self._lock:
             return str(getattr(self._data, f"stream_url_{slot}", "") or "").strip()
 
-    def save_from_payload(self, payload: dict) -> dict:
-        validated = self._validate_payload(payload)
-
+    def save_from_payload(self, payload: dict, *, speaker_backend: str | None = None) -> dict:
         with self._lock:
-            self._data = self._from_dict(validated)
+            base = asdict(self._data)
+            base.update(payload or {})
+            validated = self._validate_payload(base, speaker_backend=speaker_backend)
+            self._data = SettingsData(**validated)
             self._write_locked()
-
-        return asdict(self._data)
+            return asdict(self._data)
 
     def _write_locked(self) -> None:
         parent = os.path.dirname(self._path) or "."
@@ -103,7 +103,7 @@ class SettingsStore:
         return SettingsData(**validated)
 
     @staticmethod
-    def _validate_payload(raw: dict) -> dict:
+    def _validate_payload(raw: dict, *, speaker_backend: str | None = None) -> dict:
         def _int_in_range(name: str, lo: int, hi: int, default: int) -> int:
             value = raw.get(name, default)
             try:
@@ -117,6 +117,8 @@ class SettingsStore:
         def _str(name: str, default: str = "") -> str:
             value = str(raw.get(name, default) or "").strip()
             return value
+
+        backend = str(speaker_backend or "").strip().lower()
 
         listen_target_type = _str("listen_target_type", "stream").lower()
         if listen_target_type not in {"preset", "stream"}:
@@ -139,11 +141,14 @@ class SettingsStore:
             if value and not (value.startswith("http://") or value.startswith("https://")):
                 raise ValueError(f"{key} must start with http:// or https://")
 
-        if out["listen_target_type"] == "stream":
-            stream_key = f"stream_url_{out['listen_target_stream']}"
-            if not out[stream_key]:
-                raise ValueError(
-                    f"listen_target_stream points to empty {stream_key}; set a URL or choose preset"
-                )
+        # Listen target / stream URL validation only matters for speaker backends
+        # that actually use the local listen-target settings.
+        if backend != "samsung_soundbar":
+            if out["listen_target_type"] == "stream":
+                stream_key = f"stream_url_{out['listen_target_stream']}"
+                if not out[stream_key]:
+                    raise ValueError(
+                        f"listen_target_stream points to empty {stream_key}; set a URL or choose preset"
+                    )
 
         return out
