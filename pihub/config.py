@@ -58,9 +58,9 @@ class Config:
         ble_serial_device = (os.getenv("BLE_SERIAL_DEVICE", "auto") or "auto").strip()
         ble_serial_baud = int(os.getenv("BLE_SERIAL_BAUD", "115200"))
 
-        http_server_host = os.getenv("http_server_host", "0.0.0.0")
+        http_server_host = os.getenv("HTTP_SERVER_HOST", "0.0.0.0")
         try:
-            http_server_port = int(os.getenv("http_server_port", "9123"))
+            http_server_port = int(os.getenv("HTTP_SERVER_PORT", "9123"))
         except ValueError:
             http_server_port = 9123
 
