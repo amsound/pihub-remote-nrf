@@ -1923,9 +1923,9 @@ button:hover {{
 
 .remote-main {{
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 40px;
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
   align-items: stretch;
-  gap: 0.3rem;
+  gap: 0.24rem;
   margin-top: 0.7rem;
   min-width: 0;
 }}
@@ -1947,7 +1947,7 @@ button:hover {{
 .side-stack {{
   display: grid;
   grid-template-rows: 1fr 1fr;
-  gap: 0.3rem;
+  gap: 0.24rem;
   min-width: 0;
 }}
 
@@ -2004,51 +2004,51 @@ button:hover {{
 .side-button {{
   min-height: 0;
   height: 100%;
-  font-size: 0.98rem;
+  font-size: 0.92rem;
   font-weight: 800;
   padding: 0;
 }}
 
 .dpad-wrap {{
   display: grid;
-  gap: 0.28rem;
-  justify-items: center;
+  gap: 0.22rem;
+  justify-items: stretch;
   min-width: 0;
   width: 100%;
 }}
 
 .dpad-row {{
   display: grid;
-  gap: 0.28rem;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 0.22rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 1fr);
   align-items: center;
   width: 100%;
 }}
 
 .dpad-row.center {{
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
 }}
 
 .dpad-spacer {{
-  min-height: 52px;
+  min-height: 60px;
 }}
 
 .dpad-button {{
-  min-height: 52px;
+  min-height: 60px;
   font-size: 0;
   padding: 0;
 }}
 
 .ok-button {{
-  min-height: 72px;
-  border-radius: 999px;
+  min-height: 60px;
+  border-radius: 16px;
   font-size: 0;
   padding: 0;
 }}
 
 .bottom-row {{
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 84px 1fr 1fr;
   gap: 0.5rem;
   margin-top: 0.55rem;
 }}
@@ -2136,8 +2136,8 @@ button:hover {{
   }}
 
   .remote-main {{
-    grid-template-columns: 34px minmax(0, 1fr) 34px;
-    gap: 0.22rem;
+    grid-template-columns: 30px minmax(0, 1fr) 30px;
+    gap: 0.18rem;
   }}
 
   .remote-main.volume-only .volume-stack {{
@@ -2149,40 +2149,41 @@ button:hover {{
     font-size: 0.9rem;
   }}
 
-  .side-stack {{
-    gap: 0.22rem;
-  }}
+.side-stack {{
+  gap: 0.18rem;
+}}
 
   .side-button {{
-    font-size: 0.92rem;
+    font-size: 0.86rem;
   }}
 
   .dpad-wrap {{
-    gap: 0.22rem;
+    gap: 0.18rem;
   }}
 
   .dpad-row {{
-    gap: 0.22rem;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr) minmax(0, 1fr);
+    gap: 0.18rem;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.28fr) minmax(0, 1fr);
   }}
 
   .dpad-row.center {{
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.34fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   }}
 
   .dpad-spacer {{
-    min-height: 46px;
+    min-height: 54px;
   }}
 
   .dpad-button {{
-    min-height: 46px;
+    min-height: 54px;
   }}
 
   .ok-button {{
-    min-height: 60px;
+    min-height: 54px;
   }}
 
   .bottom-row {{
+    grid-template-columns: 72px 1fr 1fr;
     gap: 0.42rem;
   }}
 
@@ -2354,6 +2355,15 @@ button:hover {{
 
           <div id="bottom-row" class="bottom-row">
             <button
+              id="toggle-number-pad"
+              type="button"
+              class="remote-button toggle-button"
+              aria-label="Number pad"
+              title="Number pad"
+            >
+              123
+            </button>
+            <button
               type="button"
               class="remote-button"
               data-kind="tap"
@@ -2372,15 +2382,6 @@ button:hover {{
               title="Menu"
             >
               ←
-            </button>
-            <button
-              id="toggle-number-pad"
-              type="button"
-              class="remote-button toggle-button"
-              aria-label="Number pad"
-              title="Number pad"
-            >
-              123
             </button>
           </div>
 
