@@ -2020,7 +2020,7 @@ button:hover {{
 .dpad-row {{
   display: grid;
   gap: 0.22rem;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   align-items: center;
   width: 100%;
 }}
@@ -2165,7 +2165,7 @@ button:hover {{
 
   .dpad-row {{
     gap: 0.18rem;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.28fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   }}
 
   .dpad-row.center {{
