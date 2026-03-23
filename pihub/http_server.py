@@ -1943,14 +1943,17 @@ button:hover {{
 .remote-main {{
   display: grid;
   grid-template-columns: 64px 1fr 64px;
-  align-items: center;
+  align-items: stretch;
   gap: 0.45rem;
   margin-top: 0.55rem;
 }}
 
 .side-stack {{
   display: grid;
-  gap: 0.45rem;
+  grid-template-rows: 1fr 1fr;
+  gap: 0.4rem;
+  height: 100%;
+  align-self: stretch;
 }}
 
 .remote-button {{
@@ -2002,7 +2005,8 @@ button:hover {{
 }}
 
 .side-button {{
-  min-height: 56px;
+  min-height: 0;
+  height: 100%;
   font-size: 1.15rem;
   font-weight: 800;
   padding: 0;
@@ -2122,20 +2126,25 @@ button:hover {{
     min-width: 72px;
   }}
 
-  .remote-main {{
-    grid-template-columns: 56px 1fr 56px;
-    gap: 0.35rem;
-    margin-top: 0.45rem;
-  }}
+.remote-main {{
+  grid-template-columns: 56px 1fr 56px;
+  align-items: stretch;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+}}
 
-  .side-stack {{
-    gap: 0.35rem;
-  }}
+.side-stack {{
+  grid-template-rows: 1fr 1fr;
+  gap: 0.35rem;
+  height: 100%;
+  align-self: stretch;
+}}
 
-  .side-button {{
-    min-height: 50px;
-    font-size: 1.05rem;
-  }}
+.side-button {{
+  min-height: 0;
+  height: 100%;
+  font-size: 1.05rem;
+}}
 
   .dpad-row {{
     gap: 0.35rem;
@@ -2247,7 +2256,7 @@ button:hover {{
                 </button>
               </div>
 
-              <div class="dpad-wrap">
+              <div class="dpad-wrap" style="height: 100%;">
                 <div class="dpad-row">
                   <div class="dpad-spacer"></div>
                   <button
