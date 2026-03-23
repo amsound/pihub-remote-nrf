@@ -1903,34 +1903,8 @@ button:hover {{
 {self._shared_dark_css()}
 
 .remote-wrap {{
-  max-width: 560px;
+  max-width: 520px;
   margin: 0 auto;
-}}
-
-.status-grid {{
-  display: grid;
-  gap: 0.55rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-bottom: 0.85rem;
-}}
-
-.status-card {{
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 0.7rem 0.8rem;
-}}
-
-.status-card .label {{
-  color: var(--muted);
-  font-size: 0.8rem;
-  margin-bottom: 0.2rem;
-}}
-
-.status-card .value {{
-  font-size: 0.95rem;
-  font-weight: 700;
-  word-break: break-word;
 }}
 
 .remote-panel {{
@@ -1942,31 +1916,30 @@ button:hover {{
 
 .remote-grid {{
   display: grid;
-  gap: 0.75rem;
+  gap: 0.7rem;
 }}
 
 .remote-top {{
   display: grid;
-  gap: 0.65rem;
-  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0.55rem;
 }}
 
-.remote-cluster {{
+.remote-top-row-two {{
   display: grid;
-  gap: 0.65rem;
   grid-template-columns: 1fr 1fr;
+  gap: 0.55rem;
 }}
 
 .remote-button {{
   appearance: none;
   width: 100%;
-  min-height: 58px;
+  min-height: 52px;
   border-radius: 16px;
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
   font: inherit;
-  font-size: 0.98rem;
+  font-size: 0.95rem;
   font-weight: 700;
   cursor: pointer;
   transition: transform 0.06s ease, border-color 0.12s ease, background 0.12s ease;
@@ -2005,57 +1978,90 @@ button:hover {{
   background: #2a1818;
 }}
 
-.remote-main {{
+.remote-centre {{
   display: grid;
-  gap: 0.75rem;
-  grid-template-columns: 88px 1fr 88px;
+  grid-template-columns: 64px 1fr 64px;
   align-items: center;
+  gap: 0.45rem;
 }}
 
 .side-stack {{
   display: grid;
-  gap: 0.65rem;
+  gap: 0.45rem;
 }}
 
 .side-button {{
-  min-height: 62px;
+  min-height: 56px;
+  font-size: 1.15rem;
+  font-weight: 800;
+  padding: 0;
 }}
 
 .dpad-wrap {{
   display: grid;
-  gap: 0.65rem;
+  gap: 0.4rem;
   justify-items: center;
 }}
 
 .dpad-row {{
   display: grid;
-  gap: 0.65rem;
-  grid-template-columns: 84px 84px 84px;
+  gap: 0.4rem;
+  grid-template-columns: 64px 64px 64px;
   align-items: center;
 }}
 
 .dpad-row.center {{
-  grid-template-columns: 84px 104px 84px;
+  grid-template-columns: 64px 78px 64px;
 }}
 
 .dpad-spacer {{
-  width: 84px;
-  height: 58px;
+  width: 64px;
+  height: 52px;
 }}
 
 .dpad-button {{
-  min-height: 58px;
+  min-height: 52px;
+  font-size: 0;
+  padding: 0;
 }}
 
 .ok-button {{
-  min-height: 76px;
+  min-height: 68px;
   border-radius: 999px;
+  font-size: 0;
+  padding: 0;
 }}
 
 .bottom-row {{
   display: grid;
-  gap: 0.65rem;
+  gap: 0.55rem;
   grid-template-columns: 1fr 1fr;
+}}
+
+.status-grid {{
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.8rem;
+}}
+
+.status-card {{
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.7rem 0.8rem;
+}}
+
+.status-card .label {{
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-bottom: 0.2rem;
+}}
+
+.status-card .value {{
+  font-size: 0.95rem;
+  font-weight: 700;
+  word-break: break-word;
 }}
 
 .toast {{
@@ -2087,21 +2093,54 @@ button:hover {{
   color: #fecaca;
 }}
 
-.remote-help {{
-  margin-top: 0.65rem;
-  color: var(--muted);
-  font-size: 0.88rem;
-  line-height: 1.4;
-}}
-
 @media (max-width: 640px) {{
   .remote-wrap {{
     max-width: 100%;
   }}
 
-  .status-grid {{
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.45rem;
+  .remote-panel {{
+    padding: 0.75rem;
+  }}
+
+  .remote-button {{
+    min-height: 48px;
+    font-size: 0.92rem;
+  }}
+
+  .remote-centre {{
+    grid-template-columns: 56px 1fr 56px;
+    gap: 0.35rem;
+  }}
+
+  .side-stack {{
+    gap: 0.35rem;
+  }}
+
+  .side-button {{
+    min-height: 50px;
+    font-size: 1.05rem;
+  }}
+
+  .dpad-row {{
+    gap: 0.35rem;
+    grid-template-columns: 56px 56px 56px;
+  }}
+
+  .dpad-row.center {{
+    grid-template-columns: 56px 68px 56px;
+  }}
+
+  .dpad-spacer {{
+    width: 56px;
+    height: 48px;
+  }}
+
+  .dpad-button {{
+    min-height: 48px;
+  }}
+
+  .ok-button {{
+    min-height: 60px;
   }}
 
   .status-card {{
@@ -2115,60 +2154,6 @@ button:hover {{
   .status-card .value {{
     font-size: 0.9rem;
   }}
-
-  .remote-top {{
-    gap: 0.55rem;
-  }}
-
-  .remote-cluster {{
-    gap: 0.55rem;
-  }}
-
-  .remote-button {{
-    min-height: 52px;
-    font-size: 0.94rem;
-  }}
-
-  .remote-main {{
-    grid-template-columns: 74px 1fr 74px;
-    gap: 0.6rem;
-  }}
-
-  .side-stack {{
-    gap: 0.55rem;
-  }}
-
-  .side-button {{
-    min-height: 56px;
-    font-size: 0.88rem;
-  }}
-
-  .dpad-row {{
-    gap: 0.55rem;
-    grid-template-columns: 72px 72px 72px;
-  }}
-
-  .dpad-row.center {{
-    grid-template-columns: 72px 88px 72px;
-  }}
-
-  .dpad-spacer {{
-    width: 72px;
-    height: 52px;
-  }}
-
-  .dpad-button {{
-    min-height: 52px;
-    font-size: 0.88rem;
-  }}
-
-  .ok-button {{
-    min-height: 68px;
-  }}
-
-  .bottom-row {{
-    gap: 0.55rem;
-  }}
 }}
   </style>
 </head>
@@ -2178,28 +2163,6 @@ button:hover {{
     <div class="remote-wrap">
       <section class="section">
         <h1>Remote</h1>
-        <p class="muted">First pass virtual remote. Mode buttons use safe tap actions. Volume and channel use edge down/up so hold works naturally later.</p>
-      </section>
-
-      <section class="section">
-        <div class="status-grid">
-          <div class="status-card">
-            <div class="label">Overall status</div>
-            <div class="value" id="remote-status">{self._html_escape(status)}</div>
-          </div>
-          <div class="status-card">
-            <div class="label">Current mode</div>
-            <div class="value" id="remote-mode">{self._html_escape(runtime.get("mode") or "—")}</div>
-          </div>
-          <div class="status-card">
-            <div class="label">Last flow</div>
-            <div class="value" id="remote-last-flow">{self._html_escape(runtime.get("last_flow") or "—")}</div>
-          </div>
-          <div class="status-card">
-            <div class="label">Flow running</div>
-            <div class="value" id="remote-flow-running">{self._html_escape("true" if runtime.get("flow_running") else "false")}</div>
-          </div>
-        </div>
       </section>
 
       <section class="remote-panel">
@@ -2217,18 +2180,7 @@ button:hover {{
               Off
             </button>
 
-            <div class="remote-cluster" style="grid-column: span 2;">
-              <button
-                type="button"
-                class="remote-button"
-                data-kind="tap"
-                data-key="rem_mode_1"
-                data-refresh="1"
-                data-target-mode="listen"
-                id="btn-listen"
-              >
-                Listen
-              </button>
+            <div class="remote-top-row-two">
               <button
                 type="button"
                 class="remote-button"
@@ -2240,45 +2192,95 @@ button:hover {{
               >
                 Watch
               </button>
+              <button
+                type="button"
+                class="remote-button"
+                data-kind="tap"
+                data-key="rem_mode_1"
+                data-refresh="1"
+                data-target-mode="listen"
+                id="btn-listen"
+              >
+                Listen
+              </button>
             </div>
           </div>
 
-          <div class="remote-main">
+          <div class="remote-centre">
             <div class="side-stack">
               <button
                 type="button"
                 class="remote-button side-button"
                 data-kind="edge"
                 data-key="rem_vol_up"
+                aria-label="Volume up"
+                title="Volume up"
               >
-                Vol+
+                +
               </button>
               <button
                 type="button"
                 class="remote-button side-button"
                 data-kind="edge"
                 data-key="rem_vol_down"
+                aria-label="Volume down"
+                title="Volume down"
               >
-                Vol-
+                -
               </button>
             </div>
 
             <div class="dpad-wrap">
               <div class="dpad-row">
                 <div class="dpad-spacer"></div>
-                <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_up">Up</button>
+                <button
+                  type="button"
+                  class="remote-button dpad-button"
+                  data-kind="tap"
+                  data-key="rem_dir_up"
+                  aria-label="Up"
+                  title="Up"
+                ></button>
                 <div class="dpad-spacer"></div>
               </div>
 
               <div class="dpad-row center">
-                <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_left">Left</button>
-                <button type="button" class="remote-button ok-button" data-kind="tap" data-key="rem_ok">OK</button>
-                <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_right">Right</button>
+                <button
+                  type="button"
+                  class="remote-button dpad-button"
+                  data-kind="tap"
+                  data-key="rem_dir_left"
+                  aria-label="Left"
+                  title="Left"
+                ></button>
+                <button
+                  type="button"
+                  class="remote-button ok-button"
+                  data-kind="tap"
+                  data-key="rem_ok"
+                  aria-label="OK"
+                  title="OK"
+                ></button>
+                <button
+                  type="button"
+                  class="remote-button dpad-button"
+                  data-kind="tap"
+                  data-key="rem_dir_right"
+                  aria-label="Right"
+                  title="Right"
+                ></button>
               </div>
 
               <div class="dpad-row">
                 <div class="dpad-spacer"></div>
-                <button type="button" class="remote-button dpad-button" data-kind="tap" data-key="rem_dir_down">Down</button>
+                <button
+                  type="button"
+                  class="remote-button dpad-button"
+                  data-kind="tap"
+                  data-key="rem_dir_down"
+                  aria-label="Down"
+                  title="Down"
+                ></button>
                 <div class="dpad-spacer"></div>
               </div>
             </div>
@@ -2289,16 +2291,20 @@ button:hover {{
                 class="remote-button side-button"
                 data-kind="edge"
                 data-key="rem_ch_up"
+                aria-label="Channel up"
+                title="Channel up"
               >
-                Ch+
+                ↑
               </button>
               <button
                 type="button"
                 class="remote-button side-button"
                 data-kind="edge"
                 data-key="rem_ch_down"
+                aria-label="Channel down"
+                title="Channel down"
               >
-                Ch-
+                ↓
               </button>
             </div>
           </div>
@@ -2308,7 +2314,7 @@ button:hover {{
               type="button"
               class="remote-button"
               data-kind="tap"
-              data-key="rem_back"
+              data-key="rem_exit"
             >
               Home
             </button>
@@ -2321,10 +2327,25 @@ button:hover {{
               Menu
             </button>
           </div>
-        </div>
 
-        <div class="remote-help">
-          Tap buttons send a safe logical remote tap. Volume and channel buttons use real down/up edges and release automatically if the pointer is cancelled or the page loses focus.
+          <div class="status-grid">
+            <div class="status-card">
+              <div class="label">Overall status</div>
+              <div class="value" id="remote-status">{self._html_escape(status)}</div>
+            </div>
+            <div class="status-card">
+              <div class="label">Current mode</div>
+              <div class="value" id="remote-mode">{self._html_escape(runtime.get("mode") or "—")}</div>
+            </div>
+            <div class="status-card">
+              <div class="label">Last flow</div>
+              <div class="value" id="remote-last-flow">{self._html_escape(runtime.get("last_flow") or "—")}</div>
+            </div>
+            <div class="status-card">
+              <div class="label">Flow running</div>
+              <div class="value" id="remote-flow-running">{self._html_escape("true" if runtime.get("flow_running") else "false")}</div>
+            </div>
+          </div>
         </div>
       </section>
     </div>
