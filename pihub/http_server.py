@@ -2202,6 +2202,18 @@ button:hover {{
   .status-card .value {{
     font-size: 0.9rem;
   }}
+
+  .bottom-row.numbers-only {{
+    grid-template-columns: 84px;
+    justify-content: start;
+  }}
+
+  @media (max-width: 640px) {{
+    .bottom-row.numbers-only {{
+      grid-template-columns: 72px;
+    }}
+  }}
+  
 }}
   </style>
 </head>
@@ -2368,6 +2380,7 @@ button:hover {{
               123
             </button>
             <button
+              id="btn-home"
               type="button"
               class="remote-button"
               data-kind="tap"
@@ -2378,6 +2391,7 @@ button:hover {{
               ⌂
             </button>
             <button
+              id="btn-menu"
               type="button"
               class="remote-button"
               data-kind="tap"
@@ -2440,6 +2454,9 @@ button:hover {{
       const modeEl = document.getElementById("remote-mode");
       const lastFlowEl = document.getElementById("remote-last-flow");
       const flowRunningEl = document.getElementById("remote-flow-running");
+
+      const homeBtnEl = document.getElementById("btn-home");
+      const menuBtnEl = document.getElementById("btn-menu");
 
       const activeModeButtons = {{
         power_off: document.getElementById("btn-power-off"),
@@ -2512,16 +2529,25 @@ button:hover {{
           channelStackEl.classList.toggle("hidden", soundbarListen);
         }}
 
-        if (bottomRowEl) {{
-          bottomRowEl.classList.toggle("hidden", audioProLikeListen || soundbarListen);
-        }}
-
         if (dirUpEl) {{
           dirUpEl.classList.toggle("hidden", audioProLikeListen);
         }}
 
         if (dirDownEl) {{
           dirDownEl.classList.toggle("hidden", audioProLikeListen);
+        }}
+
+        if (bottomRowEl) {{
+          bottomRowEl.classList.toggle("hidden", soundbarListen);
+          bottomRowEl.classList.toggle("numbers-only", audioProLikeListen);
+        }}
+
+        if (homeBtnEl) {{
+          homeBtnEl.classList.toggle("hidden", audioProLikeListen || soundbarListen);
+        }}
+
+        if (menuBtnEl) {{
+          menuBtnEl.classList.toggle("hidden", audioProLikeListen || soundbarListen);
         }}
 
         if (!numberPadOpen && numberPadEl) {{
