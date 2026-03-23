@@ -1882,6 +1882,7 @@ button:hover {{
         hostname = snapshot.get("pihub_id") or socket.gethostname()
         runtime = snapshot.get("runtime") or {}
         status = str(snapshot.get("status") or "unknown")
+        speaker_backend = str(self._speaker_backend or "").strip().lower()
 
         remote_snapshot = {
             "status": status,
@@ -1890,6 +1891,7 @@ button:hover {{
             "flow_running": runtime.get("flow_running"),
             "last_result": runtime.get("last_result"),
             "last_trigger": runtime.get("last_trigger"),
+            "speaker_backend": speaker_backend,
         }
         remote_snapshot_json = json.dumps(remote_snapshot)
 
@@ -1903,7 +1905,7 @@ button:hover {{
 {self._shared_dark_css()}
 
 .remote-wrap {{
-  max-width: 520px;
+  max-width: 620px;
   margin: 0 auto;
 }}
 
@@ -1911,17 +1913,17 @@ button:hover {{
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 18px;
-  padding: 0.9rem;
+  padding: 0.95rem;
 }}
 
 .remote-grid {{
   display: grid;
-  gap: 0.7rem;
+  gap: 0.8rem;
 }}
 
 .remote-top {{
   display: grid;
-  gap: 0.55rem;
+  gap: 0.6rem;
 }}
 
 .remote-top-off {{
@@ -1930,28 +1932,42 @@ button:hover {{
 }}
 
 .remote-top-off .remote-button.power {{
-  width: 24%;
-  min-width: 84px;
+  width: 22%;
+  min-width: 86px;
 }}
 
 .remote-top-row-two {{
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0.55rem;
+  gap: 0.6rem;
 }}
 
 .remote-main {{
   display: grid;
-  grid-template-columns: 64px 1fr 64px;
+  grid-template-columns: 78px 1fr 78px;
   align-items: stretch;
-  gap: 0.45rem;
-  margin-top: 0.55rem;
+  gap: 0.55rem;
+  margin-top: 0.95rem;
+}}
+
+.remote-main.volume-only {{
+  grid-template-columns: 1fr;
+  justify-items: center;
+}}
+
+.remote-main.volume-only .volume-stack {{
+  width: min(180px, 60%);
+}}
+
+.remote-main.volume-only .dpad-wrap,
+.remote-main.volume-only .channel-stack {{
+  display: none !important;
 }}
 
 .side-stack {{
   display: grid;
   grid-template-rows: 1fr 1fr;
-  gap: 0.4rem;
+  gap: 0.45rem;
   height: 100%;
   align-self: stretch;
 }}
@@ -1959,13 +1975,13 @@ button:hover {{
 .remote-button {{
   appearance: none;
   width: 100%;
-  min-height: 52px;
+  min-height: 54px;
   border-radius: 16px;
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
   font: inherit;
-  font-size: 0.95rem;
+  font-size: 0.98rem;
   font-weight: 700;
   cursor: pointer;
   transition: transform 0.06s ease, border-color 0.12s ease, background 0.12s ease;
@@ -2007,41 +2023,42 @@ button:hover {{
 .side-button {{
   min-height: 0;
   height: 100%;
-  font-size: 1.15rem;
+  font-size: 1.2rem;
   font-weight: 800;
   padding: 0;
 }}
 
 .dpad-wrap {{
   display: grid;
-  gap: 0.4rem;
+  gap: 0.45rem;
   justify-items: center;
+  height: 100%;
 }}
 
 .dpad-row {{
   display: grid;
-  gap: 0.4rem;
-  grid-template-columns: 64px 64px 64px;
+  gap: 0.45rem;
+  grid-template-columns: 74px 74px 74px;
   align-items: center;
 }}
 
 .dpad-row.center {{
-  grid-template-columns: 64px 78px 64px;
+  grid-template-columns: 74px 92px 74px;
 }}
 
 .dpad-spacer {{
-  width: 64px;
-  height: 52px;
+  width: 74px;
+  height: 54px;
 }}
 
 .dpad-button {{
-  min-height: 52px;
+  min-height: 54px;
   font-size: 0;
   padding: 0;
 }}
 
 .ok-button {{
-  min-height: 68px;
+  min-height: 76px;
   border-radius: 999px;
   font-size: 0;
   padding: 0;
@@ -2049,8 +2066,33 @@ button:hover {{
 
 .bottom-row {{
   display: grid;
-  gap: 0.55rem;
+  gap: 0.6rem;
   grid-template-columns: 1fr 1fr;
+}}
+
+.toggle-row {{
+  display: flex;
+  justify-content: center;
+}}
+
+.toggle-button {{
+  width: auto;
+  min-width: 110px;
+  padding: 0 1rem;
+}}
+
+.number-pad {{
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: repeat(3, 1fr);
+}}
+
+.number-pad.hidden {{
+  display: none !important;
+}}
+
+.hidden {{
+  display: none !important;
 }}
 
 .status-grid {{
@@ -2113,59 +2155,61 @@ button:hover {{
   }}
 
   .remote-panel {{
-    padding: 0.75rem;
+    padding: 0.8rem;
   }}
 
   .remote-button {{
-    min-height: 48px;
-    font-size: 0.92rem;
+    min-height: 50px;
+    font-size: 0.94rem;
   }}
 
   .remote-top-off .remote-button.power {{
-    width: 28%;
-    min-width: 72px;
+    width: 24%;
+    min-width: 74px;
   }}
 
-.remote-main {{
-  grid-template-columns: 56px 1fr 56px;
-  align-items: stretch;
-  gap: 0.35rem;
-  margin-top: 0.45rem;
-}}
+  .remote-main {{
+    grid-template-columns: 66px 1fr 66px;
+    gap: 0.45rem;
+    margin-top: 0.8rem;
+  }}
 
-.side-stack {{
-  grid-template-rows: 1fr 1fr;
-  gap: 0.35rem;
-  height: 100%;
-  align-self: stretch;
-}}
+  .remote-main.volume-only .volume-stack {{
+    width: min(160px, 64%);
+  }}
 
-.side-button {{
-  min-height: 0;
-  height: 100%;
-  font-size: 1.05rem;
-}}
+  .side-stack {{
+    gap: 0.38rem;
+  }}
+
+  .side-button {{
+    font-size: 1.08rem;
+  }}
+
+  .dpad-wrap {{
+    gap: 0.38rem;
+  }}
 
   .dpad-row {{
-    gap: 0.35rem;
-    grid-template-columns: 56px 56px 56px;
+    gap: 0.38rem;
+    grid-template-columns: 62px 62px 62px;
   }}
 
   .dpad-row.center {{
-    grid-template-columns: 56px 68px 56px;
+    grid-template-columns: 62px 78px 62px;
   }}
 
   .dpad-spacer {{
-    width: 56px;
-    height: 48px;
+    width: 62px;
+    height: 50px;
   }}
 
   .dpad-button {{
-    min-height: 48px;
+    min-height: 50px;
   }}
 
   .ok-button {{
-    min-height: 60px;
+    min-height: 68px;
   }}
 
   .status-card {{
@@ -2196,9 +2240,8 @@ button:hover {{
                 <button
                   type="button"
                   class="remote-button power"
-                  data-kind="tap"
-                  data-key="rem_power_off"
-                  data-refresh="1"
+                  data-kind="flow"
+                  data-flow="power_off"
                   data-target-mode="power_off"
                   id="btn-power-off"
                 >
@@ -2210,9 +2253,8 @@ button:hover {{
                 <button
                   type="button"
                   class="remote-button"
-                  data-kind="tap"
-                  data-key="rem_mode_2"
-                  data-refresh="1"
+                  data-kind="flow"
+                  data-flow="watch"
                   data-target-mode="watch"
                   id="btn-watch"
                 >
@@ -2221,9 +2263,8 @@ button:hover {{
                 <button
                   type="button"
                   class="remote-button"
-                  data-kind="tap"
-                  data-key="rem_mode_1"
-                  data-refresh="1"
+                  data-kind="flow"
+                  data-flow="listen"
                   data-target-mode="listen"
                   id="btn-listen"
                 >
@@ -2232,8 +2273,8 @@ button:hover {{
               </div>
             </div>
 
-            <div class="remote-main">
-              <div class="side-stack">
+            <div id="remote-centre" class="remote-main">
+              <div class="side-stack volume-stack">
                 <button
                   type="button"
                   class="remote-button side-button"
@@ -2256,10 +2297,11 @@ button:hover {{
                 </button>
               </div>
 
-              <div class="dpad-wrap" style="height: 100%;">
+              <div id="dpad-wrap" class="dpad-wrap">
                 <div class="dpad-row">
                   <div class="dpad-spacer"></div>
                   <button
+                    id="btn-dir-up"
                     type="button"
                     class="remote-button dpad-button"
                     data-kind="tap"
@@ -2300,6 +2342,7 @@ button:hover {{
                 <div class="dpad-row">
                   <div class="dpad-spacer"></div>
                   <button
+                    id="btn-dir-down"
                     type="button"
                     class="remote-button dpad-button"
                     data-kind="tap"
@@ -2311,7 +2354,7 @@ button:hover {{
                 </div>
               </div>
 
-              <div class="side-stack">
+              <div id="channel-stack" class="side-stack channel-stack">
                 <button
                   type="button"
                   class="remote-button side-button"
@@ -2335,7 +2378,7 @@ button:hover {{
               </div>
             </div>
 
-            <div class="bottom-row">
+            <div id="bottom-row" class="bottom-row">
               <button
                 type="button"
                 class="remote-button"
@@ -2352,6 +2395,31 @@ button:hover {{
               >
                 Menu
               </button>
+            </div>
+
+            <div id="toggle-row" class="toggle-row">
+              <button
+                id="toggle-number-pad"
+                type="button"
+                class="remote-button toggle-button"
+              >
+                123
+              </button>
+            </div>
+
+            <div id="number-pad" class="number-pad hidden">
+              <button type="button" class="remote-button" data-kind="tap" data-key="rem_1">1</button>
+              <button type="button" class="remote-button" data-kind="tap" data-key="rem_2">2</button>
+              <button type="button" class="remote-button" data-kind="tap" data-key="rem_3">3</button>
+              <button type="button" class="remote-button" data-kind="tap" data-key="rem_4">4</button>
+              <button type="button" class="remote-button" data-kind="tap" data-key="rem_5">5</button>
+              <button type="button" class="remote-button" data-kind="tap" data-key="rem_6">6</button>
+              <button type="button" class="remote-button" data-kind="tap" data-key="rem_7">7</button>
+              <button type="button" class="remote-button" data-kind="tap" data-key="rem_8">8</button>
+              <button type="button" class="remote-button" data-kind="tap" data-key="rem_9">9</button>
+              <div></div>
+              <button type="button" class="remote-button" data-kind="tap" data-key="rem_0">0</button>
+              <div></div>
             </div>
           </div>
         </div>
@@ -2398,7 +2466,20 @@ button:hover {{
         watch: document.getElementById("btn-watch")
       }};
 
+      const remoteCentreEl = document.getElementById("remote-centre");
+      const dpadWrapEl = document.getElementById("dpad-wrap");
+      const channelStackEl = document.getElementById("channel-stack");
+      const bottomRowEl = document.getElementById("bottom-row");
+      const toggleRowEl = document.getElementById("toggle-row");
+      const numberPadEl = document.getElementById("number-pad");
+      const numberToggleEl = document.getElementById("toggle-number-pad");
+      const dirUpEl = document.getElementById("btn-dir-up");
+      const dirDownEl = document.getElementById("btn-dir-down");
+
       const pressedEdgeButtons = new Map();
+
+      let currentBackend = String(initialState.speaker_backend || "").trim().toLowerCase();
+      let numberPadOpen = false;
 
       function showToast(message, isError) {{
         if (!toastEl) return;
@@ -2423,6 +2504,56 @@ button:hover {{
         }});
       }}
 
+      function isSoundbarBackend() {{
+        return currentBackend === "samsung_soundbar";
+      }}
+
+      function applyNumberPadVisibility() {{
+        if (!numberPadEl) return;
+        const isListen = String(modeEl ? modeEl.textContent : "").trim() === "listen";
+        const hideAllNumbers = isListen && isSoundbarBackend();
+        numberPadEl.classList.toggle("hidden", hideAllNumbers || !numberPadOpen);
+        if (toggleRowEl) {{
+          toggleRowEl.classList.toggle("hidden", hideAllNumbers);
+        }}
+      }}
+
+      function applyModeLayout(mode) {{
+        const isListen = mode === "listen";
+        const soundbarListen = isListen && isSoundbarBackend();
+        const audioProLikeListen = isListen && !isSoundbarBackend();
+
+        if (remoteCentreEl) {{
+          remoteCentreEl.classList.toggle("volume-only", soundbarListen);
+        }}
+
+        if (dpadWrapEl) {{
+          dpadWrapEl.classList.toggle("hidden", soundbarListen);
+        }}
+
+        if (channelStackEl) {{
+          channelStackEl.classList.toggle("hidden", soundbarListen);
+        }}
+
+        if (bottomRowEl) {{
+          bottomRowEl.classList.toggle("hidden", audioProLikeListen || soundbarListen);
+        }}
+
+        if (dirUpEl) {{
+          dirUpEl.classList.toggle("hidden", audioProLikeListen);
+        }}
+
+        if (dirDownEl) {{
+          dirDownEl.classList.toggle("hidden", audioProLikeListen);
+        }}
+
+        if (!numberPadOpen && numberPadEl) {{
+          numberPadEl.classList.add("hidden");
+        }}
+
+        applyNumberPadVisibility();
+      }}
+
       function updateStatusUi(data) {{
         const status = String((data && data.status) || "unknown");
         const runtime = (data && data.runtime) || {{}};
@@ -2433,6 +2564,7 @@ button:hover {{
         if (flowRunningEl) flowRunningEl.textContent = runtime.flow_running ? "true" : "false";
 
         setModeHighlight(String(runtime.mode || ""));
+        applyModeLayout(String(runtime.mode || ""));
       }}
 
       async function fetchHealth() {{
@@ -2477,7 +2609,7 @@ button:hover {{
           }}
 
           await new Promise(function (resolve) {{
-            window.setTimeout(resolve, 350);
+            window.setTimeout(resolve, 300);
           }});
         }}
 
@@ -2510,10 +2642,46 @@ button:hover {{
         return data;
       }}
 
+      function fireFlow(flowName) {{
+        postJson("/flow/run/" + encodeURIComponent(flowName), {{
+          trigger: "http.remote.flow"
+        }}).catch(function (err) {{
+          showToast(String(err), true);
+        }});
+      }}
+
+      async function handleFlowButton(el) {{
+        const flowName = el.getAttribute("data-flow") || "";
+        const targetMode = el.getAttribute("data-target-mode") || "";
+
+        setPressed(el, true);
+        try {{
+          fireFlow(flowName);
+
+          if (navigator.vibrate) {{
+            navigator.vibrate(10);
+          }}
+
+          if (targetMode) {{
+            setModeHighlight(targetMode);
+          }}
+
+          await new Promise(function (resolve) {{
+            window.setTimeout(resolve, 120);
+          }});
+
+          await settleModeRefresh(targetMode);
+        }} catch (err) {{
+          showToast(String(err), true);
+        }} finally {{
+          window.setTimeout(function () {{
+            setPressed(el, false);
+          }}, 90);
+        }}
+      }}
+
       async function handleTapButton(el) {{
         const key = el.getAttribute("data-key") || "";
-        const refresh = el.getAttribute("data-refresh") === "1";
-        const targetMode = el.getAttribute("data-target-mode") || "";
 
         setPressed(el, true);
         try {{
@@ -2523,13 +2691,6 @@ button:hover {{
 
           if (navigator.vibrate) {{
             navigator.vibrate(10);
-          }}
-
-          if (refresh) {{
-            if (targetMode) {{
-              setModeHighlight(targetMode);
-            }}
-            await settleModeRefresh(targetMode);
           }}
         }} catch (err) {{
           showToast(String(err), true);
@@ -2560,6 +2721,12 @@ button:hover {{
         }} catch (err) {{
           showToast(String(err), true);
         }}
+      }}
+
+      function attachFlow(el) {{
+        el.addEventListener("click", function () {{
+          handleFlowButton(el);
+        }});
       }}
 
       function attachTap(el) {{
@@ -2609,10 +2776,19 @@ button:hover {{
         const kind = el.getAttribute("data-kind");
         if (kind === "edge") {{
           attachEdge(el);
-        }} else {{
+        }} else if (kind === "flow") {{
+          attachFlow(el);
+        }} else if (kind === "tap") {{
           attachTap(el);
         }}
       }});
+
+      if (numberToggleEl) {{
+        numberToggleEl.addEventListener("click", function () {{
+          numberPadOpen = !numberPadOpen;
+          applyNumberPadVisibility();
+        }});
+      }}
 
       window.addEventListener("blur", function () {{
         Array.from(pressedEdgeButtons.keys()).forEach(function (el) {{
