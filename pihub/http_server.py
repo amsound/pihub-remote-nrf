@@ -2030,17 +2030,19 @@ button:hover {{
 }}
 
 .dpad-spacer {{
-  min-height: 60px;
+  min-height: 76px;
 }}
 
 .dpad-button {{
-  min-height: 60px;
+  min-height: 76px;
+  aspect-ratio: 1 / 1;
   font-size: 0;
   padding: 0;
 }}
 
 .ok-button {{
-  min-height: 60px;
+  min-height: 76px;
+  aspect-ratio: 1 / 1;
   border-radius: 16px;
   font-size: 0;
   padding: 0;
@@ -2149,9 +2151,9 @@ button:hover {{
     font-size: 0.9rem;
   }}
 
-.side-stack {{
-  gap: 0.18rem;
-}}
+  .side-stack {{
+    gap: 0.18rem;
+  }}
 
   .side-button {{
     font-size: 0.86rem;
@@ -2171,15 +2173,17 @@ button:hover {{
   }}
 
   .dpad-spacer {{
-    min-height: 54px;
+    min-height: 64px;
   }}
 
   .dpad-button {{
-    min-height: 54px;
+    min-height: 64px;
+    aspect-ratio: 1 / 1;
   }}
 
   .ok-button {{
-    min-height: 54px;
+    min-height: 64px;
+    aspect-ratio: 1 / 1;
   }}
 
   .bottom-row {{
