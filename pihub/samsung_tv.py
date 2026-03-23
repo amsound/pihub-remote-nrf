@@ -67,7 +67,6 @@ def send_wol(mac: str, *, port: int = 9, broadcast: str = "255.255.255.255") -> 
     finally:
         s.close()
 
-
 async def send_wol_burst(
     mac: str,
     *,
@@ -87,9 +86,41 @@ async def send_wol_burst(
         if idx + 1 < count:
             await asyncio.sleep(gap_s)
 
+def _default_wol_broadcasts(tv_ip: str) -> list[str]:
+    """
+    Return candidate broadcast targets for WoL.
+
+    We try both limited broadcast and a simple /24 directed broadcast derived
+    from the configured TV IP. This keeps behaviour explicit and avoids needing
+    full subnet discovery logic for now.
+    """
+    out: list[str] = ["255.255.255.255"]
+
+    parts = (tv_ip or "").strip().split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        directed = ".".join(parts[:3] + ["255"])
+        if directed not in out:
+            out.append(directed)
+
+    return out
+
+async def send_wol_once_multi(
+    mac: str,
+    *,
+    broadcasts: list[str],
+    port: int = 9,
+) -> None:
+    """
+    Send one WoL packet to each candidate broadcast target.
+    """
+    for broadcast in broadcasts:
+        try:
+            send_wol(mac, port=port, broadcast=broadcast)
+        except Exception:
+            logger.debug("tv wol send failed broadcast=%s", broadcast, exc_info=True)
+
 
 # --- Samsung websocket control plane ---
-
 
 def _b64_name(name: str) -> str:
     return base64.b64encode(name.encode("utf-8")).decode("ascii")
@@ -624,12 +655,15 @@ class TvController:
             # channel is gone.
 
             RECOVERY_WINDOW_S = 30.0
-            WOL_FAST_INTERVAL_S = 0.25
-            WOL_SLOW_INTERVAL_S = 1.0
-            WOL_FAST_WINDOW_S = 4.0
+
+            WOL_LOOP_INTERVAL_S = 0.15
+            WOL_PORT = 9
+            WOL_BROADCASTS = _default_wol_broadcasts(self.tv_ip)
+
             WS_FAST_INTERVAL_S = 0.25
             WS_SLOW_INTERVAL_S = 0.8
             WS_FAST_WINDOW_S = 2.0
+
             HTTP_PROBE_INTERVAL_S = 1.0
             HTTP_PROBE_START_DELAY_S = 2.0
 
@@ -651,20 +685,17 @@ class TvController:
                     await self.ws.connect(self._session)
                     return True
 
-                wol_interval_s = WOL_FAST_INTERVAL_S if elapsed < WOL_FAST_WINDOW_S else WOL_SLOW_INTERVAL_S
                 ws_interval_s = WS_FAST_INTERVAL_S if elapsed < WS_FAST_WINDOW_S else WS_SLOW_INTERVAL_S
 
-                if (now - last_wol) >= wol_interval_s:
+                if (now - last_wol) >= WOL_LOOP_INTERVAL_S:
                     try:
-                        await send_wol_burst(
+                        await send_wol_once_multi(
                             self.tv_mac,
-                            count=5,
-                            gap_s=0.20,
-                            port=9,
-                            broadcast="255.255.255.255",
+                            broadcasts=WOL_BROADCASTS,
+                            port=WOL_PORT,
                         )
                     except Exception:
-                        logger.debug("tv wol burst failed", exc_info=True)
+                        logger.debug("tv wol loop send failed", exc_info=True)
                     last_wol = now
 
                 ws_connected_now = self.ws.state.connected
