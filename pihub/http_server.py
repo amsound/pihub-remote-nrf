@@ -1923,9 +1923,9 @@ button:hover {{
 
 .remote-main {{
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) 52px;
+  grid-template-columns: 40px minmax(0, 1fr) 40px;
   align-items: stretch;
-  gap: 0.35rem;
+  gap: 0.3rem;
   margin-top: 0.7rem;
   min-width: 0;
 }}
@@ -1947,7 +1947,7 @@ button:hover {{
 .side-stack {{
   display: grid;
   grid-template-rows: 1fr 1fr;
-  gap: 0.35rem;
+  gap: 0.3rem;
   min-width: 0;
 }}
 
@@ -2004,42 +2004,43 @@ button:hover {{
 .side-button {{
   min-height: 0;
   height: 100%;
-  font-size: 1.05rem;
+  font-size: 0.98rem;
   font-weight: 800;
   padding: 0;
 }}
 
 .dpad-wrap {{
   display: grid;
-  gap: 0.32rem;
+  gap: 0.28rem;
   justify-items: center;
   min-width: 0;
+  width: 100%;
 }}
 
 .dpad-row {{
   display: grid;
-  gap: 0.32rem;
-  grid-template-columns: 58px 58px 58px;
+  gap: 0.28rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr);
   align-items: center;
+  width: 100%;
 }}
 
 .dpad-row.center {{
-  grid-template-columns: 58px 72px 58px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr);
 }}
 
 .dpad-spacer {{
-  width: 58px;
-  height: 48px;
+  min-height: 52px;
 }}
 
 .dpad-button {{
-  min-height: 48px;
+  min-height: 52px;
   font-size: 0;
   padding: 0;
 }}
 
 .ok-button {{
-  min-height: 64px;
+  min-height: 72px;
   border-radius: 999px;
   font-size: 0;
   padding: 0;
@@ -2135,8 +2136,8 @@ button:hover {{
   }}
 
   .remote-main {{
-    grid-template-columns: 44px minmax(0, 1fr) 44px;
-    gap: 0.28rem;
+    grid-template-columns: 34px minmax(0, 1fr) 34px;
+    gap: 0.22rem;
   }}
 
   .remote-main.volume-only .volume-stack {{
@@ -2149,37 +2150,36 @@ button:hover {{
   }}
 
   .side-stack {{
-    gap: 0.28rem;
+    gap: 0.22rem;
   }}
 
   .side-button {{
-    font-size: 0.98rem;
+    font-size: 0.92rem;
   }}
 
   .dpad-wrap {{
-    gap: 0.26rem;
+    gap: 0.22rem;
   }}
 
   .dpad-row {{
-    gap: 0.26rem;
-    grid-template-columns: 48px 48px 48px;
+    gap: 0.22rem;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr) minmax(0, 1fr);
   }}
 
   .dpad-row.center {{
-    grid-template-columns: 48px 60px 48px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.34fr) minmax(0, 1fr);
   }}
 
   .dpad-spacer {{
-    width: 48px;
-    height: 44px;
+    min-height: 46px;
   }}
 
   .dpad-button {{
-    min-height: 44px;
+    min-height: 46px;
   }}
 
   .ok-button {{
-    min-height: 56px;
+    min-height: 60px;
   }}
 
   .bottom-row {{
@@ -2271,7 +2271,7 @@ button:hover {{
               </button>
             </div>
 
-            <div id="dpad-wrap" class="dpad-wrap">
+            <div id="dpad-wrap" class="dpad-wrap" style="justify-items: stretch;">
               <div class="dpad-row">
                 <div class="dpad-spacer"></div>
                 <button
@@ -2361,7 +2361,7 @@ button:hover {{
               aria-label="Home"
               title="Home"
             >
-              ⎋
+              ⌂
             </button>
             <button
               type="button"
