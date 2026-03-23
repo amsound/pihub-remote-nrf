@@ -1923,9 +1923,9 @@ button:hover {{
 
 .remote-main {{
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) 36px;
+  grid-template-columns: 42px minmax(0, 1fr) 42px;
   align-items: stretch;
-  gap: 0.24rem;
+  gap: 0.34rem;
   margin-top: 0.7rem;
   min-width: 0;
 }}
@@ -2138,8 +2138,8 @@ button:hover {{
   }}
 
   .remote-main {{
-    grid-template-columns: 30px minmax(0, 1fr) 30px;
-    gap: 0.18rem;
+    grid-template-columns: 34px minmax(0, 1fr) 34px;
+    gap: 0.26rem;
   }}
 
   .remote-main.volume-only .volume-stack {{
