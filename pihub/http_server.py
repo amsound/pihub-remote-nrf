@@ -1924,10 +1924,33 @@ button:hover {{
   gap: 0.55rem;
 }}
 
+.remote-top-off {{
+  display: flex;
+  justify-content: flex-start;
+}}
+
+.remote-top-off .remote-button.power {{
+  width: 24%;
+  min-width: 84px;
+}}
+
 .remote-top-row-two {{
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.55rem;
+}}
+
+.remote-main {{
+  display: grid;
+  grid-template-columns: 64px 1fr 64px;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.55rem;
+}}
+
+.side-stack {{
+  display: grid;
+  gap: 0.45rem;
 }}
 
 .remote-button {{
@@ -1976,18 +1999,6 @@ button:hover {{
 
 .remote-button.power:hover {{
   background: #2a1818;
-}}
-
-.remote-centre {{
-  display: grid;
-  grid-template-columns: 64px 1fr 64px;
-  align-items: center;
-  gap: 0.45rem;
-}}
-
-.side-stack {{
-  display: grid;
-  gap: 0.45rem;
 }}
 
 .side-button {{
@@ -2042,7 +2053,6 @@ button:hover {{
   display: grid;
   gap: 0.55rem;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 0.8rem;
 }}
 
 .status-card {{
@@ -2107,9 +2117,15 @@ button:hover {{
     font-size: 0.92rem;
   }}
 
-  .remote-centre {{
+  .remote-top-off .remote-button.power {{
+    width: 28%;
+    min-width: 72px;
+  }}
+
+  .remote-main {{
     grid-template-columns: 56px 1fr 56px;
     gap: 0.35rem;
+    margin-top: 0.45rem;
   }}
 
   .side-stack {{
@@ -2163,188 +2179,192 @@ button:hover {{
     <div class="remote-wrap">
       <section class="section">
         <h1>Remote</h1>
+
+        <div class="remote-panel">
+          <div class="remote-grid">
+            <div class="remote-top">
+              <div class="remote-top-off">
+                <button
+                  type="button"
+                  class="remote-button power"
+                  data-kind="tap"
+                  data-key="rem_power_off"
+                  data-refresh="1"
+                  data-target-mode="power_off"
+                  id="btn-power-off"
+                >
+                  Off
+                </button>
+              </div>
+
+              <div class="remote-top-row-two">
+                <button
+                  type="button"
+                  class="remote-button"
+                  data-kind="tap"
+                  data-key="rem_mode_2"
+                  data-refresh="1"
+                  data-target-mode="watch"
+                  id="btn-watch"
+                >
+                  Watch
+                </button>
+                <button
+                  type="button"
+                  class="remote-button"
+                  data-kind="tap"
+                  data-key="rem_mode_1"
+                  data-refresh="1"
+                  data-target-mode="listen"
+                  id="btn-listen"
+                >
+                  Listen
+                </button>
+              </div>
+            </div>
+
+            <div class="remote-main">
+              <div class="side-stack">
+                <button
+                  type="button"
+                  class="remote-button side-button"
+                  data-kind="edge"
+                  data-key="rem_vol_up"
+                  aria-label="Volume up"
+                  title="Volume up"
+                >
+                  +
+                </button>
+                <button
+                  type="button"
+                  class="remote-button side-button"
+                  data-kind="edge"
+                  data-key="rem_vol_down"
+                  aria-label="Volume down"
+                  title="Volume down"
+                >
+                  -
+                </button>
+              </div>
+
+              <div class="dpad-wrap">
+                <div class="dpad-row">
+                  <div class="dpad-spacer"></div>
+                  <button
+                    type="button"
+                    class="remote-button dpad-button"
+                    data-kind="tap"
+                    data-key="rem_dir_up"
+                    aria-label="Up"
+                    title="Up"
+                  ></button>
+                  <div class="dpad-spacer"></div>
+                </div>
+
+                <div class="dpad-row center">
+                  <button
+                    type="button"
+                    class="remote-button dpad-button"
+                    data-kind="tap"
+                    data-key="rem_dir_left"
+                    aria-label="Left"
+                    title="Left"
+                  ></button>
+                  <button
+                    type="button"
+                    class="remote-button ok-button"
+                    data-kind="tap"
+                    data-key="rem_ok"
+                    aria-label="OK"
+                    title="OK"
+                  ></button>
+                  <button
+                    type="button"
+                    class="remote-button dpad-button"
+                    data-kind="tap"
+                    data-key="rem_dir_right"
+                    aria-label="Right"
+                    title="Right"
+                  ></button>
+                </div>
+
+                <div class="dpad-row">
+                  <div class="dpad-spacer"></div>
+                  <button
+                    type="button"
+                    class="remote-button dpad-button"
+                    data-kind="tap"
+                    data-key="rem_dir_down"
+                    aria-label="Down"
+                    title="Down"
+                  ></button>
+                  <div class="dpad-spacer"></div>
+                </div>
+              </div>
+
+              <div class="side-stack">
+                <button
+                  type="button"
+                  class="remote-button side-button"
+                  data-kind="edge"
+                  data-key="rem_ch_up"
+                  aria-label="Channel up"
+                  title="Channel up"
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  class="remote-button side-button"
+                  data-kind="edge"
+                  data-key="rem_ch_down"
+                  aria-label="Channel down"
+                  title="Channel down"
+                >
+                  ↓
+                </button>
+              </div>
+            </div>
+
+            <div class="bottom-row">
+              <button
+                type="button"
+                class="remote-button"
+                data-kind="tap"
+                data-key="rem_exit"
+              >
+                Home
+              </button>
+              <button
+                type="button"
+                class="remote-button"
+                data-kind="tap"
+                data-key="rem_menu"
+              >
+                Menu
+              </button>
+            </div>
+          </div>
+        </div>
       </section>
 
-      <section class="remote-panel">
-        <div class="remote-grid">
-          <div class="remote-top">
-            <button
-              type="button"
-              class="remote-button power"
-              data-kind="tap"
-              data-key="rem_power_off"
-              data-refresh="1"
-              data-target-mode="power_off"
-              id="btn-power-off"
-            >
-              Off
-            </button>
-
-            <div class="remote-top-row-two">
-              <button
-                type="button"
-                class="remote-button"
-                data-kind="tap"
-                data-key="rem_mode_2"
-                data-refresh="1"
-                data-target-mode="watch"
-                id="btn-watch"
-              >
-                Watch
-              </button>
-              <button
-                type="button"
-                class="remote-button"
-                data-kind="tap"
-                data-key="rem_mode_1"
-                data-refresh="1"
-                data-target-mode="listen"
-                id="btn-listen"
-              >
-                Listen
-              </button>
-            </div>
+      <section class="section">
+        <div class="status-grid">
+          <div class="status-card">
+            <div class="label">Overall status</div>
+            <div class="value" id="remote-status">{self._html_escape(status)}</div>
           </div>
-
-          <div class="remote-centre">
-            <div class="side-stack">
-              <button
-                type="button"
-                class="remote-button side-button"
-                data-kind="edge"
-                data-key="rem_vol_up"
-                aria-label="Volume up"
-                title="Volume up"
-              >
-                +
-              </button>
-              <button
-                type="button"
-                class="remote-button side-button"
-                data-kind="edge"
-                data-key="rem_vol_down"
-                aria-label="Volume down"
-                title="Volume down"
-              >
-                -
-              </button>
-            </div>
-
-            <div class="dpad-wrap">
-              <div class="dpad-row">
-                <div class="dpad-spacer"></div>
-                <button
-                  type="button"
-                  class="remote-button dpad-button"
-                  data-kind="tap"
-                  data-key="rem_dir_up"
-                  aria-label="Up"
-                  title="Up"
-                ></button>
-                <div class="dpad-spacer"></div>
-              </div>
-
-              <div class="dpad-row center">
-                <button
-                  type="button"
-                  class="remote-button dpad-button"
-                  data-kind="tap"
-                  data-key="rem_dir_left"
-                  aria-label="Left"
-                  title="Left"
-                ></button>
-                <button
-                  type="button"
-                  class="remote-button ok-button"
-                  data-kind="tap"
-                  data-key="rem_ok"
-                  aria-label="OK"
-                  title="OK"
-                ></button>
-                <button
-                  type="button"
-                  class="remote-button dpad-button"
-                  data-kind="tap"
-                  data-key="rem_dir_right"
-                  aria-label="Right"
-                  title="Right"
-                ></button>
-              </div>
-
-              <div class="dpad-row">
-                <div class="dpad-spacer"></div>
-                <button
-                  type="button"
-                  class="remote-button dpad-button"
-                  data-kind="tap"
-                  data-key="rem_dir_down"
-                  aria-label="Down"
-                  title="Down"
-                ></button>
-                <div class="dpad-spacer"></div>
-              </div>
-            </div>
-
-            <div class="side-stack">
-              <button
-                type="button"
-                class="remote-button side-button"
-                data-kind="edge"
-                data-key="rem_ch_up"
-                aria-label="Channel up"
-                title="Channel up"
-              >
-                ↑
-              </button>
-              <button
-                type="button"
-                class="remote-button side-button"
-                data-kind="edge"
-                data-key="rem_ch_down"
-                aria-label="Channel down"
-                title="Channel down"
-              >
-                ↓
-              </button>
-            </div>
+          <div class="status-card">
+            <div class="label">Current mode</div>
+            <div class="value" id="remote-mode">{self._html_escape(runtime.get("mode") or "—")}</div>
           </div>
-
-          <div class="bottom-row">
-            <button
-              type="button"
-              class="remote-button"
-              data-kind="tap"
-              data-key="rem_exit"
-            >
-              Home
-            </button>
-            <button
-              type="button"
-              class="remote-button"
-              data-kind="tap"
-              data-key="rem_menu"
-            >
-              Menu
-            </button>
+          <div class="status-card">
+            <div class="label">Last flow</div>
+            <div class="value" id="remote-last-flow">{self._html_escape(runtime.get("last_flow") or "—")}</div>
           </div>
-
-          <div class="status-grid">
-            <div class="status-card">
-              <div class="label">Overall status</div>
-              <div class="value" id="remote-status">{self._html_escape(status)}</div>
-            </div>
-            <div class="status-card">
-              <div class="label">Current mode</div>
-              <div class="value" id="remote-mode">{self._html_escape(runtime.get("mode") or "—")}</div>
-            </div>
-            <div class="status-card">
-              <div class="label">Last flow</div>
-              <div class="value" id="remote-last-flow">{self._html_escape(runtime.get("last_flow") or "—")}</div>
-            </div>
-            <div class="status-card">
-              <div class="label">Flow running</div>
-              <div class="value" id="remote-flow-running">{self._html_escape("true" if runtime.get("flow_running") else "false")}</div>
-            </div>
+          <div class="status-card">
+            <div class="label">Flow running</div>
+            <div class="value" id="remote-flow-running">{self._html_escape("true" if runtime.get("flow_running") else "false")}</div>
           </div>
         </div>
       </section>
