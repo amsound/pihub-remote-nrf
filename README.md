@@ -82,12 +82,10 @@ services:
     volumes:
       - /home/pi/pihub-data:/data
       - /dev/input:/dev/input:ro
-      - /dev/input/by-id:/dev/input/by-id:ro
       - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
 
     devices:
-      - /dev/serial/by-id/usb-ZEPHYR_USB-DEV_425DAED15E820B58-if00:/dev/ttyACM0
+      - /dev/ttyACM0:/dev/ttyACM0
 
     group_add:
       - dialout
