@@ -51,7 +51,7 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 
 ```yaml
 services:
-  pihub:
+  pihub-nrf:
     image: a1exm/pihub-nrf:latest
     container_name: pihub-nrf
     init: true
