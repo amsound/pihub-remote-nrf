@@ -77,7 +77,7 @@ services:
       # Samsung SmartThings soundbar
       # SMARTTHINGS_DEVICE_ID: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
-#      DEBUG: 1           # Verbose Logging
+      # DEBUG: 1           # Verbose Logging
 
     volumes:
       - /home/pi/pihub-data:/data
