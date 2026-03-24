@@ -664,8 +664,8 @@ class TvController:
             WS_SLOW_INTERVAL_S = 0.8
             WS_FAST_WINDOW_S = 2.0
 
-            HTTP_PROBE_INTERVAL_S = 1.0
-            HTTP_PROBE_START_DELAY_S = 2.0
+            HTTP_PROBE_INTERVAL_S = 0.5
+            HTTP_PROBE_START_DELAY_S = 1.0
 
             rescue_recent_off = (
                 self._last_power_off_request_ts is not None
@@ -699,7 +699,7 @@ class TvController:
                     last_wol = now
 
                 ws_connected_now = self.ws.state.connected
-                if not ws_connected_now and (now - last_ws_attempt) >= ws_interval_s:
+                if rescue_recent_off and not ws_connected_now and (now - last_ws_attempt) >= ws_interval_s:
                     last_ws_attempt = now
                     try:
                         ws_connected_now = await self.ws.connect(self._session)
