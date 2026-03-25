@@ -1936,12 +1936,44 @@ button:hover {{
 }}
 
 .remote-main.volume-only .volume-stack {{
-  width: min(150px, 58%);
+  width: 84px;
+  max-width: 84px;
+  min-width: 84px;
+}}
+
+.remote-main.volume-only .side-stack {{
+  grid-template-rows: 64px 64px;
+  gap: 0.5rem;
+}}
+
+.remote-main.volume-only .side-button {{
+  min-height: 64px;
+  height: 64px;
+  font-size: 1.05rem;
 }}
 
 .remote-main.volume-only .dpad-wrap,
 .remote-main.volume-only .channel-stack {{
   display: none !important;
+}}
+
+@media (max-width: 640px) {{
+  .remote-main.volume-only .volume-stack {{
+    width: 72px;
+    max-width: 72px;
+    min-width: 72px;
+  }}
+
+  .remote-main.volume-only .side-stack {{
+    grid-template-rows: 56px 56px;
+    gap: 0.42rem;
+  }}
+
+  .remote-main.volume-only .side-button {{
+    min-height: 56px;
+    height: 56px;
+    font-size: 1rem;
+  }}
 }}
 
 .side-stack {{
@@ -2269,7 +2301,7 @@ button:hover {{
               <button
                 type="button"
                 class="remote-button side-button"
-                data-kind="edge"
+                data-kind="tap"
                 data-key="rem_vol_up"
                 aria-label="Volume up"
                 title="Volume up"
@@ -2279,7 +2311,7 @@ button:hover {{
               <button
                 type="button"
                 class="remote-button side-button"
-                data-kind="edge"
+                data-kind="tap"
                 data-key="rem_vol_down"
                 aria-label="Volume down"
                 title="Volume down"
@@ -2349,7 +2381,7 @@ button:hover {{
               <button
                 type="button"
                 class="remote-button side-button"
-                data-kind="edge"
+                data-kind="tap"
                 data-key="rem_ch_up"
                 aria-label="Channel up"
                 title="Channel up"
@@ -2359,7 +2391,7 @@ button:hover {{
               <button
                 type="button"
                 class="remote-button side-button"
-                data-kind="edge"
+                data-kind="tap"
                 data-key="rem_ch_down"
                 aria-label="Channel down"
                 title="Channel down"
@@ -2449,6 +2481,7 @@ button:hover {{
     (function () {{
       const initialState = JSON.parse({json.dumps(remote_snapshot_json)});
       const toastEl = document.getElementById("remote-toast");
+      const numberPadWrapEl = document.getElementById("number-pad");
 
       const statusEl = document.getElementById("remote-status");
       const modeEl = document.getElementById("remote-mode");
@@ -2506,52 +2539,66 @@ button:hover {{
       }}
 
       function applyNumberPadVisibility() {{
-        if (!numberPadEl) return;
-        const isListen = String(modeEl ? modeEl.textContent : "").trim() === "listen";
-        const hideAllNumbers = isListen && isSoundbarBackend();
+        if (!numberPadEl || !modeEl) return;
+
+        const mode = String(modeEl.textContent || "").trim();
+        const isListen = mode === "listen";
+        const isPowerOff = mode === "power_off";
+        const hideAllNumbers = isPowerOff || (isListen && isSoundbarBackend());
+
         numberPadEl.classList.toggle("hidden", hideAllNumbers || !numberPadOpen);
       }}
 
       function applyModeLayout(mode) {{
         const isListen = mode === "listen";
+        const isPowerOff = mode === "power_off";
         const soundbarListen = isListen && isSoundbarBackend();
         const audioProLikeListen = isListen && !isSoundbarBackend();
 
         if (remoteCentreEl) {{
+          remoteCentreEl.classList.toggle("hidden", isPowerOff);
           remoteCentreEl.classList.toggle("volume-only", soundbarListen);
         }}
 
         if (dpadWrapEl) {{
-          dpadWrapEl.classList.toggle("hidden", soundbarListen);
+          dpadWrapEl.classList.toggle("hidden", isPowerOff || soundbarListen);
         }}
 
         if (channelStackEl) {{
-          channelStackEl.classList.toggle("hidden", soundbarListen);
+          channelStackEl.classList.toggle("hidden", isPowerOff || soundbarListen);
         }}
 
         if (dirUpEl) {{
-          dirUpEl.classList.toggle("hidden", audioProLikeListen);
+          dirUpEl.classList.toggle("hidden", isPowerOff || audioProLikeListen);
         }}
 
         if (dirDownEl) {{
-          dirDownEl.classList.toggle("hidden", audioProLikeListen);
+          dirDownEl.classList.toggle("hidden", isPowerOff || audioProLikeListen);
         }}
 
         if (bottomRowEl) {{
-          bottomRowEl.classList.toggle("hidden", soundbarListen);
-          bottomRowEl.classList.toggle("numbers-only", audioProLikeListen);
+          bottomRowEl.classList.toggle("hidden", isPowerOff || soundbarListen);
+          bottomRowEl.classList.toggle("numbers-only", !isPowerOff && audioProLikeListen);
         }}
 
         if (homeBtnEl) {{
-          homeBtnEl.classList.toggle("hidden", audioProLikeListen || soundbarListen);
+          homeBtnEl.classList.toggle("hidden", isPowerOff || audioProLikeListen || soundbarListen);
         }}
 
         if (menuBtnEl) {{
-          menuBtnEl.classList.toggle("hidden", audioProLikeListen || soundbarListen);
+          menuBtnEl.classList.toggle("hidden", isPowerOff || audioProLikeListen || soundbarListen);
         }}
 
-        if (!numberPadOpen && numberPadEl) {{
-          numberPadEl.classList.add("hidden");
+        if (numberToggleEl) {{
+          numberToggleEl.classList.toggle("hidden", isPowerOff);
+        }}
+
+        if (numberPadWrapEl) {{
+          if (isPowerOff) {{
+            numberPadWrapEl.classList.add("hidden");
+          }} else if (!numberPadOpen) {{
+            numberPadWrapEl.classList.add("hidden");
+          }}
         }}
 
         applyNumberPadVisibility();
