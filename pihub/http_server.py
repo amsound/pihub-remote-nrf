@@ -917,43 +917,126 @@ pre.json {{
                 for item in items
             )
 
-        def domain_card(title: str, data: dict, details_keys: list[str]) -> str:
+        def bool_mark(value: object, *, yes: str = "✅", no: str = "—") -> str:
+            return yes if bool(value) else no
+
+        def fmt_age_seconds(value: object) -> str:
+            try:
+                n = int(value)
+            except Exception:
+                return "—"
+            return f"{n}s ago"
+
+        def fmt_volume(value: object) -> str:
+            try:
+                n = int(value)
+            except Exception:
+                return "—"
+            return f"{n}%"
+
+        def pretty_source(value: object) -> str:
+            text = str(value or "").strip()
+            if not text:
+                return "—"
+            return text.replace("_", " ")
+
+        def pretty_text(value: object) -> str:
+            text = str(value or "").strip()
+            return text if text else "—"
+
+        def live_row(label: str, value: str) -> str:
+            return (
+                f'<div class="live-row">'
+                f'<span class="live-label">{self._html_escape(label)}</span>'
+                f'<span class="live-value">{self._html_escape(value)}</span>'
+                f'</div>'
+            )
+
+        def domain_card(title: str, data: dict) -> str:
             status = str(data.get("status") or "unknown")
             details = data.get("details") or {}
-            rows = [
-                kv_row("Configured", data.get("configured")),
-                kv_row("Enabled", data.get("enabled")),
-                kv_row("Present", data.get("present")),
-                kv_row("Link up", data.get("link_up")),
-                kv_row("Link ready", data.get("link_ready")),
-            ]
+            reasons = data.get("reasons") or []
+            last_error = data.get("last_error")
 
-            if data.get("path") is not None:
-                rows.append(kv_row("Path", data.get("path")))
+            rows: list[str] = []
 
-            for key in details_keys:
-                if key not in details:
-                    continue
+            if title == "USB":
+                rows.append(live_row("Remote paired", bool_mark(details.get("paired_remote"))))
+                rows.append(live_row("Reader running", bool_mark(details.get("reader_running"))))
+                rows.append(live_row("Input grabbed", bool_mark(details.get("grabbed"))))
 
-                if key == "conn_params" and isinstance(details.get(key), dict):
-                    cp = details.get(key) or {}
-                    interval_ms = cp.get("interval_ms")
-                    latency = cp.get("latency")
-                    timeout_ms = cp.get("timeout_ms")
-                    compact = f"{interval_ms} / {latency} / {timeout_ms}"
-                    rows.append(kv_row("Conn params", compact))
-                    continue
+                if not bool(details.get("input_open")):
+                    rows.append(live_row("Input open", "—"))
+                if status != "ok" and data.get("path"):
+                    rows.append(live_row("Path", pretty_text(data.get("path"))))
 
-                rows.append(kv_row(key.replace("_", " ").title(), details.get(key)))
+            elif title == "BLE":
+                rows.append(live_row("Connected", bool_mark(details.get("connected"))))
+                rows.append(live_row("Ready", bool_mark(data.get("link_ready"))))
+
+                cp = details.get("conn_params") or {}
+                interval_ms = cp.get("interval_ms")
+                latency = cp.get("latency")
+                timeout_ms = cp.get("timeout_ms")
+                if interval_ms is not None or latency is not None or timeout_ms is not None:
+                    rows.append(
+                        live_row(
+                            "Conn params",
+                            f"{interval_ms or '—'} / {latency or 0} / {timeout_ms or '—'}",
+                        )
+                    )
+
+                if not bool(details.get("connected")) and bool(details.get("advertising")):
+                    rows.append(live_row("Advertising", "✅"))
+
+                last_disc_reason = pretty_text(details.get("last_disc_reason"))
+                if last_disc_reason != "—":
+                    rows.append(live_row("Last disconnect", last_disc_reason))
+
+            elif title == "TV":
+                presence_on = details.get("presence_on")
+                if presence_on is True:
+                    rows.append(live_row("TV", "On"))
+                elif presence_on is False:
+                    rows.append(live_row("TV", "Off"))
+                else:
+                    rows.append(live_row("TV", "Unknown"))
+
+                rows.append(live_row("Source", pretty_source(details.get("presence_source"))))
+
+                if details.get("last_change_age_s") is not None:
+                    rows.append(live_row("Changed", fmt_age_seconds(details.get("last_change_age_s"))))
+
+                if status != "ok":
+                    rows.append(live_row("WebSocket", bool_mark(details.get("ws_connected"))))
+                    if details.get("token_present") is False:
+                        rows.append(live_row("Token", "—"))
+
+            elif title == "Speaker":
+                rows.append(live_row("Backend", pretty_text(details.get("backend"))))
+                rows.append(live_row("Source", pretty_source(details.get("source"))))
+                rows.append(live_row("Volume", fmt_volume(details.get("volume_pct"))))
+                rows.append(live_row("Muted", "✅" if details.get("muted") else "—"))
+
+                if details.get("update_age_s") is not None:
+                    rows.append(live_row("Updated", fmt_age_seconds(details.get("update_age_s"))))
+
+                playback = pretty_text(details.get("playback_status"))
+                if playback != "—":
+                    rows.append(live_row("Playback", playback))
+
+            reasons_html = (
+                '<span class="muted">None</span>'
+                if not reasons
+                else "".join(f'<span class="chip">{self._html_escape(r)}</span>' for r in reasons)
+            )
 
             error_html = ""
-            if data.get("last_error"):
+            if last_error:
                 error_html = (
                     f'<div class="error-line"><strong>Last error:</strong> '
-                    f'{self._html_escape(data.get("last_error"))}</div>'
+                    f'{self._html_escape(last_error)}</div>'
                 )
-
-            reasons_html = chips(data.get("reasons") or [])
 
             return f"""
 <div class="card">
@@ -961,13 +1044,16 @@ pre.json {{
     <span>{self._html_escape(title)}</span>
     {self._status_badge_html(status)}
   </h3>
-  <div class="kv">
+
+  <div class="live-kv">
     {''.join(rows)}
   </div>
+
   <div style="margin-top:0.85rem;">
     <div class="muted" style="margin-bottom:0.35rem;">Reasons</div>
     <div class="chips">{reasons_html}</div>
   </div>
+
   {error_html}
 </div>
 """
@@ -1022,6 +1108,44 @@ pre.json {{
   border-top: 1px solid var(--border);
   padding: 1rem;
 }}
+
+.live-kv {{
+  display: grid;
+  gap: 0.45rem;
+}}
+
+.live-row {{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}}
+
+.live-row:last-child {{
+  border-bottom: 0;
+}}
+
+.live-label {{
+  color: var(--muted);
+  font-size: 0.95rem;
+}}
+
+.live-value {{
+  font-weight: 700;
+  text-align: right;
+  word-break: break-word;
+}}
+@media (max-width: 640px) {{
+  .live-row {{
+    align-items: flex-start;
+  }}
+
+  .live-value {{
+    max-width: 55%;
+  }}
+}}
   </style>
 </head>
 <body>
@@ -1066,10 +1190,10 @@ pre.json {{
     <section class="section">
       <h2>Domains</h2>
       <div class="grid domains">
-        {domain_card("USB", snapshot.get("usb") or {{}}, ["paired_remote", "reader_running", "input_open", "grabbed"])}
-        {domain_card("BLE", snapshot.get("ble") or {{}}, ["transport_open", "advertising", "connected", "proto_report", "last_disc_reason", "conn_params"])}
-        {domain_card("TV", snapshot.get("tv") or {{}}, ["initialised", "presence_on", "presence_source", "last_change_age_s", "ws_connected", "token_present"])}
-        {domain_card("Speaker", snapshot.get("speaker") or {{}}, ["backend", "reachable", "connected", "ready", "playback_status", "source", "volume_pct", "muted", "update_age_s"])}
+        {domain_card("USB", snapshot.get("usb") or {})}
+        {domain_card("BLE", snapshot.get("ble") or {})}
+        {domain_card("TV", snapshot.get("tv") or {})}
+        {domain_card("Speaker", snapshot.get("speaker") or {})}
       </div>
     </section>
 
