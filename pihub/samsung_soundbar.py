@@ -465,14 +465,7 @@ class SamsungSoundbar:
     def _use_tv_volume_path(self) -> bool:
         if self._tv is None:
             return False
-
-        if self._state.power_on is not True:
-            return False
-
-        source = (self._state.source or "").strip().lower()
-        sound_from = (self._state.sound_from or "").strip().lower()
-
-        return source == "hdmi" or sound_from == "tv"
+        return getattr(self._tv, "_presence_cached", None) is True
 
     def _parse_payload(self, payload: dict[str, Any]) -> None:
         # Support either /devices payload (components list) or /status payload (components.main dict).
