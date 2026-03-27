@@ -926,6 +926,26 @@ pre.json {{
             except Exception:
                 return "—"
             return f"{n}s ago"
+        
+        def fmt_age_compact(value: object) -> str:
+            try:
+                total = int(value)
+            except Exception:
+                return "—"
+
+            if total < 60:
+                return f"{total}s ago"
+
+            minutes, seconds = divmod(total, 60)
+            if minutes < 60:
+                return f"{minutes}m ago"
+
+            hours, minutes = divmod(minutes, 60)
+            if hours < 24:
+                return f"{hours}h {minutes}m ago"
+
+            days, hours = divmod(hours, 24)
+            return f"{days}d {hours}h ago"
 
         def fmt_volume(value: object) -> str:
             try:
@@ -1005,7 +1025,7 @@ pre.json {{
                 rows.append(live_row("Source", pretty_source(details.get("presence_source"))))
 
                 if details.get("last_change_age_s") is not None:
-                    rows.append(live_row("Changed", fmt_age_seconds(details.get("last_change_age_s"))))
+                    rows.append(live_row("Last change", fmt_age_compact(details.get("last_change_age_s"))))
 
                 if status != "ok":
                     rows.append(live_row("WebSocket", bool_mark(details.get("ws_connected"))))
@@ -1019,7 +1039,7 @@ pre.json {{
                 rows.append(live_row("Muted", "✅" if details.get("muted") else "—"))
 
                 if details.get("update_age_s") is not None:
-                    rows.append(live_row("Updated", fmt_age_seconds(details.get("update_age_s"))))
+                    rows.append(live_row("Last update", fmt_age_compact(details.get("update_age_s"))))
 
                 playback = pretty_text(details.get("playback_status"))
                 if playback != "—":
