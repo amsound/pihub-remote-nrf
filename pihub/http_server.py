@@ -3502,6 +3502,7 @@ button:hover {{
             )
 
             usb_last_error = _norm_error(usb_raw.get("last_error"))
+            usb_display_error = None if usb_last_error == "no_input_device" else usb_last_error
             usb_error = bool(usb_raw.get("error")) if "error" in usb_raw else bool(usb_last_error)
 
             usb_reasons: list[str] = []
@@ -3534,7 +3535,7 @@ button:hover {{
                 "link_up": usb_link_up,
                 "link_ready": usb_link_ready,
                 "error": usb_error,
-                "last_error": usb_last_error,
+                "last_error": usb_display_error,
                 "details": {
                     "paired_remote": bool(usb_raw.get("paired_remote")),
                     "reader_running": bool(usb_raw.get("reader_running")),
