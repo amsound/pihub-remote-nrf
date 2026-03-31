@@ -60,6 +60,7 @@ class UnifyingReader:
         self._paired_remote = False
         self._disconnect_notified = False
         self._last_error: Optional[str] = None
+        self._missing_input_logged = False
 
     # ── Public API ───────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -136,7 +137,6 @@ class UnifyingReader:
         no_device_failures = 0
         open_failures = 0
         wait_state: Optional[str] = None
-        last_wait_log = 0.0
         warn_every = 5
         while not self._stop.is_set():
             receiver_present = _unifying_receiver_present()
@@ -144,40 +144,25 @@ class UnifyingReader:
             path = self._resolve_device_path()
             self._paired_remote = bool(path)
             if not path:
-                # device not present; wait and retry (jittered)
+                # device not present; wait and retry silently after one info log
                 self._input_open = False
                 self._last_error = "no_input_device"
                 no_device_failures += 1
                 open_failures = 0
                 sleep_for = _jittered(backoff)
-                now = time.monotonic()
+
                 next_state = "present_no_input" if receiver_present else "absent"
-                log_msg = (
-                    "receiver present; waiting for paired device "
-                    "(attempt %d); retry in %.2fs"
-                    if receiver_present
-                    else "receiver not detected "
-                    "(attempt %d); retry in %.2fs"
-                )
                 if wait_state != next_state:
                     wait_state = next_state
-                    last_wait_log = now
-                    logger.warning(
-                        log_msg,
-                        no_device_failures,
-                        sleep_for,
-                    )
-                elif (
-                    no_device_failures == 1
-                    or no_device_failures % warn_every == 0
-                    or (now - last_wait_log) >= 60.0
-                ):
-                    last_wait_log = now
-                    logger.warning(
-                        log_msg,
-                        no_device_failures,
-                        sleep_for,
-                    )
+                    self._missing_input_logged = False
+
+                if not self._missing_input_logged:
+                    self._missing_input_logged = True
+                    if receiver_present:
+                        logger.info("unifying receiver present; waiting for paired remote device")
+                    else:
+                        logger.info("unifying receiver not detected; continuing with USB input unavailable")
+
                 await asyncio.sleep(sleep_for)
                 backoff = min(backoff * 2, 10.0)
                 continue
@@ -205,9 +190,10 @@ class UnifyingReader:
             self._last_input_path = path
             self._last_grabbed = grabbed
             self._disconnect_notified = False
+            self._missing_input_logged = False
 
             self._last_error = None
-    
+
             if wait_state != "ready":
                 wait_state = "ready"
                 logger.info("input device opened: %s grabbed=%s", path, str(grabbed).lower())
@@ -377,14 +363,9 @@ class UnifyingReader:
 
 
 def _autodetect_or_none() -> Optional[str]:
-    """Best-effort find a keyboard-like event device via by-id/by-path; return None if absent."""
-    cand = (
-        sorted(glob.glob("/dev/input/by-id/*Logitech*USB_Receiver*event-kbd"))
-        or sorted(glob.glob("/dev/input/by-id/*event-kbd"))
-        or sorted(glob.glob("/dev/input/by-path/*event-kbd"))
-    )
-    return cand[0] if cand else None
-
+    """Return the specific Logitech receiver keyboard event device, if present."""
+    path = "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd"
+    return path if os.path.exists(path) else None
 
 def _unifying_receiver_present() -> bool:
     """Return True if a Logitech Unifying receiver is present via sysfs."""
