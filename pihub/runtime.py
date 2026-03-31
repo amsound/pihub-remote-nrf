@@ -282,6 +282,8 @@ class RuntimeEngine:
             )
             self._active_sequence_task = seq_task
 
+            target_mode = self._flows.target_mode(name)
+
             try:
                 try:
                     ok = await asyncio.shield(seq_task)
@@ -295,14 +297,47 @@ class RuntimeEngine:
                     ok = await asyncio.shield(seq_task)
 
                 if ok:
+                    if target_mode:
+                        mode_result = await self.set_mode(target_mode, trigger=f"flow.{name}")
+                        if not mode_result.get("ok"):
+                            error = str(mode_result.get("error") or mode_result.get("reason") or "mode_commit_failed")
+                            self._set_runtime_error(error, result="failed")
+                            report.finish(result="failed", error=error)
+
+                            if self._history is not None:
+                                self._history.emit(
+                                    kind="flow_failed",
+                                    message=f"flow {name} failed",
+                                    level="error",
+                                    flow_name=name,
+                                    trigger=trigger,
+                                    metadata={
+                                        "source": source,
+                                        "report_id": report.id,
+                                        "error": error,
+                                        "phase": "mode_commit",
+                                    },
+                                )
+
+                            return {
+                                "ok": False,
+                                "domain": "flow",
+                                "action": "run",
+                                "name": name,
+                                "trigger": trigger,
+                                "source": source,
+                                "error": error,
+                                "report_id": report.id,
+                            }
+
                     logical_name = {
                         "listen_signal": "listen",
                         "watch_signal": "watch",
                     }.get(name, name)
                     self._last_flow = logical_name
-                    self._set_runtime_ok("ok")
 
                     result_name = "ok_with_warnings" if report.warnings else "ok"
+                    self._set_runtime_ok(result_name)
                     report.finish(result=result_name)
 
                     if self._history is not None:
@@ -450,7 +485,6 @@ class RuntimeEngine:
                 "reason": "runner_busy",
             }
 
-        # Idempotence for device signals uses last logical flow, not current mode.
         if name == "listen" and self._last_flow == "listen":
             logger.info("device-state listen ignored (already listen)")
             return {"ok": False, "name": name, "reason": "last_flow_listen"}

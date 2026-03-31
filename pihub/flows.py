@@ -7,12 +7,21 @@ import logging
 
 from dataclasses import dataclass, field
 from typing import Any, Callable
+
 from .history import FlowRunReport, FlowStepReport
 
 logger = logging.getLogger(__name__)
 
 SPEAKER_WATCH_SOURCE = "hdmi"
 LISTEN_SOURCES = {"wifi", "airplay", "multiroom-secondary"}
+
+
+class FlowDispatchError(RuntimeError):
+    def __init__(self, *, sequence_name: str, failures: list[tuple[str, BaseException]]) -> None:
+        self.sequence_name = sequence_name
+        self.failures = list(failures)
+        detail = ", ".join(f"{step_id}: {exc}" for step_id, exc in self.failures)
+        super().__init__(f"dispatch_failed: {detail}")
 
 
 @dataclass(frozen=True)
@@ -23,19 +32,29 @@ class SequenceStep:
     args: dict[str, Any] = field(default_factory=dict)
     when: str | None = None
     timeout_s: float | None = None
-    mode: str = "await"   # "await" | "dispatch"
+    mode: str = "dispatch"   # "dispatch" | "await"
 
 
 @dataclass(frozen=True)
 class SequenceDefinition:
     name: str
+    target_mode: str | None
     steps: tuple[SequenceStep, ...]
+
 
 class FlowWaitTimeout(RuntimeError):
     def __init__(self, *, kind: str, timeout_s: float) -> None:
         self.kind = kind
         self.timeout_s = timeout_s
         super().__init__(f"{kind}_timeout")
+
+
+@dataclass(frozen=True)
+class _DispatchRecord:
+    step: SequenceStep
+    report: FlowStepReport | None
+    task: asyncio.Task[None]
+
 
 class SequenceRunner:
     def __init__(
@@ -60,80 +79,73 @@ class SequenceRunner:
         self._defs: dict[str, SequenceDefinition] = {
             "listen": SequenceDefinition(
                 name="listen",
+                target_mode="listen",
                 steps=(
-                    SequenceStep("set_mode", "mode", "set", {"name": "listen"}),
-
                     SequenceStep(
                         "ble_return_home",
                         "ble",
                         "return_home",
-                        when="tv_was_on", # If tv was on
-                        mode="dispatch",
+                        when="tv_was_on",
                     ),
                     SequenceStep(
                         "wait_2s",
                         "system",
                         "sleep",
                         {"seconds": 2.0},
-                        when="tv_was_on", # If tv was on
+                        when="tv_was_on",
+                        mode="await",
                     ),
                     SequenceStep(
                         "tv_power_off",
                         "tv",
                         "power_off",
-                        when="tv_was_on", # If tv was on
-                        mode="dispatch",
+                        when="tv_was_on",
                     ),
                     SequenceStep(
                         "wait_1s",
                         "system",
                         "sleep",
-                        {"seconds": 1.0}, # If tv was on
+                        {"seconds": 1.0},
                         when="tv_was_on",
+                        mode="await",
                     ),
-
-                    # If tv not on proceed anyway
                     SequenceStep(
                         "speaker_set_volume",
                         "speaker",
                         "set_volume",
                         {"setting": "listen_volume_pct"},
-                        mode="dispatch",
                     ),
                     SequenceStep(
                         "speaker_set_preset",
                         "speaker",
                         "play_listen_target",
                         {},
-                        mode="dispatch",
                     ),
-
                     SequenceStep(
                         "wait_tv_off",
                         "wait",
                         "tv_off",
                         {"timeout_s": 20.0},
-                        when="tv_was_on", # If tv was on
+                        when="tv_was_on",
+                        mode="await",
                     ),
                 ),
             ),
             "watch": SequenceDefinition(
                 name="watch",
+                target_mode="watch",
                 steps=(
-                    SequenceStep("set_mode", "mode", "set", {"name": "watch"}),
                     SequenceStep(
                         "speaker_stop",
                         "speaker",
                         "stop_playback",
                         when="speaker_source_listen",
-                        mode="dispatch",
                     ),
                     SequenceStep(
                         "tv_power_on",
                         "tv",
                         "power_on",
                         when="tv_was_off",
-                        mode="dispatch",
                     ),
                     SequenceStep(
                         "wait_2s",
@@ -141,13 +153,13 @@ class SequenceRunner:
                         "sleep",
                         {"seconds": 2.0},
                         when="tv_was_off",
+                        mode="await",
                     ),
                     SequenceStep(
                         "ble_power_on",
                         "ble",
                         "power_on",
                         when="tv_was_off",
-                        mode="dispatch",
                     ),
                     SequenceStep(
                         "wait_1s",
@@ -155,13 +167,13 @@ class SequenceRunner:
                         "sleep",
                         {"seconds": 1.0},
                         when="tv_was_off",
+                        mode="await",
                     ),
                     SequenceStep(
                         "speaker_set_volume",
                         "speaker",
                         "set_volume",
                         {"setting": "watch_volume_pct"},
-                        mode="dispatch",
                     ),
                     SequenceStep(
                         "wait_0.5s",
@@ -169,36 +181,33 @@ class SequenceRunner:
                         "sleep",
                         {"seconds": 0.5},
                         when="tv_was_off",
+                        mode="await",
                     ),
                     SequenceStep(
                         "speaker_set_hdmi",
                         "speaker",
                         "set_source",
                         {"source": SPEAKER_WATCH_SOURCE},
-                        mode="dispatch",
                     ),
-
                     SequenceStep(
                         "wait_tv_on",
                         "wait",
                         "tv_on",
                         {"timeout_s": 20.0},
                         when="tv_was_off",
+                        mode="await",
                     ),
                 ),
             ),
-
             "listen_signal": SequenceDefinition(
                 name="listen_signal",
+                target_mode="listen",
                 steps=(
-                    SequenceStep("set_mode", "mode", "set", {"name": "listen"}),
-
                     SequenceStep(
                         "ble_return_home",
                         "ble",
                         "return_home",
                         when="tv_was_on",
-                        mode="dispatch",
                     ),
                     SequenceStep(
                         "wait_2s",
@@ -206,13 +215,13 @@ class SequenceRunner:
                         "sleep",
                         {"seconds": 2.0},
                         when="tv_was_on",
+                        mode="await",
                     ),
                     SequenceStep(
                         "tv_power_off",
                         "tv",
                         "power_off",
                         when="tv_was_on",
-                        mode="dispatch",
                     ),
                     SequenceStep(
                         "wait_tv_off",
@@ -220,61 +229,58 @@ class SequenceRunner:
                         "tv_off",
                         {"timeout_s": 20.0},
                         when="tv_was_on",
+                        mode="await",
                     ),
                 ),
             ),
-
             "watch_signal": SequenceDefinition(
                 name="watch_signal",
+                target_mode="watch",
                 steps=(
-                    SequenceStep("set_mode", "mode", "set", {"name": "watch"}),
                     SequenceStep(
                         "wait_2s",
                         "system",
                         "sleep",
                         {"seconds": 2.0},
+                        mode="await",
                     ),
                     SequenceStep(
                         "speaker_set_volume",
                         "speaker",
                         "set_volume",
                         {"setting": "watch_volume_pct"},
-                        mode="dispatch",
                     ),
                     SequenceStep(
                         "wait_0.5s",
                         "system",
                         "sleep",
                         {"seconds": 0.5},
+                        mode="await",
                     ),
                     SequenceStep(
                         "speaker_set_hdmi",
                         "speaker",
                         "set_source",
                         {"source": SPEAKER_WATCH_SOURCE},
-                        mode="dispatch",
                     ),
                     SequenceStep(
                         "wait_tv_on",
                         "wait",
                         "tv_on",
                         {"timeout_s": 20.0},
+                        mode="await",
                     ),
                 ),
             ),
-
             "power_off": SequenceDefinition(
                 name="power_off",
+                target_mode="power_off",
                 steps=(
-                    SequenceStep("set_mode", "mode", "set", {"name": "power_off"}),
-
-                    # If TV was On
                     SequenceStep(
                         "ble_return_home",
                         "ble",
                         "return_home",
                         when="tv_was_on",
-                        mode="dispatch",
                     ),
                     SequenceStep(
                         "wait_2.5s",
@@ -282,13 +288,13 @@ class SequenceRunner:
                         "sleep",
                         {"seconds": 2.5},
                         when="tv_was_on",
+                        mode="await",
                     ),
                     SequenceStep(
                         "tv_power_off",
                         "tv",
                         "power_off",
                         when="tv_was_on",
-                        mode="dispatch",
                     ),
                     SequenceStep(
                         "wait_tv_off",
@@ -296,15 +302,13 @@ class SequenceRunner:
                         "tv_off",
                         {"timeout_s": 20},
                         when="tv_was_on",
+                        mode="await",
                     ),
-
-                    # If speaker on wifi
                     SequenceStep(
                         "speaker_stop",
                         "speaker",
                         "stop_playback",
                         when="speaker_source_listen",
-                        mode="dispatch",
                     ),
                     SequenceStep(
                         "wait_0.5s",
@@ -312,17 +316,23 @@ class SequenceRunner:
                         "sleep",
                         {"seconds": 0.5},
                         when="speaker_source_listen",
+                        mode="await",
                     ),
                     SequenceStep(
                         "speaker_power_off",
                         "speaker",
                         "power_off",
                         when="speaker_source_listen",
-                        mode="dispatch",
                     ),
                 ),
             ),
         }
+
+    def target_mode(self, name: str) -> str | None:
+        seq = self._defs.get((name or "").strip())
+        if seq is None:
+            return None
+        return seq.target_mode
 
     async def run(
         self,
@@ -333,6 +343,7 @@ class SequenceRunner:
         source: str = "intent",
         report: FlowRunReport | None = None,
     ) -> bool:
+        del args
         seq = self._defs.get((name or "").strip())
         if seq is None:
             logger.warning("unknown flow name=%s trigger=%s source=%s", name, trigger, source)
@@ -346,6 +357,8 @@ class SequenceRunner:
             source,
             self._format_snapshot(snapshot),
         )
+
+        dispatch_records: list[_DispatchRecord] = []
 
         for index, step in enumerate(seq.steps, start=1):
             step_report: FlowStepReport | None = None
@@ -370,12 +383,13 @@ class SequenceRunner:
                 continue
 
             logger.debug(
-                "sequence step start sequence=%s step=%s index=%d domain=%s action=%s",
+                "sequence step start sequence=%s step=%s index=%d domain=%s action=%s mode=%s",
                 seq.name,
                 step.id,
                 index,
                 step.domain,
                 step.action,
+                step.mode,
             )
             try:
                 await self._run_step(
@@ -383,6 +397,7 @@ class SequenceRunner:
                     step=step,
                     report=report,
                     step_report=step_report,
+                    dispatch_records=dispatch_records,
                 )
             except Exception as exc:
                 if step_report is not None and step_report.ts_finished is None:
@@ -406,6 +421,11 @@ class SequenceRunner:
                 step.id,
                 index,
             )
+
+        await self._await_dispatch_records(
+            sequence_name=seq.name,
+            dispatch_records=dispatch_records,
+        )
 
         logger.debug("sequence completed name=%s trigger=%s source=%s", seq.name, trigger, source)
         return True
@@ -433,9 +453,9 @@ class SequenceRunner:
         step: SequenceStep,
         report: FlowRunReport | None,
         step_report: FlowStepReport | None,
-        task: asyncio.Task,
+        task: asyncio.Task[None],
     ) -> None:
-        def _done_callback(done_task: asyncio.Task) -> None:
+        def _done_callback(done_task: asyncio.Task[None]) -> None:
             if report is None or step_report is None:
                 return
 
@@ -482,6 +502,24 @@ class SequenceRunner:
 
         task.add_done_callback(_done_callback)
 
+    async def _await_dispatch_records(
+        self,
+        *,
+        sequence_name: str,
+        dispatch_records: list[_DispatchRecord],
+    ) -> None:
+        failures: list[tuple[str, BaseException]] = []
+        for record in dispatch_records:
+            try:
+                await record.task
+            except asyncio.CancelledError as exc:
+                failures.append((record.step.id, exc))
+            except Exception as exc:
+                failures.append((record.step.id, exc))
+
+        if failures:
+            raise FlowDispatchError(sequence_name=sequence_name, failures=failures)
+
     async def _run_step(
         self,
         *,
@@ -489,6 +527,7 @@ class SequenceRunner:
         step: SequenceStep,
         report: FlowRunReport | None = None,
         step_report: FlowStepReport | None = None,
+        dispatch_records: list[_DispatchRecord],
     ) -> None:
         async def _invoke() -> None:
             await self._dispatch_step(sequence_name=sequence_name, step=step)
@@ -507,6 +546,9 @@ class SequenceRunner:
                     report=report,
                     step_report=step_report,
                     task=dispatch_task,
+                )
+                dispatch_records.append(
+                    _DispatchRecord(step=step, report=step_report, task=dispatch_task)
                 )
                 return
 
@@ -547,10 +589,6 @@ class SequenceRunner:
 
     async def _dispatch_step(self, *, sequence_name: str, step: SequenceStep) -> None:
         args = step.args or {}
-
-        if step.domain == "mode" and step.action == "set":
-            await self._runtime.set_mode(str(args["name"]), trigger=f"flow.{sequence_name}")
-            return
 
         if step.domain == "speaker" and step.action == "preset":
             if self._speaker is not None:
@@ -734,7 +772,6 @@ class SequenceRunner:
         raise FlowWaitTimeout(kind="tv_off", timeout_s=timeout_s)
 
 
-
 class FlowRunner:
     def __init__(
         self,
@@ -753,6 +790,9 @@ class FlowRunner:
             settings=settings,
         )
 
+    def target_mode(self, name: str) -> str | None:
+        return self._sequences.target_mode(name)
+
     async def run(
         self,
         *,
@@ -762,11 +802,10 @@ class FlowRunner:
         source: str = "intent",
         report: FlowRunReport | None = None,
     ) -> bool:
-        del args
         return await self._sequences.run(
             name=name,
             trigger=trigger,
-            args=None,
+            args=args,
             source=source,
             report=report,
         )
