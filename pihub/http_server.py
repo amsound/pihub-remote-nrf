@@ -14,7 +14,7 @@ from aiohttp import web
 
 from .runtime import RuntimeEngine
 from .ble_dongle import BleDongleLink
-from .unifying_input import UnifyingReader
+from .unifying_reader import UnifyingReader
 from .speaker import SpeakerLike
 from .samsung_tv import TvController
 from .history import HistoryStore
@@ -31,7 +31,7 @@ class HttpServer:
         *,
         host: str,
         port: int,
-        ble: Optional[BleDongleLink] = None,
+        ble: BleDongleLink,
         reader: Optional[UnifyingReader] = None,
         tv: Optional[TvController] = None,
         speaker: Optional[SpeakerLike] = None,

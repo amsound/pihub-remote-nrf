@@ -140,6 +140,8 @@ class BleDongleLink:
         self._last_log_ts: float = 0.0
         self._log_min_interval_s: float = 0.10
 
+        self._missing_dongle_logged = False
+
         # HID usage maps loaded from assets/hid_keymap.json
         self._hid_kb: Dict[str, int] = {}
         self._hid_cc: Dict[str, int] = {}
@@ -695,12 +697,20 @@ class BleDongleLink:
         framed = (line.rstrip("\r\n") + "\n").encode("ascii", errors="replace")
         await self._tx_q.put((self._tx_epoch, framed))
 
+    def _note_missing_dongle_once(self) -> None:
+        if self._missing_dongle_logged:
+            return
+        self._missing_dongle_logged = True
+        logger.info("BLE dongle not found; continuing with BLE unavailable")
+
     async def _reconnect_loop(self) -> None:
         while True:
             try:
                 if not self.is_open:
                     ok = await self._try_open_and_handshake()
                     if not ok:
+                        if self._find_port() is None:
+                            self._note_missing_dongle_once()
                         await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
                         self._reconnect_delay_s = min(self._reconnect_delay_max_s, self._reconnect_delay_s * 1.5)
                         continue
@@ -788,6 +798,7 @@ class BleDongleLink:
 
         self._ser = ser
         self._port = port
+        self._missing_dongle_logged = False
         self.state = DongleState()
         self._pong_counter = 0
         self._transport_evt.clear()

@@ -21,7 +21,7 @@ from .dispatcher import Dispatcher
 from .http_server import HttpServer
 from .runtime import RuntimeEngine
 
-from .unifying_input import UnifyingReader
+from .unifying_reader import UnifyingReader
 from .ble_dongle import BleDongleLink
 from .samsung_tv import TvController, ssdp_listener, start_discovery_tasks, stop_discovery_tasks
 from .audiopro_speaker import AudioProSpeaker
@@ -167,12 +167,10 @@ async def main() -> None:
         await speaker.start()
         cleanup_hooks.append(("speaker", speaker.stop))
 
-    ble: BleDongleLink | None = None
-    if cfg.ble_enabled:
-        ble = BleDongleLink(
-            serial_port=cfg.ble_serial_device,
-            baud=cfg.ble_serial_baud,
-        )
+    ble = BleDongleLink(
+        serial_port=cfg.ble_serial_device,
+        baud=cfg.ble_serial_baud,
+    )
 
     runtime = RuntimeEngine(
         tv=tv,
@@ -235,9 +233,8 @@ async def main() -> None:
     )
 
     try:
-        if ble is not None:
-            await ble.start()
-            cleanup_hooks.append(("ble", ble.stop))
+        await ble.start()
+        cleanup_hooks.append(("ble", ble.stop))
 
         if reader is not None:
             await reader.start()

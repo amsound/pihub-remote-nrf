@@ -141,7 +141,6 @@ docker push a1exm/pihub-nrf:latest
 | `USB_ENABLED` | enable Logitech Unifying input domain | default `true` |
 | `BLE_SERIAL_DEVICE` | CDC ACM device for the BLE dongle | `auto` (prefers `/dev/serial/by-id`, then falls back to `/dev/ttyACM*`) |
 | `BLE_SERIAL_BAUD` | BLE serial baud rate | `115200` |
-| `BLE_ENABLED` | enable BLE dongle domain | default `true` |
 | `HTTP_SERVER_HOST` | Bind address for the HTTP endpoint | `0.0.0.0` |
 | `HTTP_SERVER_PORT` | Port for the HTTP endpoint and local commands | `9123` |
 | `TV_IP` | Samsung TV IP address | required for TV support |
