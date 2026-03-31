@@ -146,6 +146,37 @@ class RuntimeEngine:
     async def start(self) -> None:
         await self.initialize_startup_mode()
 
+    async def _commit_mode_internal(self, name: str, *, trigger: str) -> dict[str, Any]:
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("mode name required")
+
+        if self._dispatcher is None:
+            raise RuntimeError("dispatcher unavailable")
+
+        valid_modes_fn = getattr(self._dispatcher, "available_modes", None)
+        valid_modes = set(valid_modes_fn()) if callable(valid_modes_fn) else set()
+        if valid_modes and name not in valid_modes:
+            raise ValueError(f"invalid_mode:{name}")
+
+        prior = self._mode
+        await self._dispatcher.set_mode_bindings(name)
+        self._last_trigger = trigger
+        self._mode = name
+
+        if prior != name:
+            logger.info("mode %s -> %s", prior, name)
+        else:
+            logger.info("mode unchanged (%s)", name)
+
+        return {
+            "ok": True,
+            "domain": "mode",
+            "action": "set",
+            "mode": self._mode,
+            "trigger": trigger,
+        }
+
     async def set_mode(self, name: str, *, trigger: str = "internal") -> dict[str, Any]:
         name = (name or "").strip()
         if not name:
@@ -298,9 +329,13 @@ class RuntimeEngine:
 
                 if ok:
                     if target_mode:
-                        mode_result = await self.set_mode(target_mode, trigger=f"flow.{name}")
-                        if not mode_result.get("ok"):
-                            error = str(mode_result.get("error") or mode_result.get("reason") or "mode_commit_failed")
+                        try:
+                            await self._commit_mode_internal(
+                                target_mode,
+                                trigger=f"flow.{name}",
+                            )
+                        except Exception as exc:
+                            error = f"mode_commit_failed:{exc}"
                             self._set_runtime_error(error, result="failed")
                             report.finish(result="failed", error=error)
 
@@ -316,6 +351,7 @@ class RuntimeEngine:
                                         "report_id": report.id,
                                         "error": error,
                                         "phase": "mode_commit",
+                                        "target_mode": target_mode,
                                     },
                                 )
 
@@ -352,6 +388,8 @@ class RuntimeEngine:
                                 "result": result_name,
                                 "warning_count": len(report.warnings),
                                 "duration_ms": report.to_dict().get("duration_ms"),
+                                "mode": self._mode,
+                                "last_flow": self._last_flow,
                             },
                         )
 
