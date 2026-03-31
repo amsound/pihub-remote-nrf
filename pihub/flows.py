@@ -14,13 +14,14 @@ logger = logging.getLogger(__name__)
 
 SPEAKER_WATCH_SOURCE = "hdmi"
 LISTEN_SOURCES = {"wifi", "airplay", "multiroom-secondary"}
+DISPATCH_SETTLE_TIMEOUT_S = 15.0
 
 
 class FlowDispatchError(RuntimeError):
-    def __init__(self, *, sequence_name: str, failures: list[tuple[str, BaseException]]) -> None:
+    def __init__(self, *, sequence_name: str, failures: list[tuple[str, str]]) -> None:
         self.sequence_name = sequence_name
         self.failures = list(failures)
-        detail = ", ".join(f"{step_id}: {exc}" for step_id, exc in self.failures)
+        detail = ", ".join(f"{step_id}: {error}" for step_id, error in self.failures)
         super().__init__(f"dispatch_failed: {detail}")
 
 
@@ -508,14 +509,24 @@ class SequenceRunner:
         sequence_name: str,
         dispatch_records: list[_DispatchRecord],
     ) -> None:
-        failures: list[tuple[str, BaseException]] = []
+        failures: list[tuple[str, str]] = []
+
         for record in dispatch_records:
+            settle_timeout_s = float(record.step.timeout_s or DISPATCH_SETTLE_TIMEOUT_S)
+
             try:
-                await record.task
-            except asyncio.CancelledError as exc:
-                failures.append((record.step.id, exc))
+                await asyncio.wait_for(record.task, timeout=settle_timeout_s)
+            except asyncio.TimeoutError:
+                record.task.cancel()
+                try:
+                    await record.task
+                except Exception:
+                    pass
+                failures.append((record.step.id, f"dispatch_settle_timeout:{settle_timeout_s:g}s"))
+            except asyncio.CancelledError:
+                failures.append((record.step.id, "cancelled"))
             except Exception as exc:
-                failures.append((record.step.id, exc))
+                failures.append((record.step.id, str(exc)))
 
         if failures:
             raise FlowDispatchError(sequence_name=sequence_name, failures=failures)

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
-from .flows import FlowRunner, FlowWaitTimeout
+from .flows import FlowDispatchError, FlowRunner, FlowWaitTimeout
 from .history import FlowRunReport, HistoryStore
 
 logger = logging.getLogger(__name__)
@@ -80,30 +80,17 @@ class RuntimeEngine:
         step: Any,
         error: str | None = None,
     ) -> None:
+        del report, sequence_name, step
+
         if error:
-            step_report.settle_outcome(status="warning", error=error)
-
-            warning_text = f"{step.id} dispatch warning: {error}"
-            report.add_warning(warning_text)
-            report.promote_to_warning()
-
+            step_report.settle_outcome(status="failed", error=error)
             if self._history is not None:
-                self._history.emit(
-                    kind="flow_warning",
-                    level="warning",
-                    message=f"flow {report.flow_name} dispatch warning",
-                    flow_name=report.flow_name,
-                    trigger=report.trigger,
-                    metadata={
-                        "report_id": report.id,
-                        "sequence_name": sequence_name,
-                        "step_id": step.id,
-                        "domain": step.domain,
-                        "action": step.action,
-                        "error": error,
-                    },
-                )
                 self._history.flush()
+            return
+
+        step_report.settle_outcome(status="ok")
+        if self._history is not None:
+            self._history.flush()
             return
 
         step_report.settle_outcome(status="ok")
@@ -161,7 +148,6 @@ class RuntimeEngine:
 
         prior = self._mode
         await self._dispatcher.set_mode_bindings(name)
-        self._last_trigger = trigger
         self._mode = name
 
         if prior != name:
@@ -457,6 +443,47 @@ class RuntimeEngine:
                             "source": source,
                             "report_id": report.id,
                             "error": str(exc),
+                        },
+                    )
+
+                return {
+                    "ok": False,
+                    "domain": "flow",
+                    "action": "run",
+                    "name": name,
+                    "trigger": trigger,
+                    "source": source,
+                    "error": str(exc),
+                    "report_id": report.id,
+                }
+
+            except FlowDispatchError as exc:
+                logger.warning(
+                    "sequence dispatch settle failed name=%s trigger=%s source=%s error=%s",
+                    name,
+                    trigger,
+                    source,
+                    str(exc),
+                )
+                self._set_runtime_error(str(exc), result="failed")
+                report.finish(result="failed", error=str(exc))
+
+                if self._history is not None:
+                    self._history.emit(
+                        kind="flow_failed",
+                        message=f"flow {name} failed",
+                        level="error",
+                        flow_name=name,
+                        trigger=trigger,
+                        metadata={
+                            "source": source,
+                            "report_id": report.id,
+                            "error": str(exc),
+                            "phase": "dispatch_settle",
+                            "failures": [
+                                {"step_id": step_id, "error": error}
+                                for step_id, error in exc.failures
+                            ],
                         },
                     )
 
