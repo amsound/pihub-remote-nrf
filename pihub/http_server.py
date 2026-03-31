@@ -1022,7 +1022,7 @@ pre.json {{
                 else:
                     rows.append(live_row("TV", "Unknown"))
 
-                rows.append(live_row("Source", pretty_source(details.get("presence_source"))))
+                rows.append(live_row("Presence", pretty_source(details.get("presence_source"))))
 
                 if details.get("last_change_age_s") is not None:
                     rows.append(live_row("Last change", fmt_age_compact(details.get("last_change_age_s"))))
@@ -1034,7 +1034,7 @@ pre.json {{
 
             elif title == "Speaker":
                 rows.append(live_row("Backend", pretty_text(details.get("backend"))))
-                rows.append(live_row("Source", pretty_source(details.get("source"))))
+                rows.append(live_row("Input", pretty_source(details.get("source"))))
                 rows.append(live_row("Volume", fmt_volume(details.get("volume_pct"))))
                 rows.append(live_row("Muted", "✅" if details.get("muted") else "—"))
 
