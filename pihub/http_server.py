@@ -1207,6 +1207,8 @@ pre.json {{
       </div>
     </section>
 
+    {attention_html}
+
     <section class="section">
       <h2>Domains</h2>
       <div class="grid domains">
@@ -1239,7 +1241,6 @@ pre.json {{
         <div class="card">
           <h3>Disk</h3>
           <div class="kv">
-            {kv_row("Path", (system.get("disk") or {{}}).get("path"))}
             {kv_row("Used", (system.get("disk") or {{}}).get("used_human"))}
             {kv_row("Free", (system.get("disk") or {{}}).get("free_human"))}
             {kv_row("Total", (system.get("disk") or {{}}).get("total_human"))}
@@ -1249,25 +1250,10 @@ pre.json {{
           <h3>Power / Temp</h3>
           <div class="kv">
             {kv_row("CPU temp", f"{system.get('cpu_temp_c')} °C" if system.get("cpu_temp_c") is not None else "unknown")}
-            {kv_row("Power status", (system.get("throttling") or {{}}).get("status"))}
-            {kv_row("Undervoltage now", (system.get("throttling") or {{}}).get("undervoltage_now"))}
-            {kv_row("Throttled now", (system.get("throttling") or {{}}).get("throttled_now"))}
-            {kv_row("Historical events", (
-                (
-                    (system.get("throttling") or {{}}).get("undervoltage_occurred")
-                    or (system.get("throttling") or {{}}).get("freq_capped_occurred")
-                    or (system.get("throttling") or {{}}).get("throttled_occurred")
-                    or (system.get("throttling") or {{}}).get("temp_limit_occurred")
-                )
-                if (system.get("throttling") or {{}}).get("available")
-                else "unknown"
-            ))}
           </div>
         </div>
       </div>
     </section>
-
-    {attention_html}
 
     <section class="section raw-toggle">
       <h2>Raw health JSON</h2>
