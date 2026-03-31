@@ -43,13 +43,11 @@ class Config:
     smartthings_poll_interval_s: int
 
     # Domain toggles
-    usb_enabled: bool
     tv_enabled: bool
     speaker_enabled: bool
 
     @staticmethod
     def load() -> "Config":
-        usb_enabled = _env_bool("USB_ENABLED", True)
         tv_enabled = _env_bool("TV_ENABLED", True)
         speaker_enabled = _env_bool("SPEAKER_ENABLED", True)
 
@@ -87,7 +85,6 @@ class Config:
         speaker_volume_step_pct = 2
 
         return Config(
-            usb_enabled=usb_enabled,
             tv_enabled=tv_enabled,
             speaker_enabled=speaker_enabled,
             ble_serial_device=ble_serial_device,

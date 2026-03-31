@@ -210,13 +210,11 @@ async def main() -> None:
 
     await runtime.start()
 
-    reader: UnifyingReader | None = None
-    if cfg.usb_enabled:
-        reader = UnifyingReader(
-            scancode_map=dispatcher.scancode_map,
-            on_edge=dispatcher.on_usb_edge,
-            on_disconnect=dispatcher.on_usb_disconnect,
-        )
+    reader = UnifyingReader(
+        scancode_map=dispatcher.scancode_map,
+        on_edge=dispatcher.on_usb_edge,
+        on_disconnect=dispatcher.on_usb_disconnect,
+    )
 
     http_server = HttpServer(
         host=cfg.http_server_host,
@@ -236,9 +234,8 @@ async def main() -> None:
         await ble.start()
         cleanup_hooks.append(("ble", ble.stop))
 
-        if reader is not None:
-            await reader.start()
-            cleanup_hooks.append(("reader", reader.stop))
+        await reader.start()
+        cleanup_hooks.append(("reader", reader.stop))
 
         await http_server.start()
         cleanup_hooks.append(("http_server", http_server.stop))

@@ -138,7 +138,6 @@ docker push a1exm/pihub-nrf:latest
 
 | Variable | Description | Default / Notes |
 | --- | --- | --- |
-| `USB_ENABLED` | enable Logitech Unifying input domain | default `true` |
 | `BLE_SERIAL_DEVICE` | CDC ACM device for the BLE dongle | `auto` (prefers `/dev/serial/by-id`, then falls back to `/dev/ttyACM*`) |
 | `BLE_SERIAL_BAUD` | BLE serial baud rate | `115200` |
 | `HTTP_SERVER_HOST` | Bind address for the HTTP endpoint | `0.0.0.0` |

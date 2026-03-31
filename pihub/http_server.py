@@ -32,7 +32,7 @@ class HttpServer:
         host: str,
         port: int,
         ble: BleDongleLink,
-        reader: Optional[UnifyingReader] = None,
+        reader: UnifyingReader,
         tv: Optional[TvController] = None,
         speaker: Optional[SpeakerLike] = None,
         settings: Any = None,
