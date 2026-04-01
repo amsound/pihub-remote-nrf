@@ -1050,7 +1050,7 @@ pre.json {{
             if reasons:
                 reasons_html = f"""
   <div style="margin-top:0.85rem;">
-    <div class="muted" style="margin-bottom:0.35rem;">Reasons</div>
+    <div class="muted" style="margin-bottom:0.35rem;">Status</div>
     <div class="chips">
       {"".join(f'<span class="chip">{self._html_escape(r)}</span>' for r in reasons)}
     </div>
