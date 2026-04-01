@@ -232,6 +232,7 @@ class SamsungSoundbar:
         self._token_store = SmartThingsTokenStore(token_file)
         self._startup_refresh_logged = False
         self._startup_connect_logged = False
+        self._missing_token_logged = False
 
         self._send_lock = asyncio.Lock()
         self._last_send_monotonic = 0.0
@@ -285,7 +286,7 @@ class SamsungSoundbar:
 
         token_present = self._token_store.path.exists()
         logger.info(
-            "initialised smartthings cloud connection token_present=%s",
+            "initialised smartthings cloud connection token_file_present=%s",
             str(token_present).lower(),
         )
 
@@ -336,6 +337,22 @@ class SamsungSoundbar:
 
             except asyncio.CancelledError:
                 raise
+            except FileNotFoundError:
+                self._state.reachable = False
+                self._state.connected = False
+                self._state.ready = False
+                self._state.last_error = "smartthings_token_missing"
+                self._state.last_update_ts = _now()
+
+                if not self._missing_token_logged:
+                    logger.warning(
+                        "SmartThings token file missing; Samsung soundbar unavailable until restart token_file=%s",
+                        self._token_store.path,
+                    )
+                    self._missing_token_logged = True
+
+                await self._stop_evt.wait()
+
             except Exception as exc:
                 self._state.reachable = False
                 self._state.connected = False
