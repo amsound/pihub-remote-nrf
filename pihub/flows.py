@@ -24,6 +24,16 @@ class FlowDispatchError(RuntimeError):
         detail = ", ".join(f"{step_id}: {error}" for step_id, error in self.failures)
         super().__init__(f"dispatch_failed: {detail}")
 
+class FlowStepFailures(RuntimeError):
+    def __init__(self, *, sequence_name: str, failures: list[dict[str, str]]) -> None:
+        self.sequence_name = sequence_name
+        self.failures = list(failures)
+        detail = ", ".join(
+            f"{item.get('step_id', '?')}: {item.get('error', 'failed')}"
+            for item in self.failures
+        )
+        super().__init__(f"flow_failed: {detail}")
+
 
 @dataclass(frozen=True)
 class SequenceStep:
@@ -360,6 +370,7 @@ class SequenceRunner:
         )
 
         dispatch_records: list[_DispatchRecord] = []
+        failures: list[dict[str, str]] = []
 
         for index, step in enumerate(seq.steps, start=1):
             step_report: FlowStepReport | None = None
@@ -403,15 +414,26 @@ class SequenceRunner:
             except Exception as exc:
                 if step_report is not None and step_report.ts_finished is None:
                     step_report.finish(status="failed", error=str(exc))
+
+                failures.append(
+                    {
+                        "step_id": step.id,
+                        "domain": step.domain,
+                        "action": step.action,
+                        "phase": "step_run",
+                        "error": str(exc),
+                    }
+                )
+
                 logger.exception(
-                    "sequence step failed sequence=%s step=%s index=%d domain=%s action=%s",
+                    "sequence step failed sequence=%s step=%s index=%d domain=%s action=%s; continuing",
                     seq.name,
                     step.id,
                     index,
                     step.domain,
                     step.action,
                 )
-                raise
+                continue
 
             if step_report is not None and step_report.ts_finished is None:
                 step_report.finish(status="ok")
@@ -423,10 +445,15 @@ class SequenceRunner:
                 index,
             )
 
-        await self._await_dispatch_records(
-            sequence_name=seq.name,
-            dispatch_records=dispatch_records,
+        failures.extend(
+            await self._await_dispatch_records(
+                sequence_name=seq.name,
+                dispatch_records=dispatch_records,
+            )
         )
+
+        if failures:
+            raise FlowStepFailures(sequence_name=seq.name, failures=failures)
 
         logger.debug("sequence completed name=%s trigger=%s source=%s", seq.name, trigger, source)
         return True
@@ -508,8 +535,8 @@ class SequenceRunner:
         *,
         sequence_name: str,
         dispatch_records: list[_DispatchRecord],
-    ) -> None:
-        failures: list[tuple[str, str]] = []
+    ) -> list[dict[str, str]]:
+        failures: list[dict[str, str]] = []
 
         for record in dispatch_records:
             settle_timeout_s = float(record.step.timeout_s or DISPATCH_SETTLE_TIMEOUT_S)
@@ -522,14 +549,37 @@ class SequenceRunner:
                     await record.task
                 except Exception:
                     pass
-                failures.append((record.step.id, f"dispatch_settle_timeout:{settle_timeout_s:g}s"))
+                failures.append(
+                    {
+                        "step_id": record.step.id,
+                        "domain": record.step.domain,
+                        "action": record.step.action,
+                        "phase": "dispatch_settle",
+                        "error": f"dispatch_settle_timeout:{settle_timeout_s:g}s",
+                    }
+                )
             except asyncio.CancelledError:
-                failures.append((record.step.id, "cancelled"))
+                failures.append(
+                    {
+                        "step_id": record.step.id,
+                        "domain": record.step.domain,
+                        "action": record.step.action,
+                        "phase": "dispatch_settle",
+                        "error": "cancelled",
+                    }
+                )
             except Exception as exc:
-                failures.append((record.step.id, str(exc)))
+                failures.append(
+                    {
+                        "step_id": record.step.id,
+                        "domain": record.step.domain,
+                        "action": record.step.action,
+                        "phase": "dispatch_settle",
+                        "error": str(exc),
+                    }
+                )
 
-        if failures:
-            raise FlowDispatchError(sequence_name=sequence_name, failures=failures)
+        return failures
 
     async def _run_step(
         self,

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
-from .flows import FlowDispatchError, FlowRunner, FlowWaitTimeout
+from .flows import FlowDispatchError, FlowRunner, FlowStepFailures, FlowWaitTimeout
 from .history import FlowRunReport, HistoryStore
 
 logger = logging.getLogger(__name__)
@@ -457,6 +457,45 @@ class RuntimeEngine:
                     "report_id": report.id,
                 }
 
+            except FlowStepFailures as exc:
+                logger.warning(
+                    "sequence finished with step failures name=%s trigger=%s source=%s error=%s",
+                    name,
+                    trigger,
+                    source,
+                    str(exc),
+                )
+                self._set_runtime_error(str(exc), result="failed")
+                report.finish(result="failed", error=str(exc))
+
+                if self._history is not None:
+                    self._history.emit(
+                        kind="flow_failed",
+                        message=f"flow {name} failed",
+                        level="error",
+                        flow_name=name,
+                        trigger=trigger,
+                        metadata={
+                            "source": source,
+                            "report_id": report.id,
+                            "error": str(exc),
+                            "phase": "step_failures",
+                            "failures": exc.failures,
+                        },
+                    )
+
+                return {
+                    "ok": False,
+                    "domain": "flow",
+                    "action": "run",
+                    "name": name,
+                    "trigger": trigger,
+                    "source": source,
+                    "error": str(exc),
+                    "report_id": report.id,
+                    "failures": exc.failures,
+                }
+            
             except FlowDispatchError as exc:
                 logger.warning(
                     "sequence dispatch settle failed name=%s trigger=%s source=%s error=%s",
