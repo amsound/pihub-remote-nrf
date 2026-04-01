@@ -306,7 +306,7 @@ class BleDongleLink:
 
     async def power_off(self) -> None:
         steps = [
-            {"usage": "consumer", "code": "stop", "key_hold_ms": 40},
+            {"usage": "consumer", "code": "ac_home", "key_hold_ms": 40},
             {"usage": "consumer", "code": "ac_home", "key_hold_ms": 40},
             {"usage": "consumer", "code": "ac_home", "key_hold_ms": 40},
             {"usage": "consumer", "code": "menu", "key_hold_ms": 40},
@@ -317,7 +317,7 @@ class BleDongleLink:
 
     async def return_home(self) -> None:
         steps = [
-            {"usage": "consumer", "code": "stop", "key_hold_ms": 40},
+            {"usage": "consumer", "code": "ac_home", "key_hold_ms": 40},
             {"usage": "consumer", "code": "ac_home", "key_hold_ms": 40},
             {"usage": "consumer", "code": "ac_home", "key_hold_ms": 40},
             {"usage": "consumer", "code": "menu", "key_hold_ms": 40},
