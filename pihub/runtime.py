@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 
@@ -305,12 +306,18 @@ class RuntimeEngine:
                 try:
                     ok = await asyncio.shield(seq_task)
                 except asyncio.CancelledError:
-                    logger.exception(
+                    logger.warning(
                         "sequence caller cancelled name=%s trigger=%s source=%s; waiting for sequence task to finish",
                         name,
                         trigger,
                         source,
                     )
+
+                    current = asyncio.current_task()
+                    if current is not None:
+                        with contextlib.suppress(Exception):
+                            current.uncancel()
+
                     ok = await asyncio.shield(seq_task)
 
                 if ok:

@@ -425,13 +425,14 @@ class SequenceRunner:
                     }
                 )
 
-                logger.exception(
-                    "sequence step failed sequence=%s step=%s index=%d domain=%s action=%s; continuing",
+                logger.warning(
+                    "sequence step failed sequence=%s step=%s index=%d domain=%s action=%s error=%s; continuing",
                     seq.name,
                     step.id,
                     index,
                     step.domain,
                     step.action,
+                    str(exc),
                 )
                 continue
 
@@ -505,12 +506,13 @@ class SequenceRunner:
                     error="cancelled",
                 )
             except Exception as exc:
-                logger.exception(
-                    "dispatch step failed sequence=%s step=%s domain=%s action=%s",
+                logger.warning(
+                    "dispatch step failed sequence=%s step=%s domain=%s action=%s error=%s",
                     sequence_name,
                     step.id,
                     step.domain,
                     step.action,
+                    str(exc),
                 )
                 self._runtime.note_dispatch_outcome(
                     report=report,
