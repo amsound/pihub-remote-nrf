@@ -648,68 +648,118 @@ class SequenceRunner:
             )
             raise
 
+    def _require_speaker_ready(self, *, step: SequenceStep) -> None:
+        if self._speaker is None:
+            raise RuntimeError(f"{step.id}: speaker_unavailable")
+
+        state = getattr(self._speaker, "state", None)
+        if state is None:
+            raise RuntimeError(f"{step.id}: speaker_state_unavailable")
+
+        reachable = bool(getattr(state, "reachable", False))
+        connected = bool(getattr(state, "connected", False))
+        ready = bool(getattr(state, "ready", False))
+        last_error = str(getattr(state, "last_error", "") or "").strip()
+
+        if ready:
+            return
+
+        if not reachable:
+            suffix = f": {last_error}" if last_error else ""
+            raise RuntimeError(f"{step.id}: speaker_not_reachable{suffix}")
+        if not connected:
+            suffix = f": {last_error}" if last_error else ""
+            raise RuntimeError(f"{step.id}: speaker_not_connected{suffix}")
+
+        suffix = f": {last_error}" if last_error else ""
+        raise RuntimeError(f"{step.id}: speaker_not_ready{suffix}")
+
+    def _require_ble_ready(self, *, step: SequenceStep) -> None:
+        if self._ble is None:
+            raise RuntimeError(f"{step.id}: ble_unavailable")
+
+        status = getattr(self._ble, "status", {}) or {}
+        transport_open = bool(status.get("transport_open"))
+        connected = bool(status.get("connected"))
+        ready = bool(status.get("ready"))
+        last_error = str(status.get("last_error") or "").strip()
+
+        if ready:
+            return
+
+        if not transport_open:
+            suffix = f": {last_error}" if last_error else ""
+            raise RuntimeError(f"{step.id}: ble_transport_down{suffix}")
+        if not connected:
+            suffix = f": {last_error}" if last_error else ""
+            raise RuntimeError(f"{step.id}: ble_not_connected{suffix}")
+
+        suffix = f": {last_error}" if last_error else ""
+        raise RuntimeError(f"{step.id}: ble_not_ready{suffix}")
+
     async def _dispatch_step(self, *, sequence_name: str, step: SequenceStep) -> None:
+        del sequence_name
         args = step.args or {}
 
         if step.domain == "speaker" and step.action == "preset":
-            if self._speaker is not None:
-                await self._speaker.preset(int(args["preset"]))
+            self._require_speaker_ready(step=step)
+            await self._speaker.preset(int(args["preset"]))
             return
 
         if step.domain == "speaker" and step.action == "set_volume":
-            if self._speaker is not None:
-                if "setting" in args:
-                    setting_name = str(args["setting"])
-                    if setting_name == "watch_volume_pct":
-                        volume = self._watch_volume_pct()
-                    elif setting_name == "listen_volume_pct":
-                        volume = self._listen_volume_pct()
-                    else:
-                        raise ValueError(f"unknown volume setting: {setting_name}")
+            self._require_speaker_ready(step=step)
+            if "setting" in args:
+                setting_name = str(args["setting"])
+                if setting_name == "watch_volume_pct":
+                    volume = self._watch_volume_pct()
+                elif setting_name == "listen_volume_pct":
+                    volume = self._listen_volume_pct()
                 else:
-                    volume = int(args["volume"])
-                await self._speaker.set_volume(int(volume))
+                    raise ValueError(f"unknown volume setting: {setting_name}")
+            else:
+                volume = int(args["volume"])
+            await self._speaker.set_volume(int(volume))
             return
 
         if step.domain == "speaker" and step.action == "play_listen_target":
-            if self._speaker is not None:
-                target = self._listen_target()
-                if target["type"] == "preset":
-                    await self._speaker.preset(int(target["preset"]))
-                elif target["type"] == "stream":
-                    if self._settings is None:
-                        raise ValueError("stream listen target configured but settings unavailable")
-                    url = self._settings.get_stream_url(int(target["stream"]))
-                    if not url:
-                        raise ValueError(f"listen target stream_url_{int(target['stream'])} is empty")
-                    await self._speaker.play_url(url)
-                else:
-                    raise ValueError(f"unsupported listen target type: {target['type']}")
+            self._require_speaker_ready(step=step)
+            target = self._listen_target()
+            if target["type"] == "preset":
+                await self._speaker.preset(int(target["preset"]))
+            elif target["type"] == "stream":
+                if self._settings is None:
+                    raise ValueError("stream listen target configured but settings unavailable")
+                url = self._settings.get_stream_url(int(target["stream"]))
+                if not url:
+                    raise ValueError(f"listen target stream_url_{int(target['stream'])} is empty")
+                await self._speaker.play_url(url)
+            else:
+                raise ValueError(f"unsupported listen target type: {target['type']}")
             return
 
         if step.domain == "speaker" and step.action == "stop_playback":
-            if self._speaker is not None:
-                await self._speaker.stop_playback()
+            self._require_speaker_ready(step=step)
+            await self._speaker.stop_playback()
             return
 
         if step.domain == "speaker" and step.action == "power_off":
-            if self._speaker is not None:
-                await self._speaker.power_off()
+            self._require_speaker_ready(step=step)
+            await self._speaker.power_off()
             return
 
         if step.domain == "speaker" and step.action == "set_source":
-            if self._speaker is not None:
-                await self._speaker.set_source(str(args["source"]))
+            self._require_speaker_ready(step=step)
+            await self._speaker.set_source(str(args["source"]))
             return
 
         if step.domain == "ble" and step.action == "return_home":
-            if self._ble is not None:
-                await self._ble.return_home()
+            self._require_ble_ready(step=step)
+            await self._ble.return_home()
             return
 
         if step.domain == "ble" and step.action == "power_on":
-            if self._ble is not None:
-                await self._ble.power_on()
+            self._require_ble_ready(step=step)
+            await self._ble.power_on()
             return
 
         if step.domain == "tv" and step.action == "power_on":

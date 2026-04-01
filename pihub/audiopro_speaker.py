@@ -163,6 +163,8 @@ class AudioProSpeaker:
         self._poll_wake_evt = asyncio.Event()
         self._log_drop_once = False
         self._log_http_drop_once = False
+        self._link_down_logged = False
+        self._reconnect_wait_logged = False
 
         # Mute GET waiter
         self._mute_evt = asyncio.Event()
@@ -307,8 +309,14 @@ class AudioProSpeaker:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning("TCP loop error speaker_ip=%s err=%r", self._speaker_ip, e)
                 self._mark_down(str(e))
+                if not self._link_down_logged:
+                    logger.warning(
+                        "speaker link down speaker_ip=%s err=%r; continuing with speaker unavailable",
+                        self._speaker_ip,
+                        e,
+                    )
+                    self._link_down_logged = True
             finally:
                 # Tear down transport first so any in-flight read/drain wakes up quickly.
                 await self._disconnect()
@@ -318,11 +326,13 @@ class AudioProSpeaker:
                 self._poll_task = None
 
             if self._enabled and not self._stop_evt.is_set():
-                logger.info(
-                    "speaker reconnect scheduled speaker_ip=%s in %.1fs",
-                    self._speaker_ip,
-                    self._reconnect_s,
-                )
+                if not self._reconnect_wait_logged:
+                    logger.info(
+                        "speaker reconnect retrying in %.1fs speaker_ip=%s",
+                        self._reconnect_s,
+                        self._speaker_ip,
+                    )
+                    self._reconnect_wait_logged = True
                 await asyncio.sleep(self._reconnect_s)
 
     async def _connect(self) -> None:
@@ -332,6 +342,8 @@ class AudioProSpeaker:
         self._state.ready = False
         self._log_drop_once = False
         self._log_http_drop_once = False
+        self._link_down_logged = False
+        self._reconnect_wait_logged = False
         self._poll_wake_evt.clear()
 
         try:
