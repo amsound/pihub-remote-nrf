@@ -342,8 +342,6 @@ class AudioProSpeaker:
         self._state.ready = False
         self._log_drop_once = False
         self._log_http_drop_once = False
-        self._link_down_logged = False
-        self._reconnect_wait_logged = False
         self._poll_wake_evt.clear()
 
         try:
@@ -360,6 +358,8 @@ class AudioProSpeaker:
         self._state.reachable = True
         self._state.connected = True
         self._state.last_update_ts = _now()
+        self._link_down_logged = False
+        self._reconnect_wait_logged = False
         self._wake_poll_loop()
         logger.info("speaker tcp connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
 
