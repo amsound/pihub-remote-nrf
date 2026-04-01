@@ -26,6 +26,9 @@ _HTTP_TIMEOUT_S = 10
 SEND_TIMEOUT_S = 2.0        # fail fast if a TCP send/drain stalls
 DEFAULT_HTTP_POWEROFF_CMD = "setShutdown:0"
 
+HTTP_SCHEME = "https"
+VOLUME_STEP_PCT = 2
+
 # Poll knobs (tweak here)
 POLL_WIFI_PLAYING_S = 10.0   # play OR load
 POLL_WIFI_PAUSED_S = 15.0
@@ -126,8 +129,6 @@ class AudioProSpeaker:
         *,
         speaker_ip: str,
         tcp_port: int = _TCP_DEFAULT_PORT,
-        http_scheme: str = "https",
-        volume_step_pct: int = 2,
         command_interval_s: float = 0.2,
         reconnect_s: float = 3.0,
         connect_timeout_s: float = 3.0,
@@ -135,11 +136,7 @@ class AudioProSpeaker:
     ) -> None:
         self._speaker_ip = speaker_ip.strip()
         self._tcp_port = int(tcp_port)
-        self._http_scheme = (http_scheme or "https").strip().lower()
-        if self._http_scheme not in {"http", "https"}:
-            self._http_scheme = "https"
-
-        self._volume_step_pct = _clamp_int(int(volume_step_pct), 1, 25)
+        self._volume_step_pct = _clamp_int(int(VOLUME_STEP_PCT), 1, 25)
         self._command_interval_s = max(0.2, float(command_interval_s))  # doc says >=200ms
         
         self._reconnect_s = max(1.0, float(reconnect_s))
@@ -886,7 +883,7 @@ class AudioProSpeaker:
             timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
             self._session = aiohttp.ClientSession(timeout=timeout)
 
-        endpoint = f"{self._http_scheme}://{self._speaker_ip}{_HTTPAPI_PATH}"
+        endpoint = f"{HTTP_SCHEME}://{self._speaker_ip}{_HTTPAPI_PATH}"
         params = {"command": cmd}
 
         async with self._session.get(endpoint, params=params, ssl=False) as resp:

@@ -32,10 +32,8 @@ class Config:
     # Speaker backend selection
     speaker_backend: str
 
-    # Audio Pro / LinkPlay / WiiM
+    # Audio Pro
     speaker_ip: str
-    speaker_http_scheme: str
-    speaker_volume_step_pct: int
 
     # Samsung SmartThings soundbar
     smartthings_device_id: str
@@ -68,9 +66,6 @@ class Config:
         speaker_backend = (os.getenv("SPEAKER_BACKEND", "audiopro") or "audiopro").strip().lower()
 
         speaker_ip = (os.getenv("SPEAKER_IP", "") or "").strip()
-        speaker_http_scheme = (os.getenv("SPEAKER_HTTP_SCHEME", "https") or "https").strip().lower()
-        if speaker_http_scheme not in {"http", "https"}:
-            speaker_http_scheme = "https"
 
         smartthings_device_id = (os.getenv("SMARTTHINGS_DEVICE_ID", "") or "").strip()
         smartthings_token_file = (
@@ -81,8 +76,6 @@ class Config:
             smartthings_poll_interval_s = int(os.getenv("SMARTTHINGS_POLL_INTERVAL_S", "30"))
         except ValueError:
             smartthings_poll_interval_s = 30
-
-        speaker_volume_step_pct = 2
 
         return Config(
             tv_enabled=tv_enabled,
@@ -97,8 +90,6 @@ class Config:
             tv_name=tv_name,
             speaker_backend=speaker_backend,
             speaker_ip=speaker_ip,
-            speaker_http_scheme=speaker_http_scheme,
-            speaker_volume_step_pct=speaker_volume_step_pct,
             smartthings_device_id=smartthings_device_id,
             smartthings_token_file=smartthings_token_file,
             smartthings_poll_interval_s=smartthings_poll_interval_s,
