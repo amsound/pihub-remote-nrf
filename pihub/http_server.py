@@ -3579,7 +3579,12 @@ button:hover {{
             ble_link_ready = bool(ble_raw.get("ready"))
             ble_link_up = bool(ble_transport_up or ble_connected or ble_link_ready)
             ble_last_error = _norm_error(ble_raw.get("last_error"))
-            ble_error = bool(ble_raw.get("error")) or bool(ble_last_error)
+            ble_display_error = ble_last_error
+            ble_error = bool(ble_raw.get("error")) if "error" in ble_raw else False
+
+            if not ble_present and ble_last_error:
+                ble_display_error = None
+                ble_error = False
 
             ble_reasons: list[str] = []
             if not ble_present:
@@ -3613,7 +3618,7 @@ button:hover {{
                 "link_up": ble_link_up,
                 "link_ready": ble_link_ready,
                 "error": ble_error,
-                "last_error": ble_last_error,
+                "last_error": ble_display_error,
                 "details": {
                     "transport_open": ble_transport_up,
                     "advertising": ble_advertising,
