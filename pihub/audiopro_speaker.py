@@ -164,7 +164,6 @@ class AudioProSpeaker:
         self._log_drop_once = False
         self._log_http_drop_once = False
         self._link_down_logged = False
-        self._reconnect_wait_logged = False
 
         # Mute GET waiter
         self._mute_evt = asyncio.Event()
@@ -312,7 +311,7 @@ class AudioProSpeaker:
                 self._mark_down(str(e))
                 if not self._link_down_logged:
                     logger.warning(
-                        "speaker link down speaker_ip=%s err=%r; continuing with speaker unavailable",
+                        "speaker unavailable speaker_ip=%s err=%r; retrying",
                         self._speaker_ip,
                         e,
                     )
@@ -326,13 +325,6 @@ class AudioProSpeaker:
                 self._poll_task = None
 
             if self._enabled and not self._stop_evt.is_set():
-                if not self._reconnect_wait_logged:
-                    logger.info(
-                        "speaker reconnect retrying in %.1fs speaker_ip=%s",
-                        self._reconnect_s,
-                        self._speaker_ip,
-                    )
-                    self._reconnect_wait_logged = True
                 await asyncio.sleep(self._reconnect_s)
 
     async def _connect(self) -> None:
@@ -359,7 +351,6 @@ class AudioProSpeaker:
         self._state.connected = True
         self._state.last_update_ts = _now()
         self._link_down_logged = False
-        self._reconnect_wait_logged = False
         self._wake_poll_loop()
         logger.info("speaker tcp connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
 
