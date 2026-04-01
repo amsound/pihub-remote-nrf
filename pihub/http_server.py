@@ -1027,10 +1027,11 @@ pre.json {{
                 if details.get("last_change_age_s") is not None:
                     rows.append(live_row("Last change", fmt_age_compact(details.get("last_change_age_s"))))
 
-                if status != "ok":
-                    rows.append(live_row("WebSocket", bool_mark(details.get("ws_connected"))))
-                    if details.get("token_present") is False:
-                        rows.append(live_row("Token", "—"))
+                if details.get("presence_on") is True:
+                    if status != "ok":
+                        rows.append(live_row("WebSocket", bool_mark(details.get("ws_connected"))))
+                if details.get("token_present") is False:
+                    rows.append(live_row("Token", "—"))
 
             elif title == "Speaker":
                 rows.append(live_row("Backend", pretty_text(details.get("backend"))))
@@ -1045,11 +1046,16 @@ pre.json {{
                 if playback != "—":
                     rows.append(live_row("Playback", playback))
 
-            reasons_html = (
-                '<span class="muted">None</span>'
-                if not reasons
-                else "".join(f'<span class="chip">{self._html_escape(r)}</span>' for r in reasons)
-            )
+            reasons_html = ""
+            if reasons:
+                reasons_html = f"""
+  <div style="margin-top:0.85rem;">
+    <div class="muted" style="margin-bottom:0.35rem;">Reasons</div>
+    <div class="chips">
+      {"".join(f'<span class="chip">{self._html_escape(r)}</span>' for r in reasons)}
+    </div>
+  </div>
+"""
 
             error_html = ""
             if last_error:
@@ -1069,10 +1075,7 @@ pre.json {{
     {''.join(rows)}
   </div>
 
-  <div style="margin-top:0.85rem;">
-    <div class="muted" style="margin-bottom:0.35rem;">Reasons</div>
-    <div class="chips">{reasons_html}</div>
-  </div>
+  {reasons_html}
 
   {error_html}
 </div>
@@ -1177,7 +1180,7 @@ pre.json {{
       <div class="grid summary">
         <div class="card">
           <h3><span>Overall status</span>{self._status_badge_html(str(snapshot.get("status") or "unknown"))}</h3>
-          <div class="muted">App-wide health after non-critical reasons are filtered.</div>
+          <div class="muted">App-wide health after expected-idle states are filtered.</div>
         </div>
         <div class="card">
           <h3>Current mode</h3>
@@ -1516,14 +1519,19 @@ button:hover {{
         )
 
         def badge_html(result: str) -> str:
-            safe = self._html_escape(result)
+            label = {
+                "ok": "OK",
+                "ok_with_warnings": "OK with warnings",
+                "failed": "Failed",
+                "running": "Running",
+            }.get(result, result or "unknown")
             cls = {
                 "ok": "status-ok",
                 "ok_with_warnings": "status-degraded",
                 "failed": "status-error",
                 "running": "status-disabled",
             }.get(result, "status-disabled")
-            return f'<span class="status-badge {cls}">{safe}</span>'
+            return f'<span class="status-badge {cls}">{self._html_escape(label)}</span>'
 
         def fmt_duration(ms: object) -> str:
             try:
@@ -1571,7 +1579,7 @@ button:hover {{
             outcome_error = str(step.get("outcome_error") or "").strip()
             if outcome_error:
                 lines.append(
-                    f'<div class="step-line error-line"><strong>Dispatch warning:</strong> {self._html_escape(outcome_error)}</div>'
+                    f'<div class="step-line error-line"><strong>Dispatch error:</strong> {self._html_escape(outcome_error)}</div>'
                 )
 
             started = self._format_time_only(step.get("iso_ts_started"))
@@ -1669,7 +1677,7 @@ button:hover {{
             steps_html = "".join(render_step(step) for step in steps)
 
             warning_count_html = ""
-            if warnings:
+            if warnings and result == "ok_with_warnings":
                 warning_count_html = f'<span class="small-badge warn-count">{len(warnings)} warning{"s" if len(warnings) != 1 else ""}</span>'
 
             return f"""
@@ -1968,7 +1976,7 @@ button:hover {{
     </section>
 
     <section class="section">
-      <h2>Recent Issues</h2>
+      <h2>Recent Warnings and Errors</h2>
       {issues_html}
     </section>
   </main>
@@ -3095,17 +3103,23 @@ button:hover {{
 
         if self._tv is not None:
             await self._tv.reconcile_presence()
-            result["tv"] = {"ok": True}
+            result["tv"] = {"ok": True, "domain": "tv", "action": "refresh"}
         else:
             result["tv"] = {"ok": False, "error": "tv unavailable"}
 
         if self._speaker is not None and getattr(self._speaker, "enabled", False):
             await self._speaker.request_refresh()
-            result["speaker"] = {"ok": True}
+            result["speaker"] = {"ok": True, "domain": "speaker", "action": "refresh"}
         else:
             result["speaker"] = {"ok": False, "error": "speaker unavailable"}
 
-        return web.json_response(result)
+        result["ok"] = bool(
+            result["tv"] and result["tv"].get("ok")
+            and result["speaker"] and result["speaker"].get("ok")
+        )
+
+        status = 200 if result["ok"] else 503
+        return web.json_response(result, status=status)
 
     async def _handle_restart(self, _: web.Request) -> web.Response:
         async def _delayed_exit() -> None:
@@ -3489,7 +3503,10 @@ button:hover {{
 
             usb_last_error = _norm_error(usb_raw.get("last_error"))
             usb_display_error = None if usb_last_error == "no_input_device" else usb_last_error
-            usb_error = bool(usb_raw.get("error")) if "error" in usb_raw else bool(usb_last_error)
+            usb_error = bool(usb_raw.get("error")) if "error" in usb_raw else False
+
+            if usb_last_error in {"device_disconnected errno=19", "device_disconnected errno=5"}:
+                usb_error = False
 
             usb_reasons: list[str] = []
             if not usb_present:
@@ -3640,9 +3657,7 @@ button:hover {{
                 tv_reasons.append("tv.token_missing")
             if not tv_present:
                 tv_reasons.append("tv.presence_unknown")
-            elif not tv_link_up:
-                tv_reasons.append("tv.off")
-            elif not tv_link_ready:
+            elif tv_link_up and not tv_link_ready:
                 tv_reasons.append("tv.ws_not_ready")
             if tv_error:
                 tv_reasons.append("tv.error")
@@ -3675,7 +3690,7 @@ button:hover {{
             degraded_reasons.extend(
                 reason
                 for reason in tv_state["reasons"]
-                if reason not in {"tv.presence_unknown", "tv.off"}
+                if reason != "tv.presence_unknown"
             )
 
         # ---------------- Speaker ----------------
