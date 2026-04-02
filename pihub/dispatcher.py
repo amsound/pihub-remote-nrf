@@ -165,6 +165,59 @@ class Dispatcher:
     def _clear_direct_failure_latch(self) -> None:
         self._last_cmd_fail_log = 0.0
 
+def _set_tv_direct_fault(self, reason: str) -> None:
+    tv = getattr(self, "_tv", None)
+    if tv is None:
+        return
+    try:
+        ws = getattr(tv, "ws", None)
+        state = getattr(ws, "state", None)
+        if state is not None:
+            state.last_error = reason
+    except Exception:
+        logger.debug("failed to set tv direct fault reason=%s", reason, exc_info=True)
+
+
+def _clear_tv_direct_fault(self) -> None:
+    tv = getattr(self, "_tv", None)
+    if tv is None:
+        return
+    try:
+        ws = getattr(tv, "ws", None)
+        state = getattr(ws, "state", None)
+        if state is not None:
+            current = str(getattr(state, "last_error", "") or "")
+            if current.startswith("direct_action_"):
+                state.last_error = ""
+    except Exception:
+        logger.debug("failed to clear tv direct fault", exc_info=True)
+
+
+    def _set_speaker_direct_fault(self, reason: str) -> None:
+        sp = getattr(self, "_speaker", None)
+        if sp is None:
+            return
+        try:
+            state = getattr(sp, "state", None)
+            if state is not None:
+                state.last_error = reason
+        except Exception:
+            logger.debug("failed to set speaker direct fault reason=%s", reason, exc_info=True)
+
+
+    def _clear_speaker_direct_fault(self) -> None:
+        sp = getattr(self, "_speaker", None)
+        if sp is None:
+            return
+        try:
+            state = getattr(sp, "state", None)
+            if state is not None:
+                current = str(getattr(state, "last_error", "") or "")
+                if current.startswith("direct_action_"):
+                    state.last_error = None
+        except Exception:
+            logger.debug("failed to clear speaker direct fault", exc_info=True)
+
     async def _call_action_method(self, obj: Any, method: str, kwargs: dict) -> None:
         """Call an async method by name on obj (generic dispatch). Breaking by design."""
         if not isinstance(method, str) or not method or not _METHOD_RE.match(method):
@@ -437,18 +490,44 @@ class Dispatcher:
             )
             return
 
-        # Hard drop if speaker not reachable
         try:
             st = getattr(sp, "state", None)
-            if st is not None and not getattr(st, "reachable", False):
-                self._log_direct_failure(
-                    domain="speaker",
-                    reason="speaker_unreachable",
-                    action=str(a.get("action") or ""),
-                    rem_key=rem_key,
-                )
-                return
+            if st is not None:
+                reachable = bool(getattr(st, "reachable", False))
+                connected = bool(getattr(st, "connected", False))
+                ready = bool(getattr(st, "ready", False))
+
+                if not reachable:
+                    self._set_speaker_direct_fault("direct_action_speaker_not_reachable")
+                    self._log_direct_failure(
+                        domain="speaker",
+                        reason="speaker_unreachable",
+                        action=str(a.get("action") or ""),
+                        rem_key=rem_key,
+                    )
+                    return
+
+                if not connected:
+                    self._set_speaker_direct_fault("direct_action_speaker_not_connected")
+                    self._log_direct_failure(
+                        domain="speaker",
+                        reason="speaker_not_connected",
+                        action=str(a.get("action") or ""),
+                        rem_key=rem_key,
+                    )
+                    return
+
+                if not ready:
+                    self._set_speaker_direct_fault("direct_action_speaker_not_ready")
+                    self._log_direct_failure(
+                        domain="speaker",
+                        reason="speaker_not_ready",
+                        action=str(a.get("action") or ""),
+                        rem_key=rem_key,
+                    )
+                    return
         except Exception:
+            self._set_speaker_direct_fault("direct_action_speaker_state_error")
             self._log_direct_failure(
                 domain="speaker",
                 reason="speaker_state_error",
@@ -463,6 +542,7 @@ class Dispatcher:
 
         if action == "play_stream_url":
             if self._settings is None:
+                self._set_speaker_direct_fault("direct_action_settings_missing")
                 self._log_direct_failure(
                     domain="speaker",
                     reason="settings_missing",
@@ -473,6 +553,7 @@ class Dispatcher:
             try:
                 slot = int(a.get("slot"))
             except Exception:
+                self._set_speaker_direct_fault("direct_action_invalid_stream_slot")
                 self._log_direct_failure(
                     domain="speaker",
                     reason="invalid_stream_slot",
@@ -486,8 +567,10 @@ class Dispatcher:
                 return
             try:
                 await sp.play_url(url)
+                self._clear_speaker_direct_fault()
                 self._clear_direct_failure_latch()
             except Exception:
+                self._set_speaker_direct_fault("direct_action_play_url_failed")
                 self._log_direct_failure(
                     domain="speaker",
                     reason="play_url_failed",
@@ -499,8 +582,10 @@ class Dispatcher:
         kwargs = self._action_kwargs(a)
         try:
             await self._call_action_method(sp, action, kwargs)
+            self._clear_speaker_direct_fault()
             self._clear_direct_failure_latch()
         except Exception:
+            self._set_speaker_direct_fault("direct_action_speaker_action_failed")
             self._log_direct_failure(
                 domain="speaker",
                 reason="speaker_action_failed",
@@ -529,7 +614,6 @@ class Dispatcher:
             return
 
         action = a.get("action")
-
         if not isinstance(action, str) or not action:
             return
 
@@ -537,9 +621,20 @@ class Dispatcher:
         fn = getattr(self._tv, action, None)
         if fn is not None and callable(fn) and inspect.iscoroutinefunction(fn):
             try:
-                await fn(**kwargs)
+                result = await fn(**kwargs)
+                if result is False:
+                    self._set_tv_direct_fault("direct_action_tv_not_connected")
+                    self._log_direct_failure(
+                        domain="tv",
+                        reason="tv_not_connected",
+                        action=action,
+                        rem_key=rem_key,
+                    )
+                    return
+                self._clear_tv_direct_fault()
                 self._clear_direct_failure_latch()
             except Exception:
+                self._set_tv_direct_fault("direct_action_tv_action_failed")
                 self._log_direct_failure(
                     domain="tv",
                     reason="tv_action_failed",
@@ -548,10 +643,10 @@ class Dispatcher:
                 )
             return
 
-        # Treat as raw KEY_* string
         try:
             ok = await self._tv.ws.send_key(action)
             if ok is False:
+                self._set_tv_direct_fault("direct_action_tv_not_connected")
                 self._log_direct_failure(
                     domain="tv",
                     reason="tv_send_failed",
@@ -559,8 +654,10 @@ class Dispatcher:
                     rem_key=rem_key,
                 )
                 return
+            self._clear_tv_direct_fault()
             self._clear_direct_failure_latch()
         except Exception:
+            self._set_tv_direct_fault("direct_action_tv_send_exception")
             self._log_direct_failure(
                 domain="tv",
                 reason="tv_send_exception",
