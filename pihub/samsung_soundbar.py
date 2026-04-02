@@ -346,12 +346,19 @@ class SamsungSoundbar:
 
                 if not self._missing_token_logged:
                     logger.warning(
-                        "SmartThings token file missing; Samsung soundbar unavailable until restart token_file=%s",
+                        "SmartThings token file missing; continuing without speaker cloud connection token_file=%s",
                         self._token_store.path,
                     )
                     self._missing_token_logged = True
 
-                await self._stop_evt.wait()
+                self._poll_wake_evt.clear()
+                try:
+                    await asyncio.wait_for(
+                        self._poll_wake_evt.wait(),
+                        timeout=self._poll_interval_s,
+                    )
+                except asyncio.TimeoutError:
+                    pass
 
             except Exception as exc:
                 self._state.reachable = False
@@ -370,6 +377,7 @@ class SamsungSoundbar:
 
         payload = await self._get_device_payload()
         self._parse_payload(payload)
+        self._missing_token_logged = False
 
         if not self._startup_refresh_logged:
             name = self._state.friendly_name or "unknown"
