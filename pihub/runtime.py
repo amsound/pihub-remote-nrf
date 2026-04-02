@@ -589,10 +589,12 @@ class RuntimeEngine:
 
         if name == "listen" and self._last_flow == "listen":
             logger.info("device-state listen ignored (already listen)")
+            self._set_runtime_ok("ignored")
             return {"ok": False, "name": name, "reason": "last_flow_listen"}
 
         if name == "watch" and self._last_flow == "watch":
             logger.info("device-state watch ignored (already watch)")
+            self._set_runtime_ok("ignored")
             return {"ok": False, "name": name, "reason": "last_flow_watch"}
 
         sequence_name = {

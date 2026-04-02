@@ -3143,6 +3143,8 @@ button:hover {{
         return web.json_response({"ok": True, "domain": "speaker", "action": "refresh"})
 
     async def _handle_refresh_networked(self, _: web.Request) -> web.Response:
+        timeout_s = 5.0
+
         result = {
             "ok": True,
             "action": "refresh_networked",
@@ -3151,14 +3153,44 @@ button:hover {{
         }
 
         if self._tv is not None:
-            await self._tv.reconcile_presence()
-            result["tv"] = {"ok": True, "domain": "tv", "action": "refresh"}
+            try:
+                await asyncio.wait_for(self._tv.reconcile_presence(), timeout=timeout_s)
+                result["tv"] = {"ok": True, "domain": "tv", "action": "refresh"}
+            except asyncio.TimeoutError:
+                result["tv"] = {
+                    "ok": False,
+                    "domain": "tv",
+                    "action": "refresh",
+                    "error": f"timeout:{timeout_s:g}s",
+                }
+            except Exception as exc:
+                result["tv"] = {
+                    "ok": False,
+                    "domain": "tv",
+                    "action": "refresh",
+                    "error": str(exc),
+                }
         else:
             result["tv"] = {"ok": False, "error": "tv unavailable"}
 
         if self._speaker is not None and getattr(self._speaker, "enabled", False):
-            await self._speaker.request_refresh()
-            result["speaker"] = {"ok": True, "domain": "speaker", "action": "refresh"}
+            try:
+                await asyncio.wait_for(self._speaker.request_refresh(), timeout=timeout_s)
+                result["speaker"] = {"ok": True, "domain": "speaker", "action": "refresh"}
+            except asyncio.TimeoutError:
+                result["speaker"] = {
+                    "ok": False,
+                    "domain": "speaker",
+                    "action": "refresh",
+                    "error": f"timeout:{timeout_s:g}s",
+                }
+            except Exception as exc:
+                result["speaker"] = {
+                    "ok": False,
+                    "domain": "speaker",
+                    "action": "refresh",
+                    "error": str(exc),
+                }
         else:
             result["speaker"] = {"ok": False, "error": "speaker unavailable"}
 
@@ -3838,6 +3870,9 @@ button:hover {{
                 "last_flow": None,
                 "flow_running": False,
                 "last_trigger": None,
+                "error": False,
+                "last_error": None,
+                "last_result": None,
             }
         )
 
@@ -3863,6 +3898,12 @@ button:hover {{
 
         if speaker_state["status"] == "degraded":
             degraded_reasons.extend(speaker_state["reasons"])
+
+        runtime_error = _norm_error(runtime_state.get("last_error") or runtime_state.get("error"))
+        if runtime_state.get("error"):
+            degraded_reasons.append(
+                f"runtime.error:{runtime_error}" if runtime_error else "runtime.error"
+            )
 
         status = "ok" if not degraded_reasons else "degraded"
 
