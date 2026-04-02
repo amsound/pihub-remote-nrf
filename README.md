@@ -606,13 +606,11 @@ A flow can return `ok: false` when important domain steps fail, for example if B
   * sticky last trigger
 * Dispatcher owns key bindings and hot-path action dispatch
 
-* Build then push to docker hub
+* Build from repo root then push to docker hub
 
 ```bash
-# From repo root
 git fetch origin
 git reset --hard origin/main
-export DOCKER_BUILDKIT=1
 docker build -f Dockerfile -t pihub-nrf:latest .
 ```
 
@@ -620,8 +618,8 @@ Then push image to Docker Hub:
 
 ```bash
 VER=x.x.x
-docker tag pihub:latest a1exm/pihub-nrf:$VER
-docker tag pihub:latest a1exm/pihub-nrf:latest
+docker tag pihub-nrf:latest a1exm/pihub-nrf:$VER
+docker tag pihub-nrf:latest a1exm/pihub-nrf:latest
 docker push a1exm/pihub-nrf:$VER
 docker push a1exm/pihub-nrf:latest
-``
+```
