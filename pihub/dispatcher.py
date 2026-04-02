@@ -165,32 +165,32 @@ class Dispatcher:
     def _clear_direct_failure_latch(self) -> None:
         self._last_cmd_fail_log = 0.0
 
-def _set_tv_direct_fault(self, reason: str) -> None:
-    tv = getattr(self, "_tv", None)
-    if tv is None:
-        return
-    try:
-        ws = getattr(tv, "ws", None)
-        state = getattr(ws, "state", None)
-        if state is not None:
-            state.last_error = reason
-    except Exception:
-        logger.debug("failed to set tv direct fault reason=%s", reason, exc_info=True)
+    def _set_tv_direct_fault(self, reason: str) -> None:
+        tv = getattr(self, "_tv", None)
+        if tv is None:
+            return
+        try:
+            ws = getattr(tv, "ws", None)
+            state = getattr(ws, "state", None)
+            if state is not None:
+                state.last_error = reason
+        except Exception:
+            logger.debug("failed to set tv direct fault reason=%s", reason, exc_info=True)
 
 
-def _clear_tv_direct_fault(self) -> None:
-    tv = getattr(self, "_tv", None)
-    if tv is None:
-        return
-    try:
-        ws = getattr(tv, "ws", None)
-        state = getattr(ws, "state", None)
-        if state is not None:
-            current = str(getattr(state, "last_error", "") or "")
-            if current.startswith("direct_action_"):
-                state.last_error = ""
-    except Exception:
-        logger.debug("failed to clear tv direct fault", exc_info=True)
+    def _clear_tv_direct_fault(self) -> None:
+        tv = getattr(self, "_tv", None)
+        if tv is None:
+            return
+        try:
+            ws = getattr(tv, "ws", None)
+            state = getattr(ws, "state", None)
+            if state is not None:
+                current = str(getattr(state, "last_error", "") or "")
+                if current.startswith("direct_action_"):
+                    state.last_error = ""
+        except Exception:
+            logger.debug("failed to clear tv direct fault", exc_info=True)
 
 
     def _set_speaker_direct_fault(self, reason: str) -> None:
