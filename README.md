@@ -507,10 +507,10 @@ Routing behavior:
 * device-state signals are suppressed while another sequence is already running
 * device-state idempotence is based on the last logical flow, to avoid flapping / “howling around”. Device-state signals compare against the last successful logical flow (last_flow), not merely the current mode.
 
-Logical activity normalization:
+Logical activity normalisation:
 
-* `listen` and `listen_signal` both normalize to logical last flow `listen`
-* `watch` and `watch_signal` both normalize to logical last flow `watch`
+* `listen` and `listen_signal` both normalise to logical last flow `listen`
+* `watch` and `watch_signal` both normalise to logical last flow `watch`
 
 ---
 
