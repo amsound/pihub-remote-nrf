@@ -507,6 +507,8 @@ class SequenceRunner:
                 record.task.cancel()
                 try:
                     await record.task
+                except asyncio.CancelledError:
+                    pass
                 except Exception:
                     pass
                 failures.append(

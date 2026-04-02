@@ -740,6 +740,15 @@ class AudioProSpeaker:
 
     # ---------- controls (TCP) ----------
 
+    async def _require_control_sent(self, ok: bool, *, action: str) -> None:
+        if ok:
+            return
+
+        detail = str(self._state.last_error or "").strip()
+        if detail:
+            raise RuntimeError(f"{action}_not_sent: {detail}")
+        raise RuntimeError(f"{action}_not_sent")
+
     async def volume_up(self) -> None:
         v = self._state.volume
         cur = int(round((v or 0.0) * 100))
@@ -754,7 +763,8 @@ class AudioProSpeaker:
 
     async def set_volume(self, pct: int) -> None:
         target = max(0, min(100, int(pct)))
-        await self._send_control(f"MCU+VOL+{target:03d}")
+        ok = await self._send_control(f"MCU+VOL+{target:03d}")
+        await self._require_control_sent(ok, action="set_volume")
 
     async def set_muted(self, target: bool) -> None:
         # Always GET before SET (mute may have changed elsewhere)
@@ -793,8 +803,9 @@ class AudioProSpeaker:
             asyncio.create_task(self._pinfget())
 
     async def stop_playback(self) -> None:
-        if await self._send_control("MCU+PLY-STP"):
-            asyncio.create_task(self._pinfget())
+        ok = await self._send_control("MCU+PLY-STP")
+        await self._require_control_sent(ok, action="stop_playback")
+        asyncio.create_task(self._pinfget())
 
     async def next_track(self) -> None:
         await self._send_control("MCU+PLY+NXT")
@@ -808,7 +819,8 @@ class AudioProSpeaker:
 
     async def preset(self, n: int) -> None:
         n = _clamp_int(int(n), 1, 10)
-        await self._send_control(f"MCU+KEY+{n:03d}")
+        ok = await self._send_control(f"MCU+KEY+{n:03d}")
+        await self._require_control_sent(ok, action="preset")
 
     async def next_preset(self) -> None:
         await self._send_control("MCU+KEY+NXT")
@@ -817,9 +829,6 @@ class AudioProSpeaker:
         await self._send_control("MCU+KEY+PRE")
 
     async def set_source(self, source: str) -> None:
-        """
-        Device sources: wifi, hdmi, optical, line-in, bluetooth.
-        """
         src = (source or "").strip().lower()
         want_mode: str | None = None
         if src == "wifi":
@@ -834,11 +843,11 @@ class AudioProSpeaker:
             want_mode = "041"
 
         if not want_mode:
-            logger.info("set_source ignored (unsupported) source=%s", source)
-            return
+            raise RuntimeError(f"set_source_unsupported:{source}")
 
-        if await self._send_control(f"MCU+PLM+{want_mode}"):
-            asyncio.create_task(self._delayed_pinfget())
+        ok = await self._send_control(f"MCU+PLM+{want_mode}")
+        await self._require_control_sent(ok, action="set_source")
+        asyncio.create_task(self._delayed_pinfget())
 
     # -------------- HTTP API --------------
 
@@ -859,18 +868,14 @@ class AudioProSpeaker:
             logger.warning("speaker courtesy power_off failed: %s", e)
 
     async def play_url(self, url: str) -> None:
-        """
-        LinkPlay's TCP API doesn't cover "play arbitrary URL" for all firmwares.
-        For consistency with the TCP control plane, drop unless ready=True.
-        """
         if not url:
-            return
+            raise RuntimeError("play_url_missing")
 
         cmd = f"setPlayerCmd:play:{url}"
         ok = await self._http_control(cmd)
-        if ok:
-            task = asyncio.create_task(self._pinfget())
-            task.add_done_callback(self._log_pinfget_result)
+        await self._require_control_sent(ok, action="play_url")
+        task = asyncio.create_task(self._pinfget())
+        task.add_done_callback(self._log_pinfget_result)
 
     def _log_pinfget_result(self, task: asyncio.Task[None]) -> None:
         try:

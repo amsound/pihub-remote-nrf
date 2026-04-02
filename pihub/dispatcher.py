@@ -707,7 +707,16 @@ class Dispatcher:
 
             def _log_flow_result(t: asyncio.Task) -> None:
                 try:
-                    _ = t.result()
+                    result = t.result()
+                    if isinstance(result, dict) and not bool(result.get("ok")):
+                        logger.warning(
+                            "spawned flow task returned failure name=%s trigger=%s reason=%s error=%s payload=%s",
+                            name,
+                            trigger,
+                            result.get("reason"),
+                            result.get("error"),
+                            result,
+                        )
                 except asyncio.CancelledError:
                     logger.info("spawned flow task cancelled name=%s trigger=%s", name, trigger)
                 except Exception:

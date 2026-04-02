@@ -677,37 +677,34 @@ class SamsungSoundbar:
     # ---- No-op methods so existing flows can stay unchanged ----
 
     async def play(self) -> None:
-        logger.debug("SamsungSoundbar play ignored")
+        raise RuntimeError("unsupported_on_backend:play")
 
     async def pause(self) -> None:
-        logger.debug("SamsungSoundbar pause ignored")
+        raise RuntimeError("unsupported_on_backend:pause")
 
     async def play_pause(self) -> None:
-        logger.debug("SamsungSoundbar play_pause ignored")
+        raise RuntimeError("unsupported_on_backend:play_pause")
 
     async def stop_playback(self) -> None:
-        logger.debug("SamsungSoundbar stop_playback ignored")
+        raise RuntimeError("unsupported_on_backend:stop_playback")
 
     async def next_track(self) -> None:
-        logger.debug("SamsungSoundbar next_track ignored")
+        raise RuntimeError("unsupported_on_backend:next_track")
 
     async def previous_track(self) -> None:
-        logger.debug("SamsungSoundbar previous_track ignored")
+        raise RuntimeError("unsupported_on_backend:previous_track")
 
     async def set_source(self, source: str) -> None:
-        del source
-        logger.debug("SamsungSoundbar set_source ignored")
+        raise RuntimeError(f"unsupported_on_backend:set_source:{source}")
 
     async def preset(self, n: int) -> None:
-        del n
-        logger.debug("SamsungSoundbar preset ignored")
+        raise RuntimeError(f"unsupported_on_backend:preset:{n}")
 
     async def next_preset(self) -> None:
-        logger.debug("SamsungSoundbar next_preset ignored")
+        raise RuntimeError("unsupported_on_backend:next_preset")
 
     async def previous_preset(self) -> None:
-        logger.debug("SamsungSoundbar previous_preset ignored")
+        raise RuntimeError("unsupported_on_backend:previous_preset")
 
     async def play_url(self, url: str) -> None:
-        del url
-        logger.debug("SamsungSoundbar play_url ignored")
+        raise RuntimeError("unsupported_on_backend:play_url")

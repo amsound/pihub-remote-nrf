@@ -370,6 +370,8 @@ class HistoryStore:
         self._flush_evt.set()
 
     def _writer_loop(self) -> None:
+        retry_delay_s = 1.0
+
         while not self._stop_evt.is_set():
             self._flush_evt.wait()
             if self._stop_evt.is_set():
@@ -386,11 +388,19 @@ class HistoryStore:
                     self._flush_evt.clear()
                     deadline = time.monotonic() + _HISTORY_FLUSH_DEBOUNCE_S
 
-            with self._lock:
-                if not self._dirty:
-                    continue
-                self._write_locked()
-                self._dirty = False
+            try:
+                with self._lock:
+                    if not self._dirty:
+                        continue
+                    self._write_locked()
+                    self._dirty = False
+                retry_delay_s = 1.0
+            except Exception as exc:
+                with self._lock:
+                    self._dirty = True
+                self._flush_evt.set()
+                time.sleep(retry_delay_s)
+                retry_delay_s = min(retry_delay_s * 2.0, 30.0)
 
     def _write_locked(self) -> None:
         parent = os.path.dirname(self._path) or "."
