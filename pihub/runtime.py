@@ -85,18 +85,9 @@ class RuntimeEngine:
 
         if error:
             step_report.settle_outcome(status="failed", error=error)
-            if self._history is not None:
-                self._history.flush()
             return
 
         step_report.settle_outcome(status="ok")
-        if self._history is not None:
-            self._history.flush()
-            return
-
-        step_report.settle_outcome(status="ok")
-        if self._history is not None:
-            self._history.flush()
 
     def _set_runtime_ok(self, result: str = "ok") -> None:
         self._error = False

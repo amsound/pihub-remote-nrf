@@ -1,18 +1,17 @@
 """Structured in-memory history and flow run reports."""
 
-from __future__ import annotations
-
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from threading import RLock
+from threading import Event, RLock, Thread
+import atexit
 import json
 import os
 import time
 import uuid
 from typing import Any
 
-
+_HISTORY_FLUSH_DEBOUNCE_S = 0.25
 DEFAULT_HISTORY_PATH = "/data/history.json"
 
 
@@ -259,6 +258,17 @@ class HistoryStore:
         self._flow_reports: deque[FlowRunReport] = deque(maxlen=max_flow_reports)
         self._path = path
 
+        self._dirty = False
+        self._stop_evt = Event()
+        self._flush_evt = Event()
+        self._writer = Thread(
+            target=self._writer_loop,
+            name="history-writer",
+            daemon=True,
+        )
+        self._writer.start()
+        atexit.register(self.close)
+
     @property
     def path(self) -> str:
         return self._path
@@ -287,20 +297,37 @@ class HistoryStore:
                 if isinstance(item, dict):
                     self._flow_reports.append(FlowRunReport.from_dict(item))
 
+            self._dirty = False
+
     def flush(self) -> None:
         with self._lock:
             self._write_locked()
+            self._dirty = False
+
+    def close(self) -> None:
+        if self._stop_evt.is_set():
+            return
+        self._stop_evt.set()
+        self._flush_evt.set()
+        if self._writer.is_alive():
+            self._writer.join(timeout=1.0)
+        with self._lock:
+            if self._dirty:
+                self._write_locked()
+                self._dirty = False
 
     def clear(self) -> None:
         with self._lock:
             self._events.clear()
             self._flow_reports.clear()
-            self._write_locked()
+            self._dirty = True
+        self._request_flush()
 
     def add_event(self, event: HistoryEvent) -> None:
         with self._lock:
             self._events.appendleft(event)
-            self._write_locked()
+            self._dirty = True
+        self._request_flush()
 
     def emit(
         self,
@@ -326,7 +353,8 @@ class HistoryStore:
     def add_flow_report(self, report: FlowRunReport) -> None:
         with self._lock:
             self._flow_reports.appendleft(report)
-            self._write_locked()
+            self._dirty = True
+        self._request_flush()
 
     def list_events(self, *, limit: int = 50) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 200))
@@ -337,6 +365,32 @@ class HistoryStore:
         limit = max(1, min(int(limit), 100))
         with self._lock:
             return [report.to_dict() for report in list(self._flow_reports)[:limit]]
+
+    def _request_flush(self) -> None:
+        self._flush_evt.set()
+
+    def _writer_loop(self) -> None:
+        while not self._stop_evt.is_set():
+            self._flush_evt.wait()
+            if self._stop_evt.is_set():
+                break
+
+            self._flush_evt.clear()
+
+            deadline = time.monotonic() + _HISTORY_FLUSH_DEBOUNCE_S
+            while not self._stop_evt.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                if self._flush_evt.wait(timeout=remaining):
+                    self._flush_evt.clear()
+                    deadline = time.monotonic() + _HISTORY_FLUSH_DEBOUNCE_S
+
+            with self._lock:
+                if not self._dirty:
+                    continue
+                self._write_locked()
+                self._dirty = False
 
     def _write_locked(self) -> None:
         parent = os.path.dirname(self._path) or "."
