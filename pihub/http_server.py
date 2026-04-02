@@ -972,79 +972,137 @@ pre.json {{
                 f'</div>'
             )
 
-        def domain_card(title: str, data: dict) -> str:
+        def fmt_volume(value: object) -> str:
+            try:
+                n = int(value)
+            except Exception:
+                return "—"
+            return f"{n}%"
+
+        def pretty_source(value: object) -> str:
+            text = str(value or "").strip()
+            if not text:
+                return "—"
+            return text.replace("_", " ")
+
+        def pretty_text(value: object) -> str:
+            text = str(value or "").strip()
+            return text if text else "—"
+
+        def ble_conn_params_text(details: dict) -> str:
+            cp = details.get("conn_params") or {}
+            interval_ms = cp.get("interval_ms")
+            latency = cp.get("latency")
+            timeout_ms = cp.get("timeout_ms")
+            if interval_ms is None and latency is None and timeout_ms is None:
+                return "—"
+            return f"{interval_ms or '—'} / {latency or 0} / {timeout_ms or '—'}"
+
+        def domain_row_specs() -> dict[str, list[tuple[str, callable]]]:
+            return {
+                "usb": [
+                    ("Remote paired", lambda d: bool_mark((d.get("details") or {}).get("paired_remote"))),
+                    ("Reader running", lambda d: bool_mark((d.get("details") or {}).get("reader_running"))),
+                    ("Input grabbed", lambda d: bool_mark((d.get("details") or {}).get("grabbed"))),
+                    ("Path", lambda d: pretty_text(d.get("path")) if d.get("status") != "ok" and d.get("path") else None),
+                ],
+                "ble": [
+                    ("Connected", lambda d: bool_mark((d.get("details") or {}).get("connected"))),
+                    ("Ready", lambda d: bool_mark(d.get("link_ready"))),
+                    (
+                        "Conn params",
+                        lambda d: (
+                            ble_conn_params_text(d.get("details") or {})
+                            if ble_conn_params_text(d.get("details") or {}) != "—"
+                            else None
+                        ),
+                    ),
+                    (
+                        "Advertising",
+                        lambda d: "✅"
+                        if not bool((d.get("details") or {}).get("connected"))
+                        and bool((d.get("details") or {}).get("advertising"))
+                        else None
+                    ),
+                    (
+                        "Last disconnect",
+                        lambda d: (
+                            pretty_text((d.get("details") or {}).get("last_disc_reason"))
+                            if pretty_text((d.get("details") or {}).get("last_disc_reason")) != "—"
+                            else None
+                        ),
+                    ),
+                ],
+                "tv": [
+                    (
+                        "TV",
+                        lambda d: (
+                            "On" if (d.get("details") or {}).get("presence_on") is True
+                            else "Off" if (d.get("details") or {}).get("presence_on") is False
+                            else "Unknown"
+                        ),
+                    ),
+                    ("Presence", lambda d: pretty_source((d.get("details") or {}).get("presence_source"))),
+                    (
+                        "Last change",
+                        lambda d: (
+                            self._fmt_age_compact((d.get("details") or {}).get("last_change_age_s"))
+                            if (d.get("details") or {}).get("last_change_age_s") is not None
+                            else None
+                        ),
+                    ),
+                    (
+                        "WebSocket",
+                        lambda d: (
+                            bool_mark((d.get("details") or {}).get("ws_connected"))
+                            if (d.get("details") or {}).get("presence_on") is True and d.get("status") != "ok"
+                            else None
+                        ),
+                    ),
+                    (
+                        "Token",
+                        lambda d: "—" if (d.get("details") or {}).get("token_present") is False else None
+                    ),
+                ],
+                "speaker": [
+                    ("Backend", lambda d: pretty_text((d.get("details") or {}).get("backend"))),
+                    ("Input", lambda d: pretty_source((d.get("details") or {}).get("source"))),
+                    ("Volume", lambda d: fmt_volume((d.get("details") or {}).get("volume_pct"))),
+                    ("Muted", lambda d: "✅" if (d.get("details") or {}).get("muted") else "—"),
+                    (
+                        "Last update",
+                        lambda d: (
+                            self._fmt_age_compact((d.get("details") or {}).get("update_age_s"))
+                            if (d.get("details") or {}).get("update_age_s") is not None
+                            else None
+                        ),
+                    ),
+                    (
+                        "Playback",
+                        lambda d: (
+                            pretty_text((d.get("details") or {}).get("playback_status"))
+                            if pretty_text((d.get("details") or {}).get("playback_status")) != "—"
+                            else None
+                        ),
+                    ),
+                ],
+            }
+
+        def domain_card(domain_key: str, title: str, data: dict) -> str:
             status = str(data.get("status") or "unknown")
-            details = data.get("details") or {}
             reasons = data.get("reasons") or []
             last_error = data.get("last_error")
+            specs = domain_row_specs().get(domain_key, [])
 
-            rows: list[str] = []
-
-            if title == "USB":
-                rows.append(live_row("Remote paired", bool_mark(details.get("paired_remote"))))
-                rows.append(live_row("Reader running", bool_mark(details.get("reader_running"))))
-                rows.append(live_row("Input grabbed", bool_mark(details.get("grabbed"))))
-
-                if not bool(details.get("input_open")):
-                    rows.append(live_row("Input open", "—"))
-                if status != "ok" and data.get("path"):
-                    rows.append(live_row("Path", pretty_text(data.get("path"))))
-
-            elif title == "BLE":
-                rows.append(live_row("Connected", bool_mark(details.get("connected"))))
-                rows.append(live_row("Ready", bool_mark(data.get("link_ready"))))
-
-                cp = details.get("conn_params") or {}
-                interval_ms = cp.get("interval_ms")
-                latency = cp.get("latency")
-                timeout_ms = cp.get("timeout_ms")
-                if interval_ms is not None or latency is not None or timeout_ms is not None:
-                    rows.append(
-                        live_row(
-                            "Conn params",
-                            f"{interval_ms or '—'} / {latency or 0} / {timeout_ms or '—'}",
-                        )
-                    )
-
-                if not bool(details.get("connected")) and bool(details.get("advertising")):
-                    rows.append(live_row("Advertising", "✅"))
-
-                last_disc_reason = pretty_text(details.get("last_disc_reason"))
-                if last_disc_reason != "—":
-                    rows.append(live_row("Last disconnect", last_disc_reason))
-
-            elif title == "TV":
-                presence_on = details.get("presence_on")
-                if presence_on is True:
-                    rows.append(live_row("TV", "On"))
-                elif presence_on is False:
-                    rows.append(live_row("TV", "Off"))
-                else:
-                    rows.append(live_row("TV", "Unknown"))
-
-                rows.append(live_row("Presence", pretty_source(details.get("presence_source"))))
-
-                if details.get("last_change_age_s") is not None:
-                    rows.append(live_row("Last change", fmt_age_compact(details.get("last_change_age_s"))))
-
-                if details.get("presence_on") is True:
-                    if status != "ok":
-                        rows.append(live_row("WebSocket", bool_mark(details.get("ws_connected"))))
-                if details.get("token_present") is False:
-                    rows.append(live_row("Token", "—"))
-
-            elif title == "Speaker":
-                rows.append(live_row("Backend", pretty_text(details.get("backend"))))
-                rows.append(live_row("Input", pretty_source(details.get("source"))))
-                rows.append(live_row("Volume", fmt_volume(details.get("volume_pct"))))
-                rows.append(live_row("Muted", "✅" if details.get("muted") else "—"))
-
-                if details.get("update_age_s") is not None:
-                    rows.append(live_row("Last update", fmt_age_compact(details.get("update_age_s"))))
-
-                playback = pretty_text(details.get("playback_status"))
-                if playback != "—":
-                    rows.append(live_row("Playback", playback))
+            rows_html: list[str] = []
+            for label, fn in specs:
+                try:
+                    value = fn(data)
+                except Exception:
+                    value = None
+                if value is None:
+                    continue
+                rows_html.append(live_row(label, str(value)))
 
             reasons_html = ""
             if reasons:
@@ -1072,7 +1130,7 @@ pre.json {{
   </h3>
 
   <div class="live-kv">
-    {''.join(rows)}
+    {''.join(rows_html)}
   </div>
 
   {reasons_html}
@@ -1215,10 +1273,10 @@ pre.json {{
     <section class="section">
       <h2>Domains</h2>
       <div class="grid domains">
-        {domain_card("USB", snapshot.get("usb") or {})}
-        {domain_card("BLE", snapshot.get("ble") or {})}
-        {domain_card("TV", snapshot.get("tv") or {})}
-        {domain_card("Speaker", snapshot.get("speaker") or {})}
+        {domain_card("usb", "USB", snapshot.get("usb") or {})}
+        {domain_card("ble", "BLE", snapshot.get("ble") or {})}
+        {domain_card("tv", "TV", snapshot.get("tv") or {})}
+        {domain_card("speaker", "Speaker", snapshot.get("speaker") or {})}
       </div>
     </section>
 
@@ -3007,15 +3065,6 @@ button:hover {{
 """
         return web.Response(text=html, content_type="text/html")
 
-    def _status_badge_html(self, status: str) -> str:
-        safe = self._html_escape(status)
-        cls = {
-            "ok": "status-ok",
-            "degraded": "status-degraded",
-            "disabled": "status-disabled",
-        }.get(status, "status-error")
-        return f'<span class="status-badge {cls}">{safe}</span>'
-
     @staticmethod
     def _fmt_value(value: object) -> str:
         if value is True:
@@ -3262,7 +3311,329 @@ button:hover {{
         if not configured or not enabled:
             return "disabled"
         return "degraded" if degraded else "ok"
-    
+
+    def _mk_domain_state(
+        self,
+        *,
+        status: str,
+        configured: bool,
+        enabled: bool,
+        reasons: list[str],
+        present: bool,
+        link_up: bool,
+        link_ready: bool,
+        error: bool,
+        last_error: str | None,
+        details: dict[str, Any],
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        state = {
+            "status": status,
+            "configured": configured,
+            "enabled": enabled,
+            "reasons": reasons,
+            "present": present,
+            "link_up": link_up,
+            "link_ready": link_ready,
+            "error": error,
+            "last_error": last_error,
+            "details": details,
+        }
+        if path is not None:
+            state["path"] = path
+        return state
+
+    def _usb_health_state(self) -> dict[str, Any]:
+        if self._reader is None:
+            return self._mk_domain_state(
+                status="disabled",
+                configured=False,
+                enabled=False,
+                reasons=[],
+                present=False,
+                link_up=False,
+                link_ready=False,
+                error=False,
+                last_error=None,
+                details={},
+                path=None,
+            )
+
+        usb_raw = self._reader.status
+        usb_configured = True
+        usb_enabled = True
+        usb_present = bool(usb_raw.get("receiver_present"))
+        usb_path = usb_raw.get("input_path")
+        usb_link_up = bool(usb_raw.get("input_open"))
+        usb_link_ready = bool(
+            usb_raw.get("input_open")
+            and usb_raw.get("reader_running")
+            and usb_raw.get("grabbed")
+            and usb_raw.get("paired_remote")
+        )
+
+        usb_last_error = _norm_error(usb_raw.get("last_error"))
+        usb_display_error = None if usb_last_error == "no_input_device" else usb_last_error
+        usb_error = bool(usb_raw.get("error")) if "error" in usb_raw else False
+
+        if usb_last_error in {"device_disconnected errno=19", "device_disconnected errno=5"}:
+            usb_error = False
+
+        usb_reasons: list[str] = []
+        if not usb_present:
+            usb_reasons.append("usb.receiver_missing")
+        else:
+            if not bool(usb_raw.get("paired_remote")):
+                usb_reasons.append("usb.no_paired_remote")
+            if not bool(usb_raw.get("reader_running")):
+                usb_reasons.append("usb.reader_not_running")
+            if not bool(usb_raw.get("input_open")):
+                usb_reasons.append("usb.input_not_open")
+            if not bool(usb_raw.get("grabbed")):
+                usb_reasons.append("usb.not_grabbed")
+
+        if usb_error and usb_last_error:
+            usb_reasons.append("usb.error")
+
+        return self._mk_domain_state(
+            status=self._domain_status(
+                configured=usb_configured,
+                enabled=usb_enabled,
+                degraded=bool(usb_reasons),
+            ),
+            configured=usb_configured,
+            enabled=usb_enabled,
+            reasons=usb_reasons,
+            present=usb_present,
+            link_up=usb_link_up,
+            link_ready=usb_link_ready,
+            error=usb_error,
+            last_error=usb_display_error,
+            details={
+                "paired_remote": bool(usb_raw.get("paired_remote")),
+                "reader_running": bool(usb_raw.get("reader_running")),
+                "input_open": bool(usb_raw.get("input_open")),
+                "grabbed": bool(usb_raw.get("grabbed")),
+            },
+            path=usb_path,
+        )
+
+    def _ble_health_state(self) -> dict[str, Any]:
+        if self._ble is None:
+            return self._mk_domain_state(
+                status="disabled",
+                configured=False,
+                enabled=False,
+                reasons=[],
+                present=False,
+                link_up=False,
+                link_ready=False,
+                error=False,
+                last_error=None,
+                details={},
+                path=None,
+            )
+
+        ble_raw = self._ble.status
+        conn_params = ble_raw.get("conn_params") or {}
+
+        ble_configured = True
+        ble_enabled = True
+        ble_present = bool(ble_raw.get("adapter_present"))
+        ble_path = ble_raw.get("active_port")
+        ble_transport_up = bool(ble_raw.get("transport_open"))
+        ble_connected = bool(ble_raw.get("connected"))
+        ble_advertising = bool(ble_raw.get("advertising"))
+        ble_link_ready = bool(ble_raw.get("ready"))
+        ble_link_up = bool(ble_transport_up or ble_connected or ble_link_ready)
+        ble_last_error = _norm_error(ble_raw.get("last_error"))
+        ble_display_error = ble_last_error
+        ble_error = bool(ble_raw.get("error")) if "error" in ble_raw else False
+
+        if not ble_present and ble_last_error:
+            ble_display_error = None
+            ble_error = False
+
+        ble_reasons: list[str] = []
+        if not ble_present:
+            ble_reasons.append("ble.dongle_missing")
+        else:
+            if ble_link_ready:
+                pass
+            elif not ble_transport_up:
+                ble_reasons.append("ble.transport_down")
+            elif ble_connected:
+                ble_reasons.append("ble.connected_not_ready")
+            elif ble_advertising:
+                ble_reasons.append("ble.advertising")
+            else:
+                ble_reasons.append("ble.idle")
+
+        if ble_error and ble_last_error:
+            ble_reasons.append("ble.error")
+
+        return self._mk_domain_state(
+            status=self._domain_status(
+                configured=ble_configured,
+                enabled=ble_enabled,
+                degraded=bool(ble_reasons),
+            ),
+            configured=ble_configured,
+            enabled=ble_enabled,
+            reasons=ble_reasons,
+            present=ble_present,
+            link_up=ble_link_up,
+            link_ready=ble_link_ready,
+            error=ble_error,
+            last_error=ble_display_error,
+            details={
+                "transport_open": ble_transport_up,
+                "advertising": ble_advertising,
+                "connected": ble_connected,
+                "proto_report": ble_raw.get("proto_report"),
+                "last_disc_reason": ble_raw.get("last_disc_reason"),
+                "conn_params": conn_params or None,
+            },
+            path=ble_path,
+        )
+
+    def _tv_health_state(self) -> dict[str, Any]:
+        if self._tv is None:
+            return self._mk_domain_state(
+                status="disabled",
+                configured=False,
+                enabled=False,
+                reasons=[],
+                present=False,
+                link_up=False,
+                link_ready=False,
+                error=False,
+                last_error=None,
+                details={},
+            )
+
+        s = self._tv.snapshot()
+
+        tv_configured = True
+        tv_enabled = True
+        tv_present = s.presence_on is not None
+        tv_link_up = bool(s.presence_on is True)
+        tv_link_ready = bool(s.ws_connected and s.presence_on is True)
+        tv_last_error = _norm_error(s.last_error)
+        tv_error = bool(tv_last_error)
+
+        tv_reasons: list[str] = []
+        if not bool(s.token_present):
+            tv_reasons.append("tv.token_missing")
+        if not tv_present:
+            tv_reasons.append("tv.presence_unknown")
+        elif tv_link_up and not tv_link_ready:
+            tv_reasons.append("tv.ws_not_ready")
+        if tv_error:
+            tv_reasons.append("tv.error")
+
+        return self._mk_domain_state(
+            status=self._domain_status(
+                configured=tv_configured,
+                enabled=tv_enabled,
+                degraded=bool(tv_reasons),
+            ),
+            configured=tv_configured,
+            enabled=tv_enabled,
+            reasons=tv_reasons,
+            present=tv_present,
+            link_up=tv_link_up,
+            link_ready=tv_link_ready,
+            error=tv_error,
+            last_error=tv_last_error,
+            details={
+                "initialised": bool(s.initialised),
+                "presence_on": s.presence_on,
+                "presence_source": s.presence_source,
+                "last_change_age_s": s.last_change_age_s,
+                "ws_connected": bool(s.ws_connected),
+                "token_present": bool(s.token_present),
+            },
+        )
+
+    def _speaker_health_state(self) -> dict[str, Any]:
+        if self._speaker is None or not getattr(self._speaker, "enabled", False):
+            return self._mk_domain_state(
+                status="disabled",
+                configured=bool(self._speaker is not None),
+                enabled=False,
+                reasons=[],
+                present=False,
+                link_up=False,
+                link_ready=False,
+                error=False,
+                last_error=None,
+                details={},
+            )
+
+        snap = self._speaker.snapshot()
+        sstate = getattr(self._speaker, "state", None)
+
+        reachable = bool(getattr(sstate, "reachable", False))
+        connected = bool(getattr(sstate, "connected", False))
+        ready = bool(getattr(sstate, "ready", False))
+        speaker_last_error = _norm_error(getattr(sstate, "last_error", None))
+        speaker_error = bool(speaker_last_error)
+
+        speaker_configured = True
+        speaker_enabled = True
+        sp_present = reachable
+        sp_link_up = connected
+        sp_link_ready = ready
+
+        sp_reasons: list[str] = []
+        if not reachable:
+            sp_reasons.append("speaker.not_reachable")
+        elif not connected:
+            sp_reasons.append("speaker.not_connected")
+        elif not ready:
+            sp_reasons.append("speaker.not_ready")
+        if speaker_error:
+            sp_reasons.append("speaker.error")
+
+        return self._mk_domain_state(
+            status=self._domain_status(
+                configured=speaker_configured,
+                enabled=speaker_enabled,
+                degraded=bool(sp_reasons),
+            ),
+            configured=speaker_configured,
+            enabled=speaker_enabled,
+            reasons=sp_reasons,
+            present=sp_present,
+            link_up=sp_link_up,
+            link_ready=sp_link_ready,
+            error=speaker_error,
+            last_error=speaker_last_error,
+            details=dict(snap),
+        )
+
+    @staticmethod
+    def _fmt_age_compact(value: object) -> str:
+        try:
+            total = int(value)
+        except Exception:
+            return "—"
+
+        if total < 60:
+            return f"{total}s ago"
+
+        minutes, _seconds = divmod(total, 60)
+        if minutes < 60:
+            return f"{minutes}m ago"
+
+        hours, minutes = divmod(minutes, 60)
+        if hours < 24:
+            return f"{hours}h {minutes}m ago"
+
+        days, hours = divmod(hours, 24)
+        return f"{days}d {hours}h ago"
+
     @staticmethod
     def _read_system_uptime_s() -> float | None:
         try:
@@ -3470,226 +3841,18 @@ button:hover {{
             }
         )
 
+        usb_state = self._usb_health_state()
+        ble_state = self._ble_health_state()
+        tv_state = self._tv_health_state()
+        speaker_state = self._speaker_health_state()
+
         degraded_reasons: list[str] = []
-
-        # ---------------- USB ----------------
-        if self._reader is None:
-            usb_state = {
-                "status": "disabled",
-                "configured": False,
-                "enabled": False,
-                "reasons": [],
-                "present": False,
-                "path": None,
-                "link_up": False,
-                "link_ready": False,
-                "error": False,
-                "last_error": None,
-                "details": {},
-            }
-        else:
-            usb_raw = self._reader.status
-            usb_configured = True
-            usb_enabled = True
-            usb_present = bool(usb_raw.get("receiver_present"))
-            usb_path = usb_raw.get("input_path")
-            usb_link_up = bool(usb_raw.get("input_open"))
-            usb_link_ready = bool(
-                usb_raw.get("input_open")
-                and usb_raw.get("reader_running")
-                and usb_raw.get("grabbed")
-                and usb_raw.get("paired_remote")
-            )
-
-            usb_last_error = _norm_error(usb_raw.get("last_error"))
-            usb_display_error = None if usb_last_error == "no_input_device" else usb_last_error
-            usb_error = bool(usb_raw.get("error")) if "error" in usb_raw else False
-
-            if usb_last_error in {"device_disconnected errno=19", "device_disconnected errno=5"}:
-                usb_error = False
-
-            usb_reasons: list[str] = []
-            if not usb_present:
-                usb_reasons.append("usb.receiver_missing")
-            else:
-                if not bool(usb_raw.get("paired_remote")):
-                    usb_reasons.append("usb.no_paired_remote")
-                if not bool(usb_raw.get("reader_running")):
-                    usb_reasons.append("usb.reader_not_running")
-                if not bool(usb_raw.get("input_open")):
-                    usb_reasons.append("usb.input_not_open")
-                if not bool(usb_raw.get("grabbed")):
-                    usb_reasons.append("usb.not_grabbed")
-
-            if usb_error and usb_last_error:
-                usb_reasons.append("usb.error")
-
-            usb_state = {
-                "status": self._domain_status(
-                    configured=usb_configured,
-                    enabled=usb_enabled,
-                    degraded=bool(usb_reasons),
-                ),
-                "configured": usb_configured,
-                "enabled": usb_enabled,
-                "reasons": usb_reasons,
-                "present": usb_present,
-                "path": usb_path,
-                "link_up": usb_link_up,
-                "link_ready": usb_link_ready,
-                "error": usb_error,
-                "last_error": usb_display_error,
-                "details": {
-                    "paired_remote": bool(usb_raw.get("paired_remote")),
-                    "reader_running": bool(usb_raw.get("reader_running")),
-                    "input_open": bool(usb_raw.get("input_open")),
-                    "grabbed": bool(usb_raw.get("grabbed")),
-                },
-            }
 
         if usb_state["status"] == "degraded":
             degraded_reasons.extend(usb_state["reasons"])
 
-        # ---------------- BLE ----------------
-        if self._ble is None:
-            ble_state = {
-                "status": "disabled",
-                "configured": False,
-                "enabled": False,
-                "reasons": [],
-                "present": False,
-                "path": None,
-                "link_up": False,
-                "link_ready": False,
-                "error": False,
-                "last_error": None,
-                "details": {},
-            }
-        else:
-            ble_raw = self._ble.status
-            conn_params = ble_raw.get("conn_params") or {}
-
-            ble_configured = True
-            ble_enabled = True
-            ble_present = bool(ble_raw.get("adapter_present"))
-            ble_path = ble_raw.get("active_port")
-            ble_transport_up = bool(ble_raw.get("transport_open"))
-            ble_connected = bool(ble_raw.get("connected"))
-            ble_advertising = bool(ble_raw.get("advertising"))
-            ble_link_ready = bool(ble_raw.get("ready"))
-            ble_link_up = bool(ble_transport_up or ble_connected or ble_link_ready)
-            ble_last_error = _norm_error(ble_raw.get("last_error"))
-            ble_display_error = ble_last_error
-            ble_error = bool(ble_raw.get("error")) if "error" in ble_raw else False
-
-            if not ble_present and ble_last_error:
-                ble_display_error = None
-                ble_error = False
-
-            ble_reasons: list[str] = []
-            if not ble_present:
-                ble_reasons.append("ble.dongle_missing")
-            else:
-                if ble_link_ready:
-                    pass
-                elif not ble_transport_up:
-                    ble_reasons.append("ble.transport_down")
-                elif ble_connected:
-                    ble_reasons.append("ble.connected_not_ready")
-                elif ble_advertising:
-                    ble_reasons.append("ble.advertising")
-                else:
-                    ble_reasons.append("ble.idle")
-
-            if ble_error and ble_last_error:
-                ble_reasons.append("ble.error")
-
-            ble_state = {
-                "status": self._domain_status(
-                    configured=ble_configured,
-                    enabled=ble_enabled,
-                    degraded=bool(ble_reasons),
-                ),
-                "configured": ble_configured,
-                "enabled": ble_enabled,
-                "reasons": ble_reasons,
-                "present": ble_present,
-                "path": ble_path,
-                "link_up": ble_link_up,
-                "link_ready": ble_link_ready,
-                "error": ble_error,
-                "last_error": ble_display_error,
-                "details": {
-                    "transport_open": ble_transport_up,
-                    "advertising": ble_advertising,
-                    "connected": ble_connected,
-                    "proto_report": ble_raw.get("proto_report"),
-                    "last_disc_reason": ble_raw.get("last_disc_reason"),
-                    "conn_params": conn_params or None,
-                },
-            }
-
         if ble_state["status"] == "degraded":
             degraded_reasons.extend(ble_state["reasons"])
-
-        # ---------------- TV ----------------
-        if self._tv is None:
-            tv_state = {
-                "status": "disabled",
-                "configured": False,
-                "enabled": False,
-                "reasons": [],
-                "present": False,
-                "link_up": False,
-                "link_ready": False,
-                "error": False,
-                "last_error": None,
-                "details": {},
-            }
-        else:
-            s = self._tv.snapshot()
-
-            tv_configured = True
-            tv_enabled = True
-            tv_present = s.presence_on is not None
-            tv_link_up = bool(s.presence_on is True)
-            tv_link_ready = bool(s.ws_connected and s.presence_on is True)
-            tv_last_error = _norm_error(s.last_error)
-            tv_error = bool(tv_last_error)
-
-            tv_reasons: list[str] = []
-            if not bool(s.token_present):
-                tv_reasons.append("tv.token_missing")
-            if not tv_present:
-                tv_reasons.append("tv.presence_unknown")
-            elif tv_link_up and not tv_link_ready:
-                tv_reasons.append("tv.ws_not_ready")
-            if tv_error:
-                tv_reasons.append("tv.error")
-
-            tv_state = {
-                "status": self._domain_status(
-                    configured=tv_configured,
-                    enabled=tv_enabled,
-                    degraded=bool(tv_reasons),
-                ),
-                "configured": tv_configured,
-                "enabled": tv_enabled,
-                "reasons": tv_reasons,
-                "present": tv_present,
-                "link_up": tv_link_up,
-                "link_ready": tv_link_ready,
-                "error": tv_error,
-                "last_error": tv_last_error,
-                "details": {
-                    "initialised": bool(s.initialised),
-                    "presence_on": s.presence_on,
-                    "presence_source": s.presence_source,
-                    "last_change_age_s": s.last_change_age_s,
-                    "ws_connected": bool(s.ws_connected),
-                    "token_present": bool(s.token_present),
-                },
-            }
 
         if tv_state["status"] == "degraded":
             degraded_reasons.extend(
@@ -3698,74 +3861,18 @@ button:hover {{
                 if reason != "tv.presence_unknown"
             )
 
-        # ---------------- Speaker ----------------
-        if self._speaker is None or not getattr(self._speaker, "enabled", False):
-            speaker_state = {
-                "status": "disabled",
-                "configured": bool(self._speaker is not None),
-                "enabled": False,
-                "reasons": [],
-                "present": False,
-                "link_up": False,
-                "link_ready": False,
-                "error": False,
-                "last_error": None,
-                "details": {},
-            }
-        else:
-            snap = self._speaker.snapshot()
-            sstate = getattr(self._speaker, "state", None)
-
-            reachable = bool(getattr(sstate, "reachable", False))
-            connected = bool(getattr(sstate, "connected", False))
-            ready = bool(getattr(sstate, "ready", False))
-            speaker_last_error = _norm_error(getattr(sstate, "last_error", None))
-            speaker_error = bool(speaker_last_error)
-
-            speaker_configured = True
-            speaker_enabled = True
-            sp_present = reachable
-            sp_link_up = connected
-            sp_link_ready = ready
-
-            sp_reasons: list[str] = []
-            if not reachable:
-                sp_reasons.append("speaker.not_reachable")
-            elif not connected:
-                sp_reasons.append("speaker.not_connected")
-            elif not ready:
-                sp_reasons.append("speaker.not_ready")
-            if speaker_error:
-                sp_reasons.append("speaker.error")
-
-            speaker_state = {
-                "status": self._domain_status(
-                    configured=speaker_configured,
-                    enabled=speaker_enabled,
-                    degraded=bool(sp_reasons),
-                ),
-                "configured": speaker_configured,
-                "enabled": speaker_enabled,
-                "reasons": sp_reasons,
-                "present": sp_present,
-                "link_up": sp_link_up,
-                "link_ready": sp_link_ready,
-                "error": speaker_error,
-                "last_error": speaker_last_error,
-                "details": dict(snap),
-            }
-
         if speaker_state["status"] == "degraded":
             degraded_reasons.extend(speaker_state["reasons"])
 
         status = "ok" if not degraded_reasons else "degraded"
+
         domains = {
             "usb": usb_state["status"],
             "ble": ble_state["status"],
             "tv": tv_state["status"],
             "speaker": speaker_state["status"],
         }
-        
+
         ha = {
             "overall_status": status,
             "current_mode": runtime_state.get("mode"),
