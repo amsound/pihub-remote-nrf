@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import re
+import time
 from contextlib import suppress
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -18,6 +19,7 @@ try:
 except ImportError:  # pragma: no cover - fallback for older Python
     import importlib_resources  # type: ignore
 
+_DIRECT_FAIL_LOG_INTERVAL_S = 60.0
 
 # Repeat knobs (volume only: rem_vol_up/rem_vol_down). BLE never repeats.
 REPEAT_INITIAL_MS = 400
@@ -139,6 +141,29 @@ class Dispatcher:
                 "_extras",
             }
         }
+
+    def _log_direct_failure(
+        self,
+        *,
+        domain: str,
+        reason: str,
+        action: str | None,
+        rem_key: str | None,
+    ) -> None:
+        now = time.monotonic()
+        if (now - self._last_cmd_fail_log) < _DIRECT_FAIL_LOG_INTERVAL_S:
+            return
+        self._last_cmd_fail_log = now
+        logger.warning(
+            "direct action dropped domain=%s reason=%s action=%s rem_key=%s",
+            domain,
+            reason,
+            action,
+            rem_key,
+        )
+
+    def _clear_direct_failure_latch(self) -> None:
+        self._last_cmd_fail_log = 0.0
 
     async def _call_action_method(self, obj: Any, method: str, kwargs: dict) -> None:
         """Call an async method by name on obj (generic dispatch). Breaking by design."""
@@ -404,36 +429,84 @@ class Dispatcher:
 
         sp = getattr(self, "_speaker", None)
         if sp is None:
+            self._log_direct_failure(
+                domain="speaker",
+                reason="speaker_missing",
+                action=str(a.get("action") or ""),
+                rem_key=rem_key,
+            )
             return
 
         # Hard drop if speaker not reachable
         try:
             st = getattr(sp, "state", None)
             if st is not None and not getattr(st, "reachable", False):
+                self._log_direct_failure(
+                    domain="speaker",
+                    reason="speaker_unreachable",
+                    action=str(a.get("action") or ""),
+                    rem_key=rem_key,
+                )
                 return
         except Exception:
+            self._log_direct_failure(
+                domain="speaker",
+                reason="speaker_state_error",
+                action=str(a.get("action") or ""),
+                rem_key=rem_key,
+            )
             return
 
         action = a.get("action")
         if not isinstance(action, str) or not action:
             return
-    
+
         if action == "play_stream_url":
             if self._settings is None:
+                self._log_direct_failure(
+                    domain="speaker",
+                    reason="settings_missing",
+                    action=action,
+                    rem_key=rem_key,
+                )
                 return
             try:
                 slot = int(a.get("slot"))
             except Exception:
+                self._log_direct_failure(
+                    domain="speaker",
+                    reason="invalid_stream_slot",
+                    action=action,
+                    rem_key=rem_key,
+                )
                 return
             url = self._settings.get_stream_url(slot)
             if not url:
                 logger.info("speaker stream slot empty slot=%s", slot)
                 return
-            await sp.play_url(url)
+            try:
+                await sp.play_url(url)
+                self._clear_direct_failure_latch()
+            except Exception:
+                self._log_direct_failure(
+                    domain="speaker",
+                    reason="play_url_failed",
+                    action=action,
+                    rem_key=rem_key,
+                )
             return
 
         kwargs = self._action_kwargs(a)
-        await self._call_action_method(sp, action, kwargs)
+        try:
+            await self._call_action_method(sp, action, kwargs)
+            self._clear_direct_failure_latch()
+        except Exception:
+            self._log_direct_failure(
+                domain="speaker",
+                reason="speaker_action_failed",
+                action=action,
+                rem_key=rem_key,
+            )
 
     async def _handle_tv_action(
         self,
@@ -447,19 +520,53 @@ class Dispatcher:
         if edge != "down":
             return
         if self._tv is None:
+            self._log_direct_failure(
+                domain="tv",
+                reason="tv_missing",
+                action=str(a.get("action") or ""),
+                rem_key=rem_key,
+            )
             return
 
         action = a.get("action")
 
-        if isinstance(action, str) and action:
-            kwargs = self._action_kwargs(a)
-            fn = getattr(self._tv, action, None)
-            if fn is not None and callable(fn) and inspect.iscoroutinefunction(fn):
-                await fn(**kwargs)
-                return
+        if not isinstance(action, str) or not action:
+            return
 
-            # Treat as raw KEY_* string
-            await self._tv.ws.send_key(action)
+        kwargs = self._action_kwargs(a)
+        fn = getattr(self._tv, action, None)
+        if fn is not None and callable(fn) and inspect.iscoroutinefunction(fn):
+            try:
+                await fn(**kwargs)
+                self._clear_direct_failure_latch()
+            except Exception:
+                self._log_direct_failure(
+                    domain="tv",
+                    reason="tv_action_failed",
+                    action=action,
+                    rem_key=rem_key,
+                )
+            return
+
+        # Treat as raw KEY_* string
+        try:
+            ok = await self._tv.ws.send_key(action)
+            if ok is False:
+                self._log_direct_failure(
+                    domain="tv",
+                    reason="tv_send_failed",
+                    action=action,
+                    rem_key=rem_key,
+                )
+                return
+            self._clear_direct_failure_latch()
+        except Exception:
+            self._log_direct_failure(
+                domain="tv",
+                reason="tv_send_exception",
+                action=action,
+                rem_key=rem_key,
+            )
             return
 
     async def _handle_flow_action(
