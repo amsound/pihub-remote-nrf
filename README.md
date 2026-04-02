@@ -67,28 +67,20 @@ services:
     environment:
       TV_IP: "192.168.xx.xx"
       TV_MAC: "xx:xx:xx:xx:xx:xx"
-
       # Speaker backend selection:
-      #   audiopro
-      #   samsung_soundbar
       SPEAKER_BACKEND: "audiopro"
-
-      # Audio Pro / LinkPlay / WiiM
       SPEAKER_IP: "192.168.xx.xx"
 
       # Samsung SmartThings soundbar
       # SMARTTHINGS_DEVICE_ID: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
       # DEBUG: 1           # Verbose Logging
-
     volumes:
       - /home/pi/pihub-data:/data
       - /dev/input:/dev/input:ro
       - /etc/localtime:/etc/localtime:ro
-
     devices:
       - /dev/ttyACM0:/dev/ttyACM0
-
     group_add:
       - dialout
 
@@ -101,7 +93,6 @@ services:
 
 `/data` is used for persistent tokens and state. 
 
-If the BLE dongle is not attached, remove or comment out the `/dev/ttyACM0` device mapping. Docker cannot mount a device path that does not exist on the host.
 
 Examples:
 
@@ -109,6 +100,8 @@ Examples:
 * SmartThings token file: `/data/smartthings-token.json`
 
 For the Samsung SmartThings speaker backend, PiHub expects a token file at `/data/smartthings-token.json` containing an access token, refresh token, expiry, and SmartApp client credentials. PiHub will refresh the SmartThings access token automatically when needed.
+
+If the BLE dongle is not attached, remove or comment out the `/dev/ttyACM0` device mapping. Docker cannot mount a device path that does not exist on the host.
 
 Start with:
 
@@ -348,6 +341,8 @@ GET http://<host>:9123/health
 
 * Speaker `details` vary slightly by backend. For example, the Samsung SmartThings backend also reports fields such as `power_on`, `raw_input_source`, `sound_from`, and `listen_active`.
 * Domain status may be degraded without degrading overall PiHub status if the condition is informational or non-critical (for example TV presence still unknown during startup)
+
+---
 
 ### Commands accepted over HTTP
 
