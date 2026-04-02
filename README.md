@@ -36,7 +36,7 @@ It’s lightweight, locally stateful, and tuned for Raspberry Pi 3B+ (aarch64). 
 
 * Raspberry Pi 3B+ (tested on **aarch64** Raspberry Pi OS Lite Bookworm)
 * Logitech Unifying receiver (model U-0007 recommended)
-* Nordic nRF52840 based [Dongle] (https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle) or a `Ebyte E104-BT5040U` for BLE
+* Nordic nRF52840 based [dongle](https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle) or an `Ebyte E104-BT5040U` for BLE connectivity
 * Samsung Tizen based TV (same VLAN required for SSDP and WoL)
 * One supported speaker backend:
   * **Audio Pro speaker** with local TCP/HTTP control
