@@ -9,12 +9,14 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .history import FlowRunReport, FlowStepReport
+from .settings import SettingsData
 
 logger = logging.getLogger(__name__)
 
 SPEAKER_WATCH_SOURCE = "hdmi"
 LISTEN_SOURCES = {"wifi", "airplay", "multiroom-secondary"}
-DISPATCH_SETTLE_TIMEOUT_S = 15.0
+DISPATCH_SETTLE_TIMEOUT_S = 10.0
+_FLOW_DEFAULTS = SettingsData()
 
 
 class FlowDispatchError(RuntimeError):
@@ -791,32 +793,42 @@ class SequenceRunner:
 
     def _watch_volume_pct(self) -> int:
         if self._settings is None:
-            return WATCH_VOLUME_PCT
+            return int(_FLOW_DEFAULTS.watch_volume_pct)
         try:
             return int(self._settings.get_watch_volume_pct())
         except Exception:
-            return WATCH_VOLUME_PCT
+            return int(_FLOW_DEFAULTS.watch_volume_pct)
+
 
     def _listen_volume_pct(self) -> int:
         if self._settings is None:
-            return LISTEN_VOLUME_PCT
+            return int(_FLOW_DEFAULTS.listen_volume_pct)
         try:
             return int(self._settings.get_listen_volume_pct())
         except Exception:
-            return LISTEN_VOLUME_PCT
+            return int(_FLOW_DEFAULTS.listen_volume_pct)
 
-    def _listen_target(self) -> dict[str, Any]:
+
+    def _listen_target(self) -> dict[str, int | str]:
         if self._settings is None:
-            return {"type": "preset", "preset": LISTEN_PRESET, "stream": 1}
+            return {
+                "type": str(_FLOW_DEFAULTS.listen_target_type),
+                "preset": int(_FLOW_DEFAULTS.listen_target_preset),
+                "stream": int(_FLOW_DEFAULTS.listen_target_stream),
+            }
         try:
             target = self._settings.get_listen_target()
             return {
-                "type": str(target.get("type") or "preset"),
-                "preset": int(target.get("preset") or LISTEN_PRESET),
-                "stream": int(target.get("stream") or 1),
+                "type": str(target.get("type") or _FLOW_DEFAULTS.listen_target_type),
+                "preset": int(target.get("preset") or _FLOW_DEFAULTS.listen_target_preset),
+                "stream": int(target.get("stream") or _FLOW_DEFAULTS.listen_target_stream),
             }
         except Exception:
-            return {"type": "preset", "preset": LISTEN_PRESET, "stream": 1}
+            return {
+                "type": str(_FLOW_DEFAULTS.listen_target_type),
+                "preset": int(_FLOW_DEFAULTS.listen_target_preset),
+                "stream": int(_FLOW_DEFAULTS.listen_target_stream),
+            }
 
     async def _wait_for_tv_on(self, *, timeout_s: float) -> None:
         if self._tv is None:

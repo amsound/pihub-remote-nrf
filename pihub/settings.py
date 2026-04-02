@@ -15,13 +15,9 @@ DEFAULT_SETTINGS_PATH = "/data/settings.json"
 class SettingsData:
     watch_volume_pct: int = 0
     listen_volume_pct: int = 0
-
-    # listen target: preset or stream URL slot
-    listen_target_type: str = "preset"   # "preset" | "stream"
-    listen_target_preset: int = 1        # 1..6
-    listen_target_stream: int = 1        # 1..4
-
-    # configurable direct stream URLs
+    listen_target_type: str = "preset"
+    listen_target_preset: int = 1
+    listen_target_stream: int = 1
     stream_url_1: str = ""
     stream_url_2: str = ""
     stream_url_3: str = ""
@@ -104,6 +100,8 @@ class SettingsStore:
 
     @staticmethod
     def _validate_payload(raw: dict, *, speaker_backend: str | None = None) -> dict:
+        defaults = SettingsData()
+
         def _int_in_range(name: str, lo: int, hi: int, default: int) -> int:
             value = raw.get(name, default)
             try:
@@ -120,20 +118,28 @@ class SettingsStore:
 
         backend = str(speaker_backend or "").strip().lower()
 
-        listen_target_type = _str("listen_target_type", "stream").lower()
+        listen_target_type = _str("listen_target_type", defaults.listen_target_type).lower()
         if listen_target_type not in {"preset", "stream"}:
             raise ValueError("listen_target_type must be 'preset' or 'stream'")
 
         out = {
-            "watch_volume_pct": _int_in_range("watch_volume_pct", 0, 100, 30),
-            "listen_volume_pct": _int_in_range("listen_volume_pct", 0, 100, 22),
+            "watch_volume_pct": _int_in_range(
+                "watch_volume_pct", 0, 100, defaults.watch_volume_pct
+            ),
+            "listen_volume_pct": _int_in_range(
+                "listen_volume_pct", 0, 100, defaults.listen_volume_pct
+            ),
             "listen_target_type": listen_target_type,
-            "listen_target_preset": _int_in_range("listen_target_preset", 1, 6, 1),
-            "listen_target_stream": _int_in_range("listen_target_stream", 1, 4, 1),
-            "stream_url_1": _str("stream_url_1"),
-            "stream_url_2": _str("stream_url_2"),
-            "stream_url_3": _str("stream_url_3"),
-            "stream_url_4": _str("stream_url_4"),
+            "listen_target_preset": _int_in_range(
+                "listen_target_preset", 1, 6, defaults.listen_target_preset
+            ),
+            "listen_target_stream": _int_in_range(
+                "listen_target_stream", 1, 4, defaults.listen_target_stream
+            ),
+            "stream_url_1": _str("stream_url_1", defaults.stream_url_1),
+            "stream_url_2": _str("stream_url_2", defaults.stream_url_2),
+            "stream_url_3": _str("stream_url_3", defaults.stream_url_3),
+            "stream_url_4": _str("stream_url_4", defaults.stream_url_4),
         }
 
         for key in ("stream_url_1", "stream_url_2", "stream_url_3", "stream_url_4"):
