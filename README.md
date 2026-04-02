@@ -10,7 +10,7 @@ It listens to RF key events from a Logitech Harmony Remote (simple type, no disp
   * **Samsung soundbar** via **SmartThings cloud API**
 * **Local runtime flows** over HTTP
 
-It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No Harmony Hub or cloud required.
+It’s lightweight, locally stateful, and tuned for Raspberry Pi 3B+ (aarch64). No Harmony Hub or cloud required.
 
 ---
 
@@ -28,26 +28,28 @@ It’s lightweight, stateless, and tuned for **Raspberry Pi 3B+ (aarch64)**. No 
 * **Device-state signals**: passive state-driven routing from TV/speaker changes into local runtime behavior
 * **Precise edges**: explicit **down/up**; filters kernel auto-repeat
 * **Long-press** via `min_hold_ms`
-* **Bounded local queueing on hot paths**: with reconnect and best-effort recovery; unavailable domains may still drop actions
+* **Bounded local queueing on hot paths**: with reconnect and best-effort recovery; explicit flows now fail truthfully when important domain actions cannot be sent
 
 ---
 
 ## 🧩 Requirements
 
-* Raspberry Pi 3B+ (tested on **aarch64** Raspberry Pi OS Lite)
+* Raspberry Pi 3B+ (tested on **aarch64** Raspberry Pi OS Lite Bookworm)
 * Logitech Unifying receiver (model U-0007 recommended)
-* Nordic nRF52840 Dongle  
-  `https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle`
-* Samsung TV - same VLAN recommended
+* Nordic nRF52840 Dongle `https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle` for BLE
+* Samsung TV (same VLAN recommended for SSDP)
 * One supported speaker backend:
   * **Audio Pro / LinkPlay / Arylic / WiiM** speaker - local TCP/HTTP control, should work across VLANs
   * **Samsung soundbar** with SmartThings support enabled - cloud control via SmartThings API
+
+* Logitech Unifying receiver and BLE are the core paths
+* TV and speaker domains are optional integrations
 
 ---
 
 ## 🚀 Quick Start
 
-### docker-compose.yml & prebuilt docker image
+### save docker-compose.yml & use prebuilt docker image
 
 ```yaml
 services:
@@ -97,7 +99,9 @@ services:
         max-file: "3"
 ```
 
-`/data` is used for persistent tokens and state.
+`/data` is used for persistent tokens and state. 
+
+If the BLE dongle is not attached, remove or comment out the `/dev/ttyACM0` device mapping. Docker cannot mount a device path that does not exist on the host.
 
 Examples:
 
@@ -110,27 +114,7 @@ Start with:
 
 ```bash
 docker compose up -d
-```
-
-### Build then push to docker hub (personal reminder)
-
-```bash
-# From repo root
-git fetch origin
-git reset --hard origin/main
-export DOCKER_BUILDKIT=1
-docker build -f Dockerfile -t pihub-nrf:latest .
-```
-
-Then push image to Docker Hub:
-
-```bash
-VER=x.x.x
-docker tag pihub:latest a1exm/pihub-nrf:$VER
-docker tag pihub:latest a1exm/pihub-nrf:latest
-docker push a1exm/pihub-nrf:$VER
-docker push a1exm/pihub-nrf:latest
-```
+````
 
 ---
 
@@ -149,7 +133,6 @@ docker push a1exm/pihub-nrf:latest
 | `TV_ENABLED` | enable Samsung TV domain | default `true` |
 | `SPEAKER_BACKEND` | speaker backend selection | `audiopro` or `samsung_soundbar`; default `audiopro` |
 | `SPEAKER_IP` | Audio Pro / LinkPlay / WiiM speaker IP address | required for `audiopro` backend |
-| `SPEAKER_HTTP_SCHEME` | Audio Pro speaker HTTP scheme | `https` |
 | `SMARTTHINGS_DEVICE_ID` | SmartThings Samsung soundbar device ID | required for `samsung_soundbar` backend |
 | `SMARTTHINGS_TOKEN_FILE` | SmartThings token path | `/data/smartthings-token.json` |
 | `SMARTTHINGS_POLL_INTERVAL_S` | Samsung soundbar background refresh interval | default `30` |
@@ -181,23 +164,6 @@ Preferred file shape:
 PiHub accepts this flat PiHub-owned format and will automatically refresh the SmartThings access token when needed.
 
 Legacy nested token files from other integrations may still be accepted for compatibility, but the flat format above is the canonical PiHub format.
-
-### Current terminology
-
-* **mode** = current active keymap / button behavior set
-* **flow** = named local sequence of steps; some steps block (sleep, wait), while dispatch steps are fire-and-continue requests
-* **device-state signal** = a live edge emitted by a domain (for example TV on, or speaker entering a listen-capable source/playback state)
-* **device-state flow** = a flow triggered from a device-state signal rather than an explicit remote intent
-* **last_trigger** = sticky record of the most recent runtime trigger source
-
-### Flow semantics
-
-* a flow takes one snapshot at the start
-* when= predicates are evaluated against that start snapshot only
-* dispatch means “request/send and continue”
-* wait.tv_on / wait.tv_off are the authoritative confirmation steps
-* mode is set at the start of the flow
-* last_flow is only updated after successful completion
 
 ---
 
@@ -234,149 +200,151 @@ These pages are intended as lightweight local operator tools rather than a full 
 GET http://<host>:9123/health
 ```
 
-Example response:
+<details>
+  <summary>Example json response:</summary>
 
-```json
-{
-  "pihub_id": "living-room-pihub",
-  "status": "ok",
-  "degraded_reasons": [],
-  "domains": {
-    "usb": "ok",
-    "ble": "ok",
-    "tv": "ok",
-    "speaker": "ok"
-  },
-  "runtime": {
-    "mode": "watch",
-    "last_flow": "watch",
-    "flow_running": false,
-    "last_trigger": "flow.watch",
-    "error": false,
-    "last_error": null,
-    "last_result": "ok"
-  },
-  "usb": {
+  ```json
+  {
+    "pihub_id": "living-room-pihub",
     "status": "ok",
-    "configured": true,
-    "enabled": true,
-    "reasons": [],
-    "present": true,
-    "path": "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd",
-    "link_up": true,
-    "link_ready": true,
-    "error": false,
-    "last_error": null,
+    "degraded_reasons": [],
+    "domains": {
+      "usb": "ok",
+      "ble": "ok",
+      "tv": "ok",
+      "speaker": "ok"
+    },
+    "runtime": {
+      "mode": "watch",
+      "last_flow": "watch",
+      "flow_running": false,
+      "last_trigger": "flow.watch",
+      "error": false,
+      "last_error": null,
+      "last_result": "ok"
+    },
+    "usb": {
+      "status": "ok",
+      "configured": true,
+      "enabled": true,
+      "reasons": [],
+      "present": true,
+      "path": "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd",
+      "link_up": true,
+      "link_ready": true,
+      "error": false,
+      "last_error": null,
+      "details": {
+        "paired_remote": true,
+        "reader_running": true,
+        "input_open": true,
+        "grabbed": true
+      }
+    },
+    "ble": {
+      "status": "ok",
+      "configured": true,
+      "enabled": true,
+      "reasons": [],
+      "present": true,
+      "path": "/dev/ttyACM0",
+      "link_up": true,
+      "link_ready": true,
+      "error": false,
+      "last_error": null,
+      "details": {
+        "transport_open": true,
+        "advertising": false,
+        "connected": true,
+        "proto_report": true,
+        "last_disc_reason": null,
+        "conn_params": {
+          "interval_ms": 15,
+          "latency": 0,
+          "timeout_ms": 3000
+        }
+      }
+    },
+    "tv": {
+      "status": "ok",
+      "configured": true,
+      "enabled": true,
+      "reasons": [],
+      "present": true,
+      "link_up": true,
+      "link_ready": true,
+      "error": false,
+      "last_error": null,
+      "details": {
+        "initialised": true,
+        "presence_on": true,
+        "presence_source": "ssdp_alive",
+        "last_change_age_s": 4008,
+        "ws_connected": true,
+        "token_present": true
+      }
+    },
+    "speaker": {
+      "status": "ok",
+      "configured": true,
+      "enabled": true,
+      "reasons": [],
+      "present": true,
+      "link_up": true,
+      "link_ready": true,
+      "error": false,
+      "last_error": null,
     "details": {
-      "paired_remote": true,
-      "reader_running": true,
-      "input_open": true,
-      "grabbed": true
-    }
-  },
-  "ble": {
-    "status": "ok",
-    "configured": true,
-    "enabled": true,
-    "reasons": [],
-    "present": true,
-    "path": "/dev/ttyACM0",
-    "link_up": true,
-    "link_ready": true,
-    "error": false,
-    "last_error": null,
-    "details": {
-      "transport_open": true,
-      "advertising": false,
+      "backend": "audiopro",
+      "reachable": true,
       "connected": true,
-      "proto_report": true,
-      "last_disc_reason": null,
-      "conn_params": {
-        "interval_ms": 15,
-        "latency": 0,
-        "timeout_ms": 3000
+      "ready": true,
+      "playback_status": null,
+      "volume_pct": 28,
+      "muted": false,
+      "source": "hdmi",
+      "last_update_ts": 1773866846,
+      "update_age_s": 34
+    }
+    "system": {
+      "hostname": "living-room-pihub",
+      "primary_ip": "192.168.90.42",
+      "system_uptime_s": 102721,
+      "system_uptime_human": "1d 04:32:01",
+      "process_uptime_s": 14684,
+      "process_uptime_human": "04:04:44",
+      "cpu_temp_c": 53.7,
+      "throttling": {
+        "available": false,
+        "raw": null,
+        "status": "unknown"
+      },
+      "load": {
+        "1m": 0.08,
+        "5m": 0.04,
+        "15m": 0.06
+      },
+      "memory": {
+        "total_bytes": 950181888,
+        "available_bytes": 687480832,
+        "used_bytes": 262701056,
+        "total_human": "906.2 MB",
+        "available_human": "655.6 MB",
+        "used_human": "250.5 MB"
+      },
+      "disk": {
+        "path": "/",
+        "total_bytes": 62437576704,
+        "used_bytes": 3164504064,
+        "free_bytes": 56082489344,
+        "total_human": "58.1 GB",
+        "used_human": "2.9 GB",
+        "free_human": "52.2 GB"
       }
     }
-  },
-  "tv": {
-    "status": "ok",
-    "configured": true,
-    "enabled": true,
-    "reasons": [],
-    "present": true,
-    "link_up": true,
-    "link_ready": true,
-    "error": false,
-    "last_error": null,
-    "details": {
-      "initialised": true,
-      "presence_on": true,
-      "presence_source": "ssdp_alive",
-      "last_change_age_s": 4008,
-      "ws_connected": true,
-      "token_present": true
-    }
-  },
-  "speaker": {
-    "status": "ok",
-    "configured": true,
-    "enabled": true,
-    "reasons": [],
-    "present": true,
-    "link_up": true,
-    "link_ready": true,
-    "error": false,
-    "last_error": null,
-  "details": {
-    "backend": "audiopro",
-    "reachable": true,
-    "connected": true,
-    "ready": true,
-    "playback_status": null,
-    "volume_pct": 28,
-    "muted": false,
-    "source": "hdmi",
-    "last_update_ts": 1773866846,
-    "update_age_s": 34
   }
-  "system": {
-    "hostname": "living-room-pihub",
-    "primary_ip": "192.168.90.42",
-    "system_uptime_s": 102721,
-    "system_uptime_human": "1d 04:32:01",
-    "process_uptime_s": 14684,
-    "process_uptime_human": "04:04:44",
-    "cpu_temp_c": 53.7,
-    "throttling": {
-      "available": false,
-      "raw": null,
-      "status": "unknown"
-    },
-    "load": {
-      "1m": 0.08,
-      "5m": 0.04,
-      "15m": 0.06
-    },
-    "memory": {
-      "total_bytes": 950181888,
-      "available_bytes": 687480832,
-      "used_bytes": 262701056,
-      "total_human": "906.2 MB",
-      "available_human": "655.6 MB",
-      "used_human": "250.5 MB"
-    },
-    "disk": {
-      "path": "/",
-      "total_bytes": 62437576704,
-      "used_bytes": 3164504064,
-      "free_bytes": 56082489344,
-      "total_human": "58.1 GB",
-      "used_human": "2.9 GB",
-      "free_human": "52.2 GB"
-    }
-  }
-}
-```
+  ```
+</details>
 
 * Speaker `details` vary slightly by backend. For example, the Samsung SmartThings backend also reports fields such as `power_on`, `raw_input_source`, `sound_from`, and `listen_active`.
 * Domain status may be degraded without degrading overall PiHub status if the condition is informational or non-critical (for example TV presence still unknown during startup)
@@ -466,34 +434,6 @@ This is particularly useful with the Samsung SmartThings speaker backend, where 
 
 That’s now an important part of the actual deployment shape.
 
-Supported runtime commands today:
-
-##### Run a flow
-
-```json
-{
-  "domain": "flow",
-  "action": "run",
-  "args": {
-    "name": "watch",
-    "trigger": "http.command"
-  }
-}
-```
-
-##### Set mode
-
-```json
-{
-  "domain": "mode",
-  "action": "set",
-  "args": {
-    "name": "listen",
-    "trigger": "http.command"
-  }
-}
-```
-
 ---
 
 ## ⌨️ Input Mapping
@@ -579,6 +519,25 @@ Logical activity normalization:
 
 ---
 
+## Current terminology
+
+* **mode** = current active keymap / button behavior set
+* **flow** = named local sequence of ordered steps; some steps block, while dispatch steps send work at a specific point in the sequence and settle later before final flow completion
+* **device-state signal** = a live edge emitted by a domain (for example TV on, or speaker entering a listen-capable source/playback state)
+* **device-state flow** = a flow triggered from a device-state signal rather than an explicit remote intent
+* **last_trigger** = sticky record of the most recent runtime trigger source
+
+### Flow semantics
+
+* a flow takes one snapshot at the start
+* `when=` predicates are evaluated against that start snapshot only
+* `dispatch` means “request/send at this point in the sequence, then continue”
+* dispatch outcomes are still awaited before the final flow result is returned
+* a strict step failure does not necessarily stop the flow immediately; later steps may still run
+* the overall flow result is failed if important steps failed
+* mode is committed only after successful flow completion
+* `last_flow` is only updated after successful completion
+
 ## 🧠 Flows
 
 Current named flows:
@@ -590,26 +549,24 @@ Current named flows:
 Current intent:
 
 ### `watch`
-* set mode watch
-* request speaker stop playback if on listen source
+* if speaker source at start was a listen source, request speaker stop playback
 * if TV was off at start, request TV power on
 * if TV was off at start, sleep 2.0s
-* if TV was off at start, request BLE power on
+* if TV was off at start, request BLE power on macro
 * if TV was off at start, sleep 1.0s
 * request speaker volume
 * if TV was off at start, sleep 0.5s
 * request speaker HDMI source
-* if TV was off at start, wait up to 20s for TV on
+* on success, commit mode `watch`
 
 ### `listen`
-* set mode listen
-* if TV was on at start, request BLE return home
+* if TV was on at start, request BLE return home macro
 * if TV was on at start, sleep 2.0s
 * if TV was on at start, request TV power off
 * if TV was on at start, sleep 1.0s
 * request speaker volume
 * request speaker listen target
-* if TV was on at start, wait up to 20s for TV off
+* on success, commit mode `listen`
 
 The exact effect of `speaker listen target` depends on backend:
 
@@ -617,22 +574,22 @@ The exact effect of `speaker listen target` depends on backend:
 * **Samsung SmartThings soundbar**: listen-target style calls are intentionally ignored; Samsung listen mode is inferred from state rather than driven by a preset/stream primitive
 
 ### `power_off`
-* set mode power_off
-* if TV was on at start, request BLE return home
+* if TV was on at start, request BLE return home macro
 * if TV was on at start, sleep 2.5s
 * if TV was on at start, request TV power off
-* if TV was on at start, wait up to 20s for TV off
 * if speaker source at start was wifi, airplay, or multiroom-secondary, request speaker stop, sleep 0.5s, then request speaker power off
+* on success, commit mode `power_off`
 
 These are the normal explicit intent flows. Separate device-state flows may also exist for signal-driven behavior such as `listen_signal` or `watch_signal`.
 
-A flow can return `ok: false` with `tv_on_timeout` or `tv_off_timeout` when a required TV wait step does not converge in time.
+A flow can return `ok: false` when important domain steps fail, for example if BLE is unavailable, speaker commands cannot be sent, the Samsung TV token is missing, or a bounded TV power command does not succeed in time.
 
 ---
 
 ## 🧪 Troubleshooting
 
 * **No input events?** Look for `/dev/input/by-id/*event-kbd` (often `usb-Logitech_USB_Receiver-*event-kbd`). Ensure the relevant `/dev/input` paths are bind-mounted read-only into the container.
+* **TV flow steps fail immediately with `tv_token_missing`?** That is expected. Explicit TV power commands inside flows now require a saved Samsung TV token. First-time pairing/bootstrap should be done separately with the TV on and correctly configured network details.
 * **TV already on at boot but mode stays `power_off`?** Check `/health` for `tv.details.presence_on` and `presence_source`. Startup remains conservative until an explicit flow or later device-state signal acts.
 * **TV discovery confusion?** `presence_source` shows the most recent TV discovery source, not the current mode source of truth.
 * **No device-state flow action?** Check whether the same logical flow already ran recently, or whether another sequence was already active and the signal was ignored as busy.
@@ -640,16 +597,36 @@ A flow can return `ok: false` with `tv_on_timeout` or `tv_off_timeout` when a re
 * **Samsung soundbar state looks stale or blank?** Ensure the SmartThings backend is pulling the live status endpoint, not a less-current device metadata payload. If `power_on` is parsed as false, PiHub intentionally clears source-derived Samsung fields such as `source`, `raw_input_source`, `sound_from`, and `listen_active`.
 * **Samsung soundbar refreshes feel slow?** `POST /refresh/speaker` triggers an immediate best-effort speaker refresh. In practice this works well when paired with an external refresh hint source such as a Home Assistant automation reacting to SmartThings entity changes.
 * **Samsung soundbar transport commands fail?** Some Samsung-specific playback capabilities exposed in SmartThings metadata may still be restricted by the public API and can return `403` even though they appear available in Samsung’s own apps.
-* **TV watching volume feels slow on Samsung soundbar backend?** In TV/ARC mode, the Samsung soundbar backend may proxy volume/mute to the Samsung TV integration instead of using slower SmartThings cloud volume commands.
+* **TV watching volume feels slow on Samsung soundbar backend?** If the TV is on, the Samsung soundbar backend will send volume/mute to the Samsung TV integration instead of using slower SmartThings cloud volume commands.
 
 ---
 
 ## 🏗️ Dev Notes
 
 * Built with `aiohttp`
-* Local-only control plane; Home Assistant WebSocket support has been removed
+* Local-only control plane
 * Runtime is the authority for:
   * current mode
   * last flow
   * sticky last trigger
 * Dispatcher owns key bindings and hot-path action dispatch
+
+* Build then push to docker hub
+
+```bash
+# From repo root
+git fetch origin
+git reset --hard origin/main
+export DOCKER_BUILDKIT=1
+docker build -f Dockerfile -t pihub-nrf:latest .
+```
+
+Then push image to Docker Hub:
+
+```bash
+VER=x.x.x
+docker tag pihub:latest a1exm/pihub-nrf:$VER
+docker tag pihub:latest a1exm/pihub-nrf:latest
+docker push a1exm/pihub-nrf:$VER
+docker push a1exm/pihub-nrf:latest
+``
