@@ -904,9 +904,24 @@ pre.json {{
         system = snapshot.get("system") or {}
 
         def kv_row(key: str, value: object) -> str:
+            display_value = value
+            if key == "Last result":
+                mapping = {
+                    "ignored_already_listen": "Ignored — already in listen",
+                    "ignored_already_watch": "Ignored — already in watch",
+                    "ok": "OK",
+                    "ok_with_warnings": "OK with warnings",
+                    "failed": "Failed",
+                    "busy": "Busy",
+                    "invalid": "Invalid",
+                }
+                text = str(value or "").strip()
+                if text:
+                    display_value = mapping.get(text, text.replace("_", " "))
+
             return (
                 f'<div class="k">{self._html_escape(key)}</div>'
-                f'<div class="v">{self._html_escape(self._fmt_value(value))}</div>'
+                f'<div class="v">{self._html_escape(self._fmt_value(display_value))}</div>'
             )
 
         def chips(items: list[object]) -> str:
