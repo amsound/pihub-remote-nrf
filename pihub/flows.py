@@ -179,7 +179,6 @@ class SequenceRunner:
                         "system",
                         "sleep",
                         {"seconds": 0.5},
-                        when="tv_was_off",
                         mode="await",
                     ),
                     SequenceStep(

@@ -534,7 +534,7 @@ Logical activity normalisation:
 
 ## 🧠 Flows
 
-Current named flows:
+Current explicit intent flows:
 
 * `watch`
 * `listen`
@@ -548,17 +548,16 @@ Current intent:
 * if TV was off at start, sleep 2.0s
 * if TV was off at start, request BLE power on macro
 * if TV was off at start, sleep 1.0s
-* request speaker volume
-* if TV was off at start, sleep 0.5s
-* request speaker HDMI source
+* request speaker volume change
+* sleep 0.5s
+* request speaker source change to HDMI
 * on success, commit mode `watch`
 
 ### `listen`
 * if TV was on at start, request BLE return home macro
 * if TV was on at start, sleep 2.0s
 * if TV was on at start, request TV power off
-* if TV was on at start, sleep 1.0s
-* request speaker volume
+* request speaker volume change
 * request speaker listen target
 * on success, commit mode `listen`
 
@@ -569,7 +568,7 @@ The exact effect of `speaker listen target` depends on backend:
 
 ### `power_off`
 * if TV was on at start, request BLE return home macro
-* if TV was on at start, sleep 2.5s
+* if TV was on at start, sleep 2.0s
 * if TV was on at start, request TV power off
 * if speaker source at start was wifi, airplay, or multiroom-secondary, request speaker stop, sleep 0.5s, then request speaker power off
 * on success, commit mode `power_off`
