@@ -36,12 +36,11 @@ It’s lightweight, locally stateful, and tuned for Raspberry Pi 3B+ (aarch64). 
 
 * Raspberry Pi 3B+ (tested on **aarch64** Raspberry Pi OS Lite Bookworm)
 * Logitech Unifying receiver (model U-0007 recommended)
-* Nordic nRF52840 Dongle `https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle` for BLE
-* Samsung TV (same VLAN recommended for SSDP)
+* Nordic nRF52840 based [Dongle] (https://www.nordicsemi.com/Products/Development-hardware/nRF52840-Dongle) or a `Ebyte E104-BT5040U` for BLE
+* Samsung Tizen based TV (same VLAN required for SSDP and WoL)
 * One supported speaker backend:
-  * **Audio Pro / LinkPlay / Arylic / WiiM** speaker - local TCP/HTTP control, should work across VLANs
+  * **Audio Pro speaker** with local TCP/HTTP control
   * **Samsung soundbar** with SmartThings support enabled - cloud control via SmartThings API
-
 * Logitech Unifying receiver and BLE are the core paths
 * TV and speaker domains are optional integrations
 
