@@ -482,6 +482,24 @@ class SequenceRunner:
                     error="cancelled",
                 )
             except Exception as exc:
+                if self._is_skippable_samsung_speaker_gap(step=step, exc=exc):
+                    logger.debug(
+                        "dispatch step callback skipped due to samsung backend limitation sequence=%s step=%s domain=%s action=%s error=%s",
+                        sequence_name,
+                        step.id,
+                        step.domain,
+                        step.action,
+                        str(exc),
+                    )
+                    self._runtime.note_dispatch_outcome(
+                        report=report,
+                        step_report=step_report,
+                        sequence_name=sequence_name,
+                        step=step,
+                        error=None,
+                    )
+                    return
+
                 logger.warning(
                     "dispatch step failed sequence=%s step=%s domain=%s action=%s error=%s",
                     sequence_name,
@@ -496,14 +514,6 @@ class SequenceRunner:
                     sequence_name=sequence_name,
                     step=step,
                     error=str(exc),
-                )
-            else:
-                self._runtime.note_dispatch_outcome(
-                    report=report,
-                    step_report=step_report,
-                    sequence_name=sequence_name,
-                    step=step,
-                    error=None,
                 )
 
         task.add_done_callback(_done_callback)
@@ -549,6 +559,23 @@ class SequenceRunner:
                     }
                 )
             except Exception as exc:
+                if self._is_skippable_samsung_speaker_gap(step=record.step, exc=exc):
+                    if record.report is not None and record.report.ts_outcome is None:
+                        record.report.settle_outcome(
+                            status="skipped",
+                            error="unsupported_on_samsung_soundbar",
+                        )
+
+                    logger.debug(
+                        "dispatch step skipped due to samsung backend limitation sequence=%s step=%s domain=%s action=%s error=%s",
+                        sequence_name,
+                        record.step.id,
+                        record.step.domain,
+                        record.step.action,
+                        str(exc),
+                    )
+                    continue
+
                 failures.append(
                     {
                         "step_id": record.step.id,
