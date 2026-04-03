@@ -2486,7 +2486,7 @@ button:hover {{
               aria-label="Listen"
               title="Listen"
             >
-              ♪
+              Listen
             </button>
 
             <button
@@ -2499,7 +2499,7 @@ button:hover {{
               aria-label="Watch"
               title="Watch"
             >
-              📺
+              Watch
             </button>
           </div>
 
