@@ -491,13 +491,6 @@ class SequenceRunner:
                         step.action,
                         str(exc),
                     )
-                    self._runtime.note_dispatch_outcome(
-                        report=report,
-                        step_report=step_report,
-                        sequence_name=sequence_name,
-                        step=step,
-                        error=None,
-                    )
                     return
 
                 logger.warning(
@@ -514,6 +507,14 @@ class SequenceRunner:
                     sequence_name=sequence_name,
                     step=step,
                     error=str(exc),
+                )
+            else:
+                self._runtime.note_dispatch_outcome(
+                    report=report,
+                    step_report=step_report,
+                    sequence_name=sequence_name,
+                    step=step,
+                    error=None,
                 )
 
         task.add_done_callback(_done_callback)
