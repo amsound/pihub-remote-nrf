@@ -728,14 +728,32 @@ class AudioProSpeaker:
         playback = (self._state.playback_status or "").strip().lower()
         return source in {"wifi", "airplay", "multiroom-secondary"} and playback in {"load", "play"}
 
-    def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:
+    def _spawn_state_change_callback(self, name: str, payload: dict[str, Any]) -> None:
         cb = self._state_change_callback
         if cb is None:
             return
+
         try:
-            asyncio.create_task(cb(name, payload))
+            task = asyncio.create_task(
+                cb(name, payload),
+                name=f"audiopro_state_change:{name}",
+            )
         except Exception:
-            logger.exception("speaker state change callback failed name=%s", name)
+            logger.exception("speaker state change callback spawn failed name=%s", name)
+            return
+
+        def _done(t: asyncio.Task) -> None:
+            try:
+                t.result()
+            except asyncio.CancelledError:
+                logger.debug("speaker state change callback cancelled name=%s", name)
+            except Exception:
+                logger.exception("speaker state change callback failed name=%s", name)
+
+        task.add_done_callback(_done)
+
+    def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:
+        self._spawn_state_change_callback(name, payload)
 
     # ---------- controls (TCP) ----------
 

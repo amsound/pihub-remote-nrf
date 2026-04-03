@@ -667,7 +667,7 @@ pre.json {{
   <main class="page">
     <section class="section">
       <h1>Tools</h1>
-      <p class="muted">Direct operator controls for flows, modes, networked-domain refresh, and restart.</p>
+      <p class="muted">Direct operator controls for flows, modes, tv and speaker refresh, plus container restart.</p>
 
       <div class="meta-grid">
         <div class="meta-card">

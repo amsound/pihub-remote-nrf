@@ -531,7 +531,6 @@ class SamsungSoundbar:
             raw_input_source_norm = None
             sound_from_norm = None
             derived_source = None
-            listen_active = False
         else:
             raw_input_source_norm = self._norm_str(input_source)
             sound_from_norm = self._norm_str(sound_from)
@@ -540,7 +539,11 @@ class SamsungSoundbar:
                 raw_input_source=input_source,
                 sound_from=sound_from,
             )
-            listen_active = derived_source == "airplay"
+
+        listen_active = self._listen_signal_active(
+            power_on=power_on,
+            source=derived_source,
+        )
 
         self._state.power_on = power_on
         self._state.raw_input_source = raw_input_source_norm
@@ -619,14 +622,39 @@ class SamsungSoundbar:
 
         return None
 
-    def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:
+    def _listen_signal_active(self, *, power_on: bool, source: str | None) -> bool:
+        if not power_on:
+            return False
+
+        src = (source or "").strip().lower()
+        return src == "airplay"
+
+    def _spawn_state_change_callback(self, name: str, payload: dict[str, Any]) -> None:
         cb = self._state_change_callback
         if cb is None:
             return
+
         try:
-            asyncio.create_task(cb(name, payload))
+            task = asyncio.create_task(
+                cb(name, payload),
+                name=f"samsung_soundbar_state_change:{name}",
+            )
         except Exception:
-            logger.exception("SamsungSoundbar state change callback failed name=%s", name)
+            logger.exception("SamsungSoundbar state change callback spawn failed name=%s", name)
+            return
+
+        def _done(t: asyncio.Task) -> None:
+            try:
+                t.result()
+            except asyncio.CancelledError:
+                logger.debug("SamsungSoundbar state change callback cancelled name=%s", name)
+            except Exception:
+                logger.exception("SamsungSoundbar state change callback failed name=%s", name)
+
+        task.add_done_callback(_done)
+
+    def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:
+        self._spawn_state_change_callback(name, payload)
 
     # ---- Controls ----
 

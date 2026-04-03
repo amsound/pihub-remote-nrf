@@ -586,14 +586,32 @@ class TvController:
             name="tv:watch_signal_debounce",
         )
 
-    def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:
+    def _spawn_state_change_callback(self, name: str, payload: dict[str, Any]) -> None:
         cb = self._state_change_callback
         if cb is None:
             return
+
         try:
-            asyncio.create_task(cb(name, payload))
+            task = asyncio.create_task(
+                cb(name, payload),
+                name=f"tv_state_change:{name}",
+            )
         except Exception:
-            logger.exception("tv state change callback failed name=%s", name)
+            logger.exception("tv state change callback spawn failed name=%s", name)
+            return
+
+        def _done(t: asyncio.Task) -> None:
+            try:
+                t.result()
+            except asyncio.CancelledError:
+                logger.debug("tv state change callback cancelled name=%s", name)
+            except Exception:
+                logger.exception("tv state change callback failed name=%s", name)
+
+        task.add_done_callback(_done)
+
+    def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:
+        self._spawn_state_change_callback(name, payload)
 
     async def _wait_for_presence_true(self, *, timeout_s: float) -> bool:
         deadline = asyncio.get_running_loop().time() + timeout_s
