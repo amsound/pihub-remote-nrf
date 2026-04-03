@@ -561,11 +561,15 @@ class SequenceRunner:
                 )
             except Exception as exc:
                 if self._is_skippable_samsung_speaker_gap(step=record.step, exc=exc):
-                    if record.report is not None and record.report.ts_outcome is None:
-                        record.report.settle_outcome(
-                            status="skipped",
-                            error="unsupported_on_samsung_soundbar",
-                        )
+                    if record.report is not None:
+                        record.report.status = "skipped"
+                        record.report.reason = "smartthings_api_limitation"
+                        record.report.error = None
+
+                        record.report.outcome_status = None
+                        record.report.outcome_reason = None
+                        record.report.outcome_error = None
+                        record.report.ts_outcome = None
 
                     logger.debug(
                         "dispatch step skipped due to samsung backend limitation sequence=%s step=%s domain=%s action=%s error=%s",
