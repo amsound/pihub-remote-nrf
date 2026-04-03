@@ -219,14 +219,23 @@ class Dispatcher:
             logger.debug("failed to clear speaker direct fault", exc_info=True)
 
     async def _call_action_method(self, obj: Any, method: str, kwargs: dict) -> None:
-        """Call an async method by name on obj (generic dispatch). Breaking by design."""
+        """Call an async method by name on obj. Fail closed on invalid dispatch."""
         if not isinstance(method, str) or not method or not _METHOD_RE.match(method):
-            return
+            raise RuntimeError(f"invalid_action_method:{method!r}")
+
         if method.startswith("_") or method in _DENY_CALLS:
-            return
+            raise RuntimeError(f"denied_action_method:{method}")
+
         fn = getattr(obj, method, None)
-        if fn is None or not callable(fn) or not inspect.iscoroutinefunction(fn):
-            return
+        if fn is None:
+            raise RuntimeError(f"unknown_action_method:{method}")
+
+        if not callable(fn):
+            raise RuntimeError(f"uncallable_action_method:{method}")
+
+        if not inspect.iscoroutinefunction(fn):
+            raise RuntimeError(f"non_async_action_method:{method}")
+
         await fn(**(kwargs or {}))
 
     def _compile_ble_frames_once(self) -> None:
@@ -563,7 +572,13 @@ class Dispatcher:
                 return
             url = self._settings.get_stream_url(slot)
             if not url:
-                logger.info("speaker stream slot empty slot=%s", slot)
+                self._set_speaker_direct_fault("direct_action_stream_slot_empty")
+                self._log_direct_failure(
+                    domain="speaker",
+                    reason="stream_slot_empty",
+                    action=action,
+                    rem_key=rem_key,
+                )
                 return
             try:
                 await sp.play_url(url)
@@ -584,7 +599,22 @@ class Dispatcher:
             await self._call_action_method(sp, action, kwargs)
             self._clear_speaker_direct_fault()
             self._clear_direct_failure_latch()
-        except Exception:
+        except Exception as exc:
+            backend = ""
+            try:
+                backend = str((sp.snapshot() or {}).get("backend") or "").strip().lower()
+            except Exception:
+                backend = ""
+
+            if backend == "samsung_soundbar" and str(exc).startswith("unsupported_on_backend:"):
+                logger.debug(
+                    "speaker direct action skipped due to samsung backend limitation action=%s rem_key=%s error=%s",
+                    action,
+                    rem_key,
+                    str(exc),
+                )
+                return
+
             self._set_speaker_direct_fault("direct_action_speaker_action_failed")
             self._log_direct_failure(
                 domain="speaker",

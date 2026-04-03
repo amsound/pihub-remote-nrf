@@ -86,7 +86,6 @@ class HttpServer:
 
                 web.post("/refresh/tv", self._handle_refresh_tv),
                 web.post("/refresh/speaker", self._handle_refresh_speaker),
-                web.post("/refresh/networked", self._handle_refresh_networked),
 
                 web.post("/admin/restart", self._handle_restart),
             ]
@@ -735,9 +734,6 @@ pre.json {{
           </form>
           <form method="post" action="/refresh/speaker" class="command-form" data-refresh="1" data-title="Refresh Speaker">
             <button type="submit">Refresh Speaker</button>
-          </form>
-          <form method="post" action="/refresh/networked" class="command-form" data-refresh="1" data-title="Refresh Networked">
-            <button type="submit">Refresh Networked</button>
           </form>
         </div>
       </section>
@@ -3156,66 +3152,6 @@ button:hover {{
 
         await self._speaker.request_refresh()
         return web.json_response({"ok": True, "domain": "speaker", "action": "refresh"})
-
-    async def _handle_refresh_networked(self, _: web.Request) -> web.Response:
-        timeout_s = 5.0
-
-        result = {
-            "ok": True,
-            "action": "refresh_networked",
-            "tv": None,
-            "speaker": None,
-        }
-
-        if self._tv is not None:
-            try:
-                await asyncio.wait_for(self._tv.reconcile_presence(), timeout=timeout_s)
-                result["tv"] = {"ok": True, "domain": "tv", "action": "refresh"}
-            except asyncio.TimeoutError:
-                result["tv"] = {
-                    "ok": False,
-                    "domain": "tv",
-                    "action": "refresh",
-                    "error": f"timeout:{timeout_s:g}s",
-                }
-            except Exception as exc:
-                result["tv"] = {
-                    "ok": False,
-                    "domain": "tv",
-                    "action": "refresh",
-                    "error": str(exc),
-                }
-        else:
-            result["tv"] = {"ok": False, "error": "tv unavailable"}
-
-        if self._speaker is not None and getattr(self._speaker, "enabled", False):
-            try:
-                await asyncio.wait_for(self._speaker.request_refresh(), timeout=timeout_s)
-                result["speaker"] = {"ok": True, "domain": "speaker", "action": "refresh"}
-            except asyncio.TimeoutError:
-                result["speaker"] = {
-                    "ok": False,
-                    "domain": "speaker",
-                    "action": "refresh",
-                    "error": f"timeout:{timeout_s:g}s",
-                }
-            except Exception as exc:
-                result["speaker"] = {
-                    "ok": False,
-                    "domain": "speaker",
-                    "action": "refresh",
-                    "error": str(exc),
-                }
-        else:
-            result["speaker"] = {"ok": False, "error": "speaker unavailable"}
-
-        result["ok"] = bool(
-            result["tv"] and result["tv"].get("ok")
-            and result["speaker"] and result["speaker"].get("ok")
-        )
-
-        status = 200 if result["ok"] else 503
-        return web.json_response(result, status=status)
 
     async def _handle_restart(self, _: web.Request) -> web.Response:
         async def _delayed_exit() -> None:

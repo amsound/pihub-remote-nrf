@@ -674,7 +674,7 @@ class SamsungSoundbar:
         await self._send_command("audioMute", "mute" if not cur else "unmute")
         await self.request_refresh()
 
-    # ---- No-op methods so existing flows can stay unchanged ----
+    # ---- Explicit unsupported methods for interface parity with other speaker backends ----
 
     async def play(self) -> None:
         raise RuntimeError("unsupported_on_backend:play")

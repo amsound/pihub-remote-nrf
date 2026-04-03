@@ -370,6 +370,24 @@ class SequenceRunner:
                     dispatch_records=dispatch_records,
                 )
             except Exception as exc:
+                if self._is_skippable_samsung_speaker_gap(step=step, exc=exc):
+                    if step_report is not None and step_report.ts_finished is None:
+                        step_report.finish(
+                            status="skipped",
+                            reason="unsupported_on_samsung_soundbar",
+                        )
+
+                    logger.debug(
+                        "sequence step skipped due to samsung backend limitation sequence=%s step=%s index=%d domain=%s action=%s error=%s",
+                        seq.name,
+                        step.id,
+                        index,
+                        step.domain,
+                        step.action,
+                        str(exc),
+                    )
+                    continue
+
                 if step_report is not None and step_report.ts_finished is None:
                     step_report.finish(status="failed", error=str(exc))
 
@@ -612,6 +630,31 @@ class SequenceRunner:
                 step.action,
             )
             raise
+
+    def _speaker_backend_name(self) -> str:
+        if self._speaker is None:
+            return ""
+        try:
+            snap = self._speaker.snapshot() or {}
+            return str(snap.get("backend") or "").strip().lower()
+        except Exception:
+            return ""
+
+    def _is_skippable_samsung_speaker_gap(self, *, step: SequenceStep, exc: Exception) -> bool:
+        if self._speaker_backend_name() != "samsung_soundbar":
+            return False
+
+        text = str(exc or "").strip()
+        if not text.startswith("unsupported_on_backend:"):
+            return False
+
+        allowed = {
+            ("speaker", "set_source"),
+            ("speaker", "stop_playback"),
+            ("speaker", "play_listen_target"),
+            ("speaker", "preset"),
+        }
+        return (step.domain, step.action) in allowed
 
     def _require_speaker_ready(self, *, step: SequenceStep) -> None:
         if self._speaker is None:
