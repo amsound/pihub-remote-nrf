@@ -28,7 +28,7 @@ It’s lightweight, locally stateful, and tuned for Raspberry Pi 3B+ (aarch64). 
 * **Device-state signals**: passive state-driven routing from TV/speaker changes into local runtime behavior
 * **Precise edges**: explicit **down/up**; filters kernel auto-repeat
 * **Long-press** via `min_hold_ms`
-* **Bounded local queueing on hot paths**: with reconnect and best-effort recovery; explicit flows now fail truthfully when important domain actions cannot be sent
+* **Bounded local queueing on hot paths**: with reconnect and best-effort recovery; explicit flows fail truthfully for real command/send failures, while selected backend-specific unsupported operations may be intentionally skipped by policy
 
 ---
 
@@ -180,7 +180,7 @@ http://<host>:9123/settings
 Current pages:
 
 * `/dashboard` — high-level live status view for PiHub, including runtime mode/flow state, domain health, and system information
-* `/tools` — operator page for manually running flows, setting modes, refreshing networked domains, and restarting PiHub
+* `/tools` — operator page for manually running flows, setting modes, refreshing TV or speaker state, and restarting PiHub
 * `/settings` — local runtime settings for speaker levels and listen-target behavior
 * `/health` — raw JSON health/status payload
 
@@ -406,23 +406,21 @@ JSON body format:
 }
 ```
 
-#### Refresh networked domains
+#### Refresh domain state
 
 ```text
 POST /refresh/tv
 POST /refresh/speaker
-POST /refresh/networked
-````
+```
 
 Examples:
 
 ```bash
 curl -X POST http://pihub.local:9123/refresh/tv
 curl -X POST http://pihub.local:9123/refresh/speaker
-curl -X POST http://pihub.local:9123/refresh/networked
 ```
 
-These endpoints trigger an immediate best-effort refresh of the relevant networked domain state.
+These endpoints trigger an immediate best-effort refresh of the relevant domain state.
 
 This is particularly useful with the Samsung SmartThings speaker backend, where external automation such as Home Assistant may send PiHub a local refresh hint after receiving upstream cloud push updates.
 
@@ -495,7 +493,8 @@ Current listen-capable speaker behavior depends on backend:
 * **Samsung SmartThings backend**
   * `listen` is derived from SmartThings speaker state
   * Samsung AirPlay/listen mode is inferred from cloud state such as soundbar power and source/sound-from details
-  * Samsung speaker commands that are not supported by the public SmartThings API may be treated as unsupported or no-op
+  * some speaker operations are not exposed by the public SmartThings API
+  * for the Samsung backend, unsupported speaker operations used by generic flows or direct speaker actions may be intentionally skipped rather than treated as hard failures
 
 These signals are edge-triggered and intended to behave more like live state changes than periodic polling.
 
@@ -553,6 +552,11 @@ Current intent:
 * request speaker source change to HDMI
 * on success, commit mode `watch`
 
+Backend note:
+
+* **Audio Pro / LinkPlay / WiiM**: watch flow includes an explicit speaker source change to HDMI
+* **Samsung SmartThings soundbar**: SmartThings does not expose an equivalent explicit source-select primitive for this use, so PiHub may intentionally skip that speaker step on this backend
+
 ### `listen`
 * if TV was on at start, request BLE return home macro
 * if TV was on at start, sleep 2.0s
@@ -564,7 +568,7 @@ Current intent:
 The exact effect of `speaker listen target` depends on backend:
 
 * **Audio Pro / LinkPlay / WiiM**: may resolve to a native preset or configured stream URL
-* **Samsung SmartThings soundbar**: listen-target style calls are intentionally ignored; Samsung listen mode is inferred from state rather than driven by a preset/stream primitive
+* **Samsung SmartThings soundbar**: preset/stream-style listen target actions are not supported by the public SmartThings API; PiHub intentionally skips those speaker-step calls for this backend, and Samsung listen mode is inferred from state rather than driven by a preset/stream primitive
 
 ### `power_off`
 * if TV was on at start, request BLE return home macro
@@ -582,11 +586,11 @@ A flow can return `ok: false` when important domain steps fail, for example if B
 ## 🧪 Troubleshooting
 
 * **No input events?** Look for `/dev/input/by-id/*event-kbd` (often `usb-Logitech_USB_Receiver-*event-kbd`). Ensure the relevant `/dev/input` paths are bind-mounted read-only into the container.
+* **No device-state flow action?** Check whether the same logical flow already ran recently, or whether another sequence was already active and the signal was skipped intentionally.
+* **Mode changed but `last_flow` is null?** That is expected when mode changed by startup reconcile or direct mode set rather than by a successfully completed flow.
 * **TV flow steps fail immediately with `tv_token_missing`?** That is expected. Explicit TV power commands inside flows now require a saved Samsung TV token. First-time pairing/bootstrap should be done separately with the TV on and correctly configured network details.
 * **TV already on at boot but mode stays `power_off`?** Check `/health` for `tv.details.presence_on` and `presence_source`. Startup remains conservative until an explicit flow or later device-state signal acts.
 * **TV discovery confusion?** `presence_source` shows the most recent TV discovery source, not the current mode source of truth.
-* **No device-state flow action?** Check whether the same logical flow already ran recently, or whether another sequence was already active and the signal was ignored as busy.
-* **Mode changed but `last_flow` is null?** That is expected when mode changed by startup reconcile or direct mode set rather than by a successfully completed flow.
 * **Samsung soundbar state looks stale or blank?** Ensure the SmartThings backend is pulling the live status endpoint, not a less-current device metadata payload. If `power_on` is parsed as false, PiHub intentionally clears source-derived Samsung fields such as `source`, `raw_input_source`, `sound_from`, and `listen_active`.
 * **Samsung soundbar refreshes feel slow?** `POST /refresh/speaker` triggers an immediate best-effort speaker refresh. In practice this works well when paired with an external refresh hint source such as a Home Assistant automation reacting to SmartThings entity changes.
 * **Samsung soundbar transport commands fail?** Some Samsung-specific playback capabilities exposed in SmartThings metadata may still be restricted by the public API and can return `403` even though they appear available in Samsung’s own apps.
