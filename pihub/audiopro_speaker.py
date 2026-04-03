@@ -308,8 +308,7 @@ class AudioProSpeaker:
                 self._mark_down(str(e))
                 if not self._link_down_logged:
                     logger.warning(
-                        "speaker unavailable speaker_ip=%s err=%r; retrying",
-                        self._speaker_ip,
+                        "speaker unavailable err=%r; continuing without connection",
                         e,
                     )
                     self._link_down_logged = True
