@@ -2658,27 +2658,6 @@ button:hover {{
           </div>
         </div>
       </section>
-
-      <section class="section">
-        <div class="status-grid">
-          <div class="status-card">
-            <div class="label">Overall status</div>
-            <div class="value" id="remote-status">{self._html_escape(status)}</div>
-          </div>
-          <div class="status-card">
-            <div class="label">Current mode</div>
-            <div class="value" id="remote-mode">{self._html_escape(runtime.get("mode") or "—")}</div>
-          </div>
-          <div class="status-card">
-            <div class="label">Last flow</div>
-            <div class="value" id="remote-last-flow">{self._html_escape(runtime.get("last_flow") or "—")}</div>
-          </div>
-          <div class="status-card">
-            <div class="label">Flow running</div>
-            <div class="value" id="remote-flow-running">{self._html_escape("true" if runtime.get("flow_running") else "false")}</div>
-          </div>
-        </div>
-      </section>
     </div>
   </main>
 
