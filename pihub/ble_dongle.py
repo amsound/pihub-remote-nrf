@@ -701,7 +701,7 @@ class BleDongleLink:
         if self._missing_dongle_logged:
             return
         self._missing_dongle_logged = True
-        logger.info("BLE dongle not found; continuing with BLE unavailable")
+        logger.info("BLE dongle not found; continuing without BLE connection")
 
     async def _reconnect_loop(self) -> None:
         while True:

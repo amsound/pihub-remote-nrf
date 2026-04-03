@@ -346,8 +346,7 @@ class SamsungSoundbar:
 
                 if not self._missing_token_logged:
                     logger.warning(
-                        "SmartThings token file missing; continuing without speaker cloud connection token_file=%s",
-                        self._token_store.path,
+                        "SmartThings token file missing; continuing without speaker cloud connection",
                     )
                     self._missing_token_logged = True
 

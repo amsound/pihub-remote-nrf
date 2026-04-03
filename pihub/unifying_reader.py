@@ -161,7 +161,7 @@ class UnifyingReader:
                     if receiver_present:
                         logger.info("unifying receiver present; waiting for paired remote device")
                     else:
-                        logger.info("unifying receiver not detected; continuing with USB input unavailable")
+                        logger.info("unifying receiver not detected; continuing without USB input")
 
                 await asyncio.sleep(sleep_for)
                 backoff = min(backoff * 2, 10.0)
