@@ -506,10 +506,15 @@ class SequenceRunner:
         failures: list[dict[str, str]] = []
 
         for record in dispatch_records:
-            settle_timeout_s = float(record.step.timeout_s or DISPATCH_SETTLE_TIMEOUT_S)
-
             try:
-                await asyncio.wait_for(record.task, timeout=settle_timeout_s)
+                if record.step.timeout_s is None:
+                    await asyncio.wait_for(
+                        record.task,
+                        timeout=DISPATCH_SETTLE_TIMEOUT_S,
+                    )
+                else:
+                    await record.task
+
             except asyncio.TimeoutError:
                 record.task.cancel()
                 try:
@@ -524,7 +529,7 @@ class SequenceRunner:
                         "domain": record.step.domain,
                         "action": record.step.action,
                         "phase": "dispatch_settle",
-                        "error": f"dispatch_settle_timeout:{settle_timeout_s:g}s",
+                        "error": f"dispatch_settle_timeout:{DISPATCH_SETTLE_TIMEOUT_S:g}s",
                     }
                 )
             except asyncio.CancelledError:
