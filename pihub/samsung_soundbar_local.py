@@ -15,7 +15,7 @@ import aiohttp
 import pychromecast
 
 logger = logging.getLogger(__name__)
-logging.getLogger("pychromecast.discovery").setLevel(PYCHROMECAST_DISCOVERY_LOG_LEVEL)
+logging.getLogger("pychromecast.discovery").setLevel(logging.ERROR)
 
 DEFAULT_MEDIA_RECEIVER_APP_ID = "CC1AD845"
 AIRPLAY_PORT = 45167
@@ -25,7 +25,6 @@ HTTP_TIMEOUT_S = 3.0
 
 VOLUME_STEP = 0.01
 CAST_DISCOVERY_TIMEOUT_S = 5
-PYCHROMECAST_DISCOVERY_LOG_LEVEL = logging.ERROR
 
 def _now() -> float:
     return time.time()
