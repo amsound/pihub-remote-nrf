@@ -22,6 +22,7 @@ AIRPLAY_ACTIVE_BIT = 0x800
 
 HTTP_TIMEOUT_S = 3.0
 
+VOLUME_STEP = 0.01
 
 def _now() -> float:
     return time.time()
@@ -432,12 +433,12 @@ class SamsungSoundbarLocal:
 
     async def volume_up(self) -> None:
         cur = self._state.volume if self._state.volume is not None else 0.0
-        target = min(1.0, cur + 0.01)
+        target = min(1.0, cur + VOLUME_STEP)
         await self.set_volume(int(round(target * 100)))
 
     async def volume_down(self) -> None:
         cur = self._state.volume if self._state.volume is not None else 0.0
-        target = max(0.0, cur - 0.01)
+        target = max(0.0, cur - VOLUME_STEP)
         await self.set_volume(int(round(target * 100)))
 
     async def set_volume(self, pct: int) -> None:
