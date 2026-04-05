@@ -15,6 +15,7 @@ import aiohttp
 import pychromecast
 
 logger = logging.getLogger(__name__)
+logging.getLogger("pychromecast.discovery").setLevel(PYCHROMECAST_DISCOVERY_LOG_LEVEL)
 
 DEFAULT_MEDIA_RECEIVER_APP_ID = "CC1AD845"
 AIRPLAY_PORT = 45167
@@ -23,6 +24,8 @@ AIRPLAY_ACTIVE_BIT = 0x800
 HTTP_TIMEOUT_S = 3.0
 
 VOLUME_STEP = 0.01
+CAST_DISCOVERY_TIMEOUT_S = 5
+PYCHROMECAST_DISCOVERY_LOG_LEVEL = logging.ERROR
 
 def _now() -> float:
     return time.time()
@@ -59,7 +62,7 @@ class SamsungSoundbarLocal:
         *,
         speaker_ip: str,
         poll_interval_s: float = 5.0,
-        command_interval_s: float = 0.15,
+        command_interval_s: float = 0.10,
         tv: Any = None,
         state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
@@ -79,7 +82,12 @@ class SamsungSoundbarLocal:
 
         self._cast = None
         self._cast_browser = None
+        self._cast_uuid = None
+        self._cast_friendly_name = None
         self._last_send_monotonic = 0.0
+
+        self._availability_logged_down = False
+        self._last_failure_key = None
 
         self._tv = tv
         self._state_change_callback = state_change_callback
@@ -167,10 +175,33 @@ class SamsungSoundbarLocal:
             self._poll_wake_evt.set()
             await self._refresh_now()
 
+    def _note_refresh_success(self) -> None:
+        if self._availability_logged_down:
+            logger.info(
+                "SamsungSoundbarLocal recovered speaker_ip=%s",
+                self._speaker_ip,
+            )
+        self._availability_logged_down = False
+        self._last_failure_key = None
+
+    def _note_refresh_failure(self, exc: Exception) -> None:
+        failure_key = f"{type(exc).__name__}:{exc}"
+
+        if (not self._availability_logged_down) or (failure_key != self._last_failure_key):
+            logger.warning(
+                "SamsungSoundbarLocal unavailable speaker_ip=%s error=%s",
+                self._speaker_ip,
+                exc,
+            )
+
+        self._availability_logged_down = True
+        self._last_failure_key = failure_key
+
     async def _runner(self) -> None:
         while self._enabled and not self._stop_evt.is_set():
             try:
                 await self._refresh_now()
+                self._note_refresh_success()
 
                 self._poll_wake_evt.clear()
                 try:
@@ -189,7 +220,8 @@ class SamsungSoundbarLocal:
                 self._state.ready = False
                 self._state.last_error = str(exc)
                 self._state.last_update_ts = _now()
-                logger.warning("SamsungSoundbarLocal refresh failed: %s", exc)
+
+                self._note_refresh_failure(exc)
 
                 try:
                     await asyncio.wait_for(self._stop_evt.wait(), timeout=self._poll_interval_s)
@@ -240,11 +272,45 @@ class SamsungSoundbarLocal:
             await asyncio.to_thread(_cleanup)
 
     def _connect_cast_blocking(self):
+        # Preferred reconnect path: use cached stable identifiers with the
+        # current public helper, while still seeding discovery with known_hosts.
+        if self._cast_uuid is not None:
+            casts, browser = pychromecast.get_listed_chromecasts(
+                uuids=[self._cast_uuid],
+                known_hosts=[self._speaker_ip],
+                discovery_timeout=CAST_DISCOVERY_TIMEOUT_S,
+            )
+            if casts:
+                cast = casts[0]
+                cast.wait()
+                return cast, browser
+
+        if self._cast_friendly_name:
+            casts, browser = pychromecast.get_listed_chromecasts(
+                friendly_names=[self._cast_friendly_name],
+                known_hosts=[self._speaker_ip],
+                discovery_timeout=CAST_DISCOVERY_TIMEOUT_S,
+            )
+            if casts:
+                cast = casts[0]
+                cast.wait()
+                return cast, browser
+
+        # Bootstrap fallback: host-directed discovery path. Keep this because
+        # your config is IP-based and it works across your VLAN setup.
         casts, browser = pychromecast.get_chromecasts(known_hosts=[self._speaker_ip])
         if not casts:
             raise RuntimeError(f"cast_not_found:{self._speaker_ip}")
+
         cast = casts[0]
         cast.wait()
+
+        self._cast_uuid = getattr(cast, "uuid", None)
+        cast_info = getattr(cast, "cast_info", None)
+        self._cast_friendly_name = (
+            getattr(cast_info, "friendly_name", None) or getattr(cast, "name", None)
+        )
+
         return cast, browser
 
     async def _read_cast_status(self) -> dict[str, Any]:
@@ -342,6 +408,14 @@ class SamsungSoundbarLocal:
         self._state.cast_app_id = app_id
         self._state.cast_app_name = app_name
         self._state.airplay_flags = airplay_flags
+
+        if friendly_name:
+            self._cast_friendly_name = friendly_name
+
+        cast_obj = self._cast
+        cast_uuid = getattr(cast_obj, "uuid", None) if cast_obj is not None else None
+        if cast_uuid is not None:
+            self._cast_uuid = cast_uuid
 
         self._state.volume = volume_norm
         self._state.muted = muted_norm

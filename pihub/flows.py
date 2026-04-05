@@ -113,7 +113,7 @@ class SequenceRunner:
                         "tv",
                         "power_off",
                         when="tv_was_on",
-                        timeout_s=5.0,
+                        timeout_s=8.0,
                     ),
                     SequenceStep(
                         "change_volume",
@@ -144,7 +144,7 @@ class SequenceRunner:
                         "tv",
                         "power_on",
                         when="tv_was_off",
-                        timeout_s=5.0,
+                        timeout_s=8.0,
                     ),
                     SequenceStep(
                         "delay_2s",
@@ -205,7 +205,7 @@ class SequenceRunner:
                         "tv",
                         "power_off",
                         when="tv_was_on",
-                        timeout_s=5.0,
+                        timeout_s=8.0,
                     ),
                 ),
             ),
@@ -257,7 +257,7 @@ class SequenceRunner:
                         "tv",
                         "power_off",
                         when="tv_was_on",
-                        timeout_s=5.0,
+                        timeout_s=8.0,
                     ),
                     SequenceStep(
                         "stop",
