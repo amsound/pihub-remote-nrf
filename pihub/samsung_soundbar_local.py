@@ -116,15 +116,8 @@ class SamsungSoundbarLocal:
             "volume_pct": None if s.volume is None else int(round(s.volume * 100)),
             "muted": s.muted,
             "source": s.source,
-            "last_update_ts": last_i,
-            "update_age_s": age_i,
-            "power_on": s.power_on,
-            "raw_input_source": s.raw_input_source,
-            "sound_from": s.sound_from,
             "listen_active": s.listen_active,
-            "cast_app_id": s.cast_app_id,
-            "cast_app_name": s.cast_app_name,
-            "airplay_flags": s.airplay_flags,
+            "update_age_s": age_i,
         }
 
     async def start(self) -> None:
