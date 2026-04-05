@@ -432,12 +432,12 @@ class SamsungSoundbarLocal:
 
     async def volume_up(self) -> None:
         cur = self._state.volume if self._state.volume is not None else 0.0
-        target = min(1.0, cur + 0.04)
+        target = min(1.0, cur + 0.01)
         await self.set_volume(int(round(target * 100)))
 
     async def volume_down(self) -> None:
         cur = self._state.volume if self._state.volume is not None else 0.0
-        target = max(0.0, cur - 0.04)
+        target = max(0.0, cur - 0.01)
         await self.set_volume(int(round(target * 100)))
 
     async def set_volume(self, pct: int) -> None:
