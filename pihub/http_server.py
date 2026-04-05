@@ -1381,7 +1381,7 @@ pre.json {{
             backend_note_html = """
     <section class="section">
       <div class="chip">Samsung Soundbar backend detected</div>
-      <p class="muted" style="margin-top:0.75rem;">Listen target preset and stream URL settings are hidden because they are not used by the SmartThings soundbar backend.</p>
+      <p class="muted" style="margin-top:0.75rem;">Listen target preset and stream URL settings are hidden with the Soundbar backend.</p>
     </section>
 """
         else:
