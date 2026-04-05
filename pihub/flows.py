@@ -651,7 +651,7 @@ class SequenceRunner:
             return ""
 
     def _is_skippable_samsung_speaker_gap(self, *, step: SequenceStep, exc: Exception) -> bool:
-        if self._speaker_backend_name() != "samsung_soundbar":
+        if self._speaker_backend_name() not in {"samsung_soundbar", "samsung_soundbar_local"}:
             return False
 
         text = str(exc or "").strip()

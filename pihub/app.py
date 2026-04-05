@@ -26,6 +26,7 @@ from .ble_dongle import BleDongleLink
 from .samsung_tv import TvController, ssdp_listener, start_discovery_tasks, stop_discovery_tasks
 from .audiopro_speaker import AudioProSpeaker
 from .samsung_soundbar import SamsungSoundbar
+from .samsung_soundbar_local import SamsungSoundbarLocal
 from .speaker import SpeakerLike
 from .settings import SettingsStore
 from .history import HistoryStore
@@ -156,6 +157,12 @@ async def main() -> None:
                     device_id=cfg.smartthings_device_id,
                     poll_interval_s=cfg.smartthings_poll_interval_s,
                     token_file=cfg.smartthings_token_file,
+                    tv=tv,
+                )
+        elif cfg.speaker_backend == "samsung_soundbar_local":
+            if cfg.speaker_ip:
+                speaker = SamsungSoundbarLocal(
+                    speaker_ip=cfg.speaker_ip,
                     tv=tv,
                 )
         else:

@@ -149,7 +149,7 @@ class SettingsStore:
 
         # Listen target / stream URL validation only matters for speaker backends
         # that actually use the local listen-target settings.
-        if backend != "samsung_soundbar":
+        if backend not in {"samsung_soundbar", "samsung_soundbar_local"}:
             if out["listen_target_type"] == "stream":
                 stream_key = f"stream_url_{out['listen_target_stream']}"
                 if not out[stream_key]:
