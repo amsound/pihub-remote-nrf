@@ -88,6 +88,9 @@ class SamsungSoundbarLocal:
         self._availability_logged_down = False
         self._last_failure_key = None
 
+        self._cast_connected_logged = False
+        self._cast_ready_logged = False
+
         self._tv = tv
         self._state_change_callback = state_change_callback
 
@@ -175,11 +178,19 @@ class SamsungSoundbarLocal:
             await self._refresh_now()
 
     def _note_refresh_success(self) -> None:
-        if self._availability_logged_down:
+        if not self._cast_ready_logged:
             logger.info(
-                "SamsungSoundbarLocal recovered speaker_ip=%s",
+                "speaker link ready speaker_ip=%s (initial status received)",
                 self._speaker_ip,
             )
+            self._cast_ready_logged = True
+
+        if self._availability_logged_down:
+            logger.info(
+                "speaker link restored speaker_ip=%s",
+                self._speaker_ip,
+            )
+
         self._availability_logged_down = False
         self._last_failure_key = None
 
@@ -249,15 +260,28 @@ class SamsungSoundbarLocal:
     async def _ensure_cast(self) -> None:
         if self._cast is not None:
             return
+
         cast, browser = await asyncio.to_thread(self._connect_cast_blocking)
         self._cast = cast
         self._cast_browser = browser
+
+        if not self._cast_connected_logged:
+            cast_info = getattr(cast, "cast_info", None)
+            friendly_name = getattr(cast_info, "friendly_name", None) or getattr(cast, "name", None)
+            logger.info(
+                "speaker connected speaker_ip=%s friendly_name=%s",
+                self._speaker_ip,
+                friendly_name or "unknown",
+            )
+            self._cast_connected_logged = True
 
     async def _disconnect_cast(self) -> None:
         cast = self._cast
         browser = self._cast_browser
         self._cast = None
         self._cast_browser = None
+        self._cast_connected_logged = False
+        self._cast_ready_logged = False
 
         def _cleanup() -> None:
             with contextlib.suppress(Exception):
