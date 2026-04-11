@@ -9,7 +9,10 @@ import json
 import os
 import time
 import uuid
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _HISTORY_FLUSH_DEBOUNCE_S = 0.25
 DEFAULT_HISTORY_PATH = "/data/history.json"
@@ -371,6 +374,8 @@ class HistoryStore:
 
     def _writer_loop(self) -> None:
         retry_delay_s = 1.0
+        last_log_ts = 0.0
+        last_log_key: str | None = None
 
         while not self._stop_evt.is_set():
             self._flush_evt.wait()
@@ -395,9 +400,24 @@ class HistoryStore:
                     self._write_locked()
                     self._dirty = False
                 retry_delay_s = 1.0
+                last_log_ts = 0.0
+                last_log_key = None
             except Exception as exc:
                 with self._lock:
                     self._dirty = True
+
+                now = time.monotonic()
+                log_key = f"{type(exc).__name__}:{exc}"
+                if log_key != last_log_key or (now - last_log_ts) >= 30.0:
+                    logger.warning(
+                        "history persistence write failed path=%s retry_delay_s=%.1f error=%r",
+                        self._path,
+                        retry_delay_s,
+                        exc,
+                    )
+                    last_log_ts = now
+                    last_log_key = log_key
+
                 self._flush_evt.set()
                 time.sleep(retry_delay_s)
                 retry_delay_s = min(retry_delay_s * 2.0, 30.0)
