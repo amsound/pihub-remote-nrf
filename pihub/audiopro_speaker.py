@@ -765,6 +765,12 @@ class AudioProSpeaker:
         if detail:
             raise RuntimeError(f"{action}_not_sent: {detail}")
         raise RuntimeError(f"{action}_not_sent")
+    
+    def _log_pinfget_result(self, task: asyncio.Task[None]) -> None:
+        try:
+            task.result()
+        except Exception as e:
+            logger.debug("speaker pinfget refresh failed: %s", e)
 
     def _spawn_pinfget(self, *, delayed: bool = False) -> None:
         task = asyncio.create_task(
@@ -800,6 +806,10 @@ class AudioProSpeaker:
         if refresh:
             self._spawn_pinfget(delayed=delayed_refresh)
 
+    # Refresh policy is intentional and firmware-specific:
+    # - commands that do not reliably produce sufficient state updates schedule PINFGET
+    # - commands where firmware already emits adequate state do not force a refresh
+
     async def volume_up(self) -> None:
         v = self._state.volume
         cur = int(round((v or 0.0) * 100))
@@ -817,13 +827,11 @@ class AudioProSpeaker:
         await self._tcp_command(f"MCU+VOL+{target:03d}", action="set_volume")
 
     async def set_muted(self, target: bool) -> None:
+        # Always GET before SET because mute may have changed elsewhere.
+        # We require the GET send itself to succeed; otherwise this command fails
+        # like the other user-facing control methods.
         self._mute_evt.clear()
-
-        if self._state.ready:
-            await self._send_control("MCU+MUT+GET")
-        else:
-            await self._send_control("MCU+MUT+GET")
-            return
+        await self._tcp_command("MCU+MUT+GET", action="set_muted_get")
 
         with contextlib.suppress(Exception):
             await asyncio.sleep(MUTE_GET_DELAY_S)
@@ -835,8 +843,7 @@ class AudioProSpeaker:
             return
 
         new = "001" if target else "000"
-        ok = await self._send_control(f"MCU+MUT+{new}")
-        await self._require_control_sent(ok, action="set_muted")
+        await self._tcp_command(f"MCU+MUT+{new}", action="set_muted")
         self._spawn_pinfget()
 
     async def mute_toggle(self) -> None:
@@ -908,12 +915,6 @@ class AudioProSpeaker:
 
         cmd = f"setPlayerCmd:play:{url}"
         await self._http_command(cmd, action="play_url", refresh=True)
-
-    def _log_pinfget_result(self, task: asyncio.Task[None]) -> None:
-        try:
-            task.result()
-        except Exception as e:
-            logger.debug("speaker pinfget refresh failed: %s", e)
 
     async def _http_cmd(self, cmd: str) -> None:
         if not self._session:
