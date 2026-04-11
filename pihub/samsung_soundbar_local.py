@@ -158,17 +158,48 @@ class SamsungSoundbarLocal:
             await self._session.close()
         self._session = None
 
-    async def request_refresh(self) -> None:
+    async def request_refresh(self) -> dict[str, Any]:
         if not self._enabled:
-            return
+            return {
+                "ok": False,
+                "outcome": "unavailable",
+                "errors": ["speaker_disabled"],
+            }
 
         if self._refresh_lock.locked():
             self._poll_wake_evt.set()
-            return
+            return {
+                "ok": True,
+                "outcome": "refresh_coalesced",
+                "errors": [],
+            }
 
-        async with self._refresh_lock:
-            self._poll_wake_evt.set()
-            await self._refresh_now()
+        errors: list[str] = []
+
+        try:
+            async with self._refresh_lock:
+                self._poll_wake_evt.set()
+                await self._refresh_now()
+        except Exception as exc:
+            self._state.reachable = False
+            self._state.connected = False
+            self._state.ready = False
+            self._state.last_error = str(exc)
+            self._state.last_update_ts = _now()
+            self._note_refresh_failure(exc)
+            errors.append(f"refresh_failed:{exc!r}")
+            return {
+                "ok": False,
+                "outcome": "refresh_failed",
+                "errors": errors,
+            }
+
+        self._note_refresh_success()
+        return {
+            "ok": True,
+            "outcome": "refresh_requested",
+            "errors": errors,
+        }
 
     def _note_refresh_success(self) -> None:
         if not self._cast_ready_logged:

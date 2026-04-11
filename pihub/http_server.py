@@ -3173,17 +3173,18 @@ button:hover {{
 
         try:
             result = await self._speaker.request_refresh()
-        except Exception as exc:
-            return web.json_response(
-                {
+            if not isinstance(result, dict):
+                result = {
                     "ok": False,
-                    "domain": "speaker",
-                    "action": "refresh",
                     "outcome": "error",
-                    "error": str(exc),
-                },
-                status=200,
-            )
+                    "errors": ["invalid_refresh_result"],
+                }
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "outcome": "error",
+                "error": str(exc),
+            }
 
         return web.json_response(
             {
