@@ -249,10 +249,33 @@ class BleDongleLink:
         if payload:
             self._enqueue_nowait(payload)
 
+    def key_down_strict(self, *, usage: Usage, code: str) -> None:
+        if usage == "keyboard":
+            payload = self._encode_keyboard_down(code)
+        else:
+            payload = self._encode_consumer_down(code)
+        if not payload:
+            raise RuntimeError(f"key_down_not_sent: unknown_{usage}_code:{code}")
+        self._enqueue_strict(payload, action="key_down")
+
+    def key_up_strict(self, *, usage: Usage, code: str) -> None:
+        if usage == "keyboard":
+            payload = self._encode_keyboard_up(code)
+        else:
+            payload = self._encode_consumer_up(code)
+        if not payload:
+            raise RuntimeError(f"key_up_not_sent: unknown_{usage}_code:{code}")
+        self._enqueue_strict(payload, action="key_up")
+
     async def send_key(self, *, usage: Usage, code: str, key_hold_ms: int = 40) -> None:
         self.key_down(usage=usage, code=code)
         await asyncio.sleep(max(0, int(key_hold_ms)) / 1000.0)
         self.key_up(usage=usage, code=code)
+
+    async def send_key_strict(self, *, usage: Usage, code: str, key_hold_ms: int = 40) -> None:
+        self.key_down_strict(usage=usage, code=code)
+        await asyncio.sleep(max(0, int(key_hold_ms)) / 1000.0)
+        self.key_up_strict(usage=usage, code=code)
 
     async def press(self, *, usage: Usage, code: str, key_hold_ms: int = 40) -> None:
         # keep the clamp behaviour you had in dispatcher
@@ -274,7 +297,6 @@ class BleDongleLink:
         for i, step in enumerate(steps):
             step = step or {}
 
-            # NEW: explicit wait step
             wait_ms = step.get("wait_ms")
             if wait_ms is not None:
                 try:
@@ -292,7 +314,7 @@ class BleDongleLink:
                 key_hold_ms = int(default_key_hold_ms)
 
             if isinstance(usage, str) and isinstance(code, str):
-                await self.send_key(usage=usage, code=code, key_hold_ms=key_hold_ms)
+                await self.send_key_strict(usage=usage, code=code, key_hold_ms=key_hold_ms)
                 if i != len(steps) - 1:
                     await asyncio.sleep(gap_s)
 
@@ -690,6 +712,19 @@ class BleDongleLink:
                 self._tx_q.put_nowait((self._tx_epoch, payload))
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("tx queue full; dropped oldest and kept newest (%d bytes)", len(payload))
+
+    def _enqueue_strict(self, payload: bytes, *, action: str) -> None:
+        if not self.is_open:
+            raise RuntimeError(f"{action}_not_sent: transport_not_open")
+        if not self.state.connected:
+            raise RuntimeError(f"{action}_not_sent: not_connected")
+        if not self.state.ready:
+            raise RuntimeError(f"{action}_not_sent: not_ready")
+
+        try:
+            self._tx_q.put_nowait((self._tx_epoch, payload))
+        except asyncio.QueueFull:
+            raise RuntimeError(f"{action}_not_sent: tx_queue_full")
 
     async def _write_line(self, line: str) -> None:
         if not self.is_open:
