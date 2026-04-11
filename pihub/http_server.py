@@ -3120,31 +3120,79 @@ button:hover {{
 
     async def _handle_refresh_tv(self, _: web.Request) -> web.Response:
         if self._tv is None:
-            return web.json_response({"ok": False, "error": "tv unavailable"}, status=503)
+            return web.json_response(
+                {
+                    "ok": False,
+                    "domain": "tv",
+                    "action": "refresh",
+                    "error": "tv unavailable",
+                    "outcome": "unavailable",
+                },
+                status=503,
+            )
 
-        result = await self._tv.reconcile_presence()
+        try:
+            result = await self._tv.reconcile_presence()
+        except Exception as exc:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "domain": "tv",
+                    "action": "refresh",
+                    "error": str(exc),
+                    "outcome": "error",
+                },
+                status=200,
+            )
+
         outcome = str(result.get("outcome") or "unknown")
 
-        known_truth = outcome in {"present_true", "present_false"}
-        status = 200 if known_truth else 409 if outcome == "unknown" else 500
-
-        body = {
-            "ok": known_truth,
-            "domain": "tv",
-            "action": "refresh",
-            **result,
-        }
-        return web.json_response(body, status=status)
-
-        await self._tv.reconcile_presence()
-        return web.json_response({"ok": True, "domain": "tv", "action": "refresh"})
+        # HTTP succeeded; truth lives in the JSON body.
+        return web.json_response(
+            {
+                "ok": outcome in {"present_true", "present_false"},
+                "domain": "tv",
+                "action": "refresh",
+                **result,
+            },
+            status=200,
+        )
 
     async def _handle_refresh_speaker(self, _: web.Request) -> web.Response:
         if self._speaker is None or not getattr(self._speaker, "enabled", False):
-            return web.json_response({"ok": False, "error": "speaker unavailable"}, status=503)
+            return web.json_response(
+                {
+                    "ok": False,
+                    "domain": "speaker",
+                    "action": "refresh",
+                    "outcome": "unavailable",
+                    "error": "speaker unavailable",
+                },
+                status=503,
+            )
 
-        await self._speaker.request_refresh()
-        return web.json_response({"ok": True, "domain": "speaker", "action": "refresh"})
+        try:
+            result = await self._speaker.request_refresh()
+        except Exception as exc:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "domain": "speaker",
+                    "action": "refresh",
+                    "outcome": "error",
+                    "error": str(exc),
+                },
+                status=200,
+            )
+
+        return web.json_response(
+            {
+                "domain": "speaker",
+                "action": "refresh",
+                **result,
+            },
+            status=200,
+        )
 
     async def _handle_restart(self, _: web.Request) -> web.Response:
         async def _delayed_exit() -> None:
