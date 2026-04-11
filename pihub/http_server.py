@@ -3122,6 +3122,20 @@ button:hover {{
         if self._tv is None:
             return web.json_response({"ok": False, "error": "tv unavailable"}, status=503)
 
+        result = await self._tv.reconcile_presence()
+        outcome = str(result.get("outcome") or "unknown")
+
+        known_truth = outcome in {"present_true", "present_false"}
+        status = 200 if known_truth else 409 if outcome == "unknown" else 500
+
+        body = {
+            "ok": known_truth,
+            "domain": "tv",
+            "action": "refresh",
+            **result,
+        }
+        return web.json_response(body, status=status)
+
         await self._tv.reconcile_presence()
         return web.json_response({"ok": True, "domain": "tv", "action": "refresh"})
 

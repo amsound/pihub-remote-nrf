@@ -454,28 +454,31 @@ class TvController:
             return
         await self.ws.connect(self._session)
 
-    async def reconcile_presence(self, *, bootstrap_timeout_s: float = 3.0) -> None:
+    async def reconcile_presence(self, *, bootstrap_timeout_s: float = 3.0) -> dict[str, Any]:
         """
         One-shot active presence reconcile.
 
-        Ownership / boundaries:
-        - This method does NOT start or stop long-lived discovery tasks.
-        - SSDP alive/byebye remains the primary passive source of truth.
-        - This method is the active survey path for startup and later recovery.
-        - M-SEARCH is tried first.
-        - HTTP /dmr is fallback only if M-SEARCH does not establish presence.
-        - If presence is established as true, websocket connection may be nudged.
-        - Presence changes must never auto-close the websocket.
-
-        Intended uses:
-        - startup bootstrap
-        - post-network-blip resurvey
-        - manual/operator refresh
+        Returns a structured outcome:
+        - present_true
+        - present_false
+        - unknown
+        - error
         """
         if not self._session:
             await self.start()
+
         if not self._session:
-            return
+            return {
+                "outcome": "error",
+                "presence_on": self._presence_cached,
+                "presence_source": self._presence_source,
+                "changed": False,
+                "errors": ["session_unavailable"],
+            }
+
+        before_presence = self._presence_cached
+        before_source = self._presence_source
+        errors: list[str] = []
 
         logger.debug(
             "tv reconcile start tv_ip=%s presence_on=%s presence_source=%s",
@@ -487,43 +490,86 @@ class TvController:
         # Primary active survey path: ask the network directly.
         try:
             await msearch_bootstrap(self, timeout_s=bootstrap_timeout_s)
-        except Exception:
+        except Exception as exc:
             logger.debug("tv reconcile msearch bootstrap failed", exc_info=True)
+            errors.append(f"msearch_bootstrap_failed:{exc!r}")
 
         # If bootstrap established presence, optionally nudge command-path readiness.
         if self._presence_cached is True:
             try:
                 await self.ensure_ws_connected()
-            except Exception:
+            except Exception as exc:
                 logger.debug("tv reconcile ws connect failed after positive presence", exc_info=True)
-            return
+                errors.append(f"ws_connect_failed:{exc!r}")
+
+            return {
+                "outcome": "present_true",
+                "presence_on": self._presence_cached,
+                "presence_source": self._presence_source,
+                "changed": (
+                    self._presence_cached != before_presence
+                    or self._presence_source != before_source
+                ),
+                "errors": errors,
+            }
 
         # Fallback only: use HTTP renderer probe if M-SEARCH did not establish truth.
         try:
             if await presence_probe_up(self._session, self.tv_ip):
-                changed = self._commit_presence(True, source="probe_http_up")
+                self._commit_presence(True, source="probe_http_up")
                 logger.debug(
-                    "tv reconcile probe_up changed=%s presence_on=%s source=%s",
-                    "true" if changed else "false",
+                    "tv reconcile probe_up presence_on=%s source=%s",
                     "true" if self._presence_cached is True else "false",
                     self._presence_source,
                 )
+
                 try:
                     await self.ensure_ws_connected()
-                except Exception:
+                except Exception as exc:
                     logger.debug("tv reconcile ws connect failed after http fallback", exc_info=True)
-                return
-        except Exception:
+                    errors.append(f"ws_connect_failed:{exc!r}")
+
+                return {
+                    "outcome": "present_true",
+                    "presence_on": self._presence_cached,
+                    "presence_source": self._presence_source,
+                    "changed": (
+                        self._presence_cached != before_presence
+                        or self._presence_source != before_source
+                    ),
+                    "errors": errors,
+                }
+        except Exception as exc:
             logger.debug("tv reconcile http probe failed", exc_info=True)
+            errors.append(f"http_probe_failed:{exc!r}")
 
         # No positive signal established. Leave cached presence as-is.
-        # This is intentionally conservative: absence of proof is not forced "off".
         logger.debug(
             "tv reconcile complete tv_ip=%s presence_on=%s presence_source=%s",
             self.tv_ip,
             self._presence_cached,
             self._presence_source,
         )
+
+        if self._presence_cached is False:
+            outcome = "present_false"
+        elif self._presence_cached is True:
+            # Conservative fallback: truth is currently "on" from cache, but this refresh
+            # did not establish a fresh positive signal. Keep the cache truthful.
+            outcome = "present_true"
+        else:
+            outcome = "unknown"
+
+        return {
+            "outcome": outcome,
+            "presence_on": self._presence_cached,
+            "presence_source": self._presence_source,
+            "changed": (
+                self._presence_cached != before_presence
+                or self._presence_source != before_source
+            ),
+            "errors": errors,
+        }
 
     def snapshot(self) -> TvSnapshot:
         st = self.ws.state

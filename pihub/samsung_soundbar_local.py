@@ -513,13 +513,11 @@ class SamsungSoundbarLocal:
 
     async def power_on(self) -> None:
         # Intentionally not used for this backend.
-        logger.debug("SamsungSoundbarLocal power_on noop")
-        await self.request_refresh()
+        raise RuntimeError("unsupported_on_backend:power_on")
 
     async def power_off(self) -> None:
         # Intentionally not used for this backend.
-        logger.debug("SamsungSoundbarLocal power_off noop")
-        await self.request_refresh()
+        raise RuntimeError("unsupported_on_backend:power_off")
 
     async def volume_up(self) -> None:
         cur = self._state.volume if self._state.volume is not None else 0.0

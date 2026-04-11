@@ -28,7 +28,7 @@ It’s lightweight, locally stateful, and tuned for Raspberry Pi 3B+ (aarch64). 
 * **Device-state signals**: passive state-driven routing from TV/speaker changes into local runtime behavior
 * **Precise edges**: explicit **down/up**; filters kernel auto-repeat
 * **Long-press** via `min_hold_ms`
-* **Bounded local queueing on hot paths**: with reconnect and best-effort recovery; explicit flows fail truthfully for real command/send failures, while selected backend-specific unsupported operations may be intentionally skipped by policy
+* **Bounded local queueing on hot paths**: with reconnect and best-effort recovery; explicit flows fail truthfully when a required backend command cannot be sent through the active local transport; some backend-specific unsupported operations may be intentionally skipped by policy
 
 ---
 

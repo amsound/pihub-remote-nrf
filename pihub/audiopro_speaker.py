@@ -16,13 +16,13 @@ import aiohttp
 logger = logging.getLogger(__name__)
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
-HANDSHAKE_TIMEOUT_S = 8.0
+HANDSHAKE_TIMEOUT_S = 5.0
 
 _TCP_DEFAULT_PORT = 8899
 _TCP_HEADER = b"\x18\x96\x18\x20"  # 0x18 0x96 0x18 0x20
 
 _HTTPAPI_PATH = "/httpapi.asp"
-_HTTP_TIMEOUT_S = 10
+_HTTP_TIMEOUT_S = 2.0
 SEND_TIMEOUT_S = 2.0        # fail fast if a TCP send/drain stalls
 DEFAULT_HTTP_POWEROFF_CMD = "setShutdown:0"
 
@@ -31,15 +31,15 @@ VOLUME_STEP_PCT = 2
 
 # Poll knobs (tweak here)
 POLL_WIFI_PLAYING_S = 10.0   # play OR load
-POLL_WIFI_PAUSED_S = 15.0
-POLL_WIFI_IDLE_S = 60.0
+POLL_WIFI_PAUSED_S = 10.0
+POLL_WIFI_IDLE_S = 30.0
 POLL_PHYSICAL_S = 60.0
 
 # Mute safety knobs
 MUTE_GET_DELAY_S = 0.02      # tiny settle delay after MUT+GET
 MUTE_GET_TIMEOUT_S = 0.5     # wait for AXX+MUT+... after GET
 
-HINT_PINFGET_DELAY_S = 0.8
+HINT_PINFGET_DELAY_S = 1.0
 
 # PLM input modes -> app-friendly "source"
 # (Doc: https://developer.arylic.com/tcpapi/ — see "Current Input Mode" / PLM table.)
@@ -766,31 +766,62 @@ class AudioProSpeaker:
             raise RuntimeError(f"{action}_not_sent: {detail}")
         raise RuntimeError(f"{action}_not_sent")
 
+    def _spawn_pinfget(self, *, delayed: bool = False) -> None:
+        task = asyncio.create_task(
+            self._delayed_pinfget() if delayed else self._pinfget()
+        )
+        task.add_done_callback(self._log_pinfget_result)
+
+    async def _tcp_command(
+        self,
+        payload: str,
+        *,
+        action: str,
+        refresh: bool = False,
+        delayed_refresh: bool = False,
+    ) -> None:
+        ok = await self._send_control(payload)
+        await self._require_control_sent(ok, action=action)
+
+        if refresh:
+            self._spawn_pinfget(delayed=delayed_refresh)
+
+    async def _http_command(
+        self,
+        cmd: str,
+        *,
+        action: str,
+        refresh: bool = False,
+        delayed_refresh: bool = False,
+    ) -> None:
+        ok = await self._http_control(cmd)
+        await self._require_control_sent(ok, action=action)
+
+        if refresh:
+            self._spawn_pinfget(delayed=delayed_refresh)
+
     async def volume_up(self) -> None:
         v = self._state.volume
         cur = int(round((v or 0.0) * 100))
         nxt = _clamp_int(cur + self._volume_step_pct, 0, 100)
-        await self._send_control(f"MCU+VOL+{nxt:03d}")
+        await self._tcp_command(f"MCU+VOL+{nxt:03d}", action="volume_up")
 
     async def volume_down(self) -> None:
         v = self._state.volume
         cur = int(round((v or 0.0) * 100))
         nxt = _clamp_int(cur - self._volume_step_pct, 0, 100)
-        await self._send_control(f"MCU+VOL+{nxt:03d}")
+        await self._tcp_command(f"MCU+VOL+{nxt:03d}", action="volume_down")
 
     async def set_volume(self, pct: int) -> None:
         target = max(0, min(100, int(pct)))
-        ok = await self._send_control(f"MCU+VOL+{target:03d}")
-        await self._require_control_sent(ok, action="set_volume")
+        await self._tcp_command(f"MCU+VOL+{target:03d}", action="set_volume")
 
     async def set_muted(self, target: bool) -> None:
-        # Always GET before SET (mute may have changed elsewhere)
         self._mute_evt.clear()
-        # MUT+GET is safe even pre-ready; but _send_control will drop before ready.
+
         if self._state.ready:
             await self._send_control("MCU+MUT+GET")
         else:
-            # If link not ready yet, just drop (consistent with gating) and let handshake establish state
             await self._send_control("MCU+MUT+GET")
             return
 
@@ -800,50 +831,45 @@ class AudioProSpeaker:
 
         cur = bool(self._state.muted) if self._state.muted is not None else False
         if cur == bool(target):
-            asyncio.create_task(self._pinfget())
+            self._spawn_pinfget()
             return
 
         new = "001" if target else "000"
-        if await self._send_control(f"MCU+MUT+{new}"):
-            asyncio.create_task(self._pinfget())
+        ok = await self._send_control(f"MCU+MUT+{new}")
+        await self._require_control_sent(ok, action="set_muted")
+        self._spawn_pinfget()
 
     async def mute_toggle(self) -> None:
         cur = bool(self._state.muted) if self._state.muted is not None else False
         await self.set_muted(not cur)
 
     async def play(self) -> None:
-        if await self._send_control("MCU+PLY-PLA"):
-            asyncio.create_task(self._pinfget())
+        await self._tcp_command("MCU+PLY-PLA", action="play", refresh=True)
 
     async def pause(self) -> None:
-        if await self._send_control("MCU+PLY-PUS"):
-            asyncio.create_task(self._pinfget())
+        await self._tcp_command("MCU+PLY-PUS", action="pause", refresh=True)
 
     async def stop_playback(self) -> None:
-        ok = await self._send_control("MCU+PLY-STP")
-        await self._require_control_sent(ok, action="stop_playback")
-        asyncio.create_task(self._pinfget())
+        await self._tcp_command("MCU+PLY-STP", action="stop_playback", refresh=True)
 
     async def next_track(self) -> None:
-        await self._send_control("MCU+PLY+NXT")
+        await self._tcp_command("MCU+PLY+NXT", action="next_track")
 
     async def previous_track(self) -> None:
-        await self._send_control("MCU+PLY+PRV")
+        await self._tcp_command("MCU+PLY+PRV", action="previous_track")
 
     async def play_pause(self) -> None:
-        if await self._send_control("MCU+PLY+PUS"):
-            asyncio.create_task(self._pinfget())
+        await self._tcp_command("MCU+PLY+PUS", action="play_pause", refresh=True)
 
     async def preset(self, n: int) -> None:
         n = _clamp_int(int(n), 1, 10)
-        ok = await self._send_control(f"MCU+KEY+{n:03d}")
-        await self._require_control_sent(ok, action="preset")
+        await self._tcp_command(f"MCU+KEY+{n:03d}", action="preset")
 
     async def next_preset(self) -> None:
-        await self._send_control("MCU+KEY+NXT")
+        await self._tcp_command("MCU+KEY+NXT", action="next_preset")
 
     async def previous_preset(self) -> None:
-        await self._send_control("MCU+KEY+PRE")
+        await self._tcp_command("MCU+KEY+PRE", action="previous_preset")
 
     async def set_source(self, source: str) -> None:
         src = (source or "").strip().lower()
@@ -862,37 +888,26 @@ class AudioProSpeaker:
         if not want_mode:
             raise RuntimeError(f"set_source_unsupported:{source}")
 
-        ok = await self._send_control(f"MCU+PLM+{want_mode}")
-        await self._require_control_sent(ok, action="set_source")
-        asyncio.create_task(self._delayed_pinfget())
+        await self._tcp_command(
+            f"MCU+PLM+{want_mode}",
+            action="set_source",
+            refresh=True,
+            delayed_refresh=True,
+        )
 
     # -------------- HTTP API --------------
 
     async def power_off(self) -> None:
-        """Best-effort courtesy amplifier off via HTTP API, but only when ready."""
+        """Courtesy amplifier off via HTTP API, but only when ready and actually sent."""
         cmd = getattr(self, "_http_poweroff_cmd", DEFAULT_HTTP_POWEROFF_CMD)
-        task = asyncio.create_task(self._http_control(cmd))
-        task.add_done_callback(self._log_http_poweroff_result)
-
-    def _log_http_poweroff_result(self, task: asyncio.Task[bool]) -> None:
-        try:
-            ok = task.result()
-            if not ok:
-                logger.info("speaker courtesy power_off not sent")
-        except Exception as e:
-            self._state.last_error = f"httpapi power_off failed: {e}"
-            self._state.last_update_ts = _now()
-            logger.warning("speaker courtesy power_off failed: %s", e)
+        await self._http_command(cmd, action="power_off")
 
     async def play_url(self, url: str) -> None:
         if not url:
             raise RuntimeError("play_url_missing")
 
         cmd = f"setPlayerCmd:play:{url}"
-        ok = await self._http_control(cmd)
-        await self._require_control_sent(ok, action="play_url")
-        task = asyncio.create_task(self._pinfget())
-        task.add_done_callback(self._log_pinfget_result)
+        await self._http_command(cmd, action="play_url", refresh=True)
 
     def _log_pinfget_result(self, task: asyncio.Task[None]) -> None:
         try:
