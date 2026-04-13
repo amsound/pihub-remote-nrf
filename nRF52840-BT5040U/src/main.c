@@ -50,6 +50,7 @@ static void button_changed(uint32_t button_state, uint32_t has_changed);
 
 #include <dk_buttons_and_leds.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/hwinfo.h>
 #include <string.h>
 
 /*
@@ -124,7 +125,7 @@ LOG_MODULE_REGISTER(pihub_hogp, LOG_LEVEL_INF);
 #ifdef CONFIG_APP_VERSION
 #define FW_VERSION_STR CONFIG_APP_VERSION
 #else
-#define FW_VERSION_STR "0.1.0"
+#define FW_VERSION_STR "1.0.0"
 #endif
 #endif
 
@@ -133,7 +134,7 @@ LOG_MODULE_REGISTER(pihub_hogp, LOG_LEVEL_INF);
 
 /* HID Information (bcdHID=0x0111, country=0, flags=0x02 (normally remote wake)) */
 /* HID Information (bcdHID=0x0111, country=0, flags=0x03 (remote wake + normally connectable)) */
-static const uint8_t hid_info[] = { 0x11, 0x01, 0x00, 0x03 };
+static const uint8_t hid_info[] = { 0x01, 0x01, 0x00, 0x03 };
 
 /* Minimal boot keyboard report map (8-byte input report: modifiers, reserved, 6 keys) */
 /* HID Report Map parity with BlueZ (Keyboard Report ID 1, Consumer Report ID 2) */
@@ -212,6 +213,13 @@ static uint8_t protocol_mode = 1; /* 0=Boot, 1=Report */
 static uint8_t kb_report[8] = { 0 };      /* modifiers, reserved, 6 keys */
 static uint8_t cc_report[2] = { 0 };      /* 16-bit Consumer usage */
 static uint8_t boot_kb_report[8] = { 0 };
+
+static const struct bt_le_conn_param low_latency_conn_params = {
+    .interval_min = 12,
+    .interval_max = 12,
+    .latency = 0,
+    .timeout = 400,
+}; /* 7.5-15 ms, latency 0, timeout 4 s */
 
 
 /* Report Reference descriptor payload: [Report ID, Report Type (Input=1)] */
@@ -1162,6 +1170,26 @@ enum hids_attr_index {
 /* Device Information Service strings. */
 static const char mfg_name[] = "PiHub";
 static const char model_num[] = DEVICE_NAME;
+static const char hw_rev[]    = "revA";
+static const char fw_rev[]    = "1.0.0";
+static const char sw_rev[]    = "1.0.0";
+
+static char serial_num[32] = "UNKNOWN";
+
+static void init_serial_num(void)
+{
+    uint8_t id[8];
+    ssize_t n = hwinfo_get_device_id(id, sizeof(id));
+
+    if (n <= 0) {
+        return;
+    }
+
+    size_t off = 0;
+    for (ssize_t i = 0; i < n && off + 2 < sizeof(serial_num); i++) {
+        off += snprintk(&serial_num[off], sizeof(serial_num) - off, "%02X", id[i]);
+    }
+}
 
 static ssize_t read_str(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                         void *buf, uint16_t len, uint16_t offset)
@@ -1172,26 +1200,49 @@ static ssize_t read_str(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 
 BT_GATT_SERVICE_DEFINE(dis_svc,
     BT_GATT_PRIMARY_SERVICE(BT_UUID_DIS),
+
     BT_GATT_CHARACTERISTIC(BT_UUID_DIS_MANUFACTURER_NAME,
                            BT_GATT_CHRC_READ,
                            BT_GATT_PERM_READ,
                            read_str, NULL, (void *)mfg_name),
+
     BT_GATT_CHARACTERISTIC(BT_UUID_DIS_MODEL_NUMBER,
                            BT_GATT_CHRC_READ,
                            BT_GATT_PERM_READ,
-                           read_str, NULL, (void *)model_num)
+                           read_str, NULL, (void *)model_num),
+
+    BT_GATT_CHARACTERISTIC(BT_UUID_DIS_HARDWARE_REVISION,
+                           BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ,
+                           read_str, NULL, (void *)hw_rev),
+
+    BT_GATT_CHARACTERISTIC(BT_UUID_DIS_FIRMWARE_REVISION,
+                           BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ,
+                           read_str, NULL, (void *)fw_rev),
+
+    BT_GATT_CHARACTERISTIC(BT_UUID_DIS_SOFTWARE_REVISION,
+                           BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ,
+                           read_str, NULL, (void *)sw_rev),
+
+    /* Unique serial: keep encrypted */
+    BT_GATT_CHARACTERISTIC(BT_UUID_DIS_SERIAL_NUMBER,
+                           BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ_ENCRYPT,
+                           read_str, NULL, (void *)serial_num)
 );
 
 /* Advertising data: Flags + HID service UUID (16-bit) */
 static const struct bt_data ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-    /* Advertise as HID (Keyboard) and Battery in the 16-bit UUID list */
+    /* Advertise as HID (Generic) and Battery in the 16-bit UUID list */
     BT_DATA_BYTES(BT_DATA_UUID16_ALL,
                   0x12, 0x18, /* 0x1812 HID */
                   0x0F, 0x18  /* 0x180F Battery */
                   ),
-    /* GAP Appearance AD type (0x19): 0x03C1 = Keyboard */
-    BT_DATA_BYTES(BT_DATA_GAP_APPEARANCE, 0xC1, 0x03),
+    /* GAP Appearance AD type (0x19): 0x03C0 = Generic HID */
+    BT_DATA_BYTES(BT_DATA_GAP_APPEARANCE, 0xC0, 0x03),
 };
 
 /* Put the configured device name in the scan response. */
@@ -1674,8 +1725,6 @@ static void le_param_updated(struct bt_conn *conn, uint16_t interval,
 
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err)
 {
-    ARG_UNUSED(conn);
-
     if (err) {
         LOG_WRN("Security failed (level %u, err %d)", level, err);
         /* Don’t light RED for this; pairing can be retried from the phone. */
@@ -1687,6 +1736,14 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
     update_link_ready("security");
     LOG_INF("Security changed: level %u", level);
 
+    if (level >= BT_SECURITY_L2) {
+        int perr = bt_conn_le_param_update(conn, &low_latency_conn_params);
+        if (perr && perr != -EALREADY) {
+            LOG_WRN("Conn param update failed: %d", perr);
+        } else {
+            LOG_INF("Requested low-latency conn params");
+        }
+    }
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
@@ -1738,6 +1795,7 @@ int main(void)
     dk_leds_init();
     pihub_led_boot_sequence();
     usb_console_init();
+    init_serial_num();
 
     /* Bring up CDC ACM command interface (PING/PONG + KB/CC). */
     cmd_uart_init();
