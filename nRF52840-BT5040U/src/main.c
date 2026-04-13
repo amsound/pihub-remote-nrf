@@ -1,14 +1,17 @@
-
 /*
  * PiHub BLE HID remote
  * NCS v3.2.1 / Zephyr 4.2.x
  *
  * Behaviour contract:
- *  - Advertise as a bondable HID-over-GATT keyboard + consumer-control peripheral
+ *  - Advertise as a bondable HID-over-GATT peripheral with:
+ *      - Consumer Control input report for remote/media actions
+ *      - Keyboard input report for digits and auxiliary keys
+ *      - Boot Keyboard support for broad host compatibility
+ *  - Present as Generic HID (not keyboard-only) in GAP appearance
  *  - Stop advertising while connected; restart advertising on disconnect
  *  - Use a single bonded host model with an explicit unpair path
  *  - Accept hot-path HID commands over USB CDC ACM
- *  - Show advertising/connected/error state on the onboard LEDs
+ *  - Show advertising / connected / error state on the onboard LEDs
  */
 
 #include <zephyr/kernel.h>
@@ -130,14 +133,23 @@ LOG_MODULE_REGISTER(pihub_hogp, LOG_LEVEL_INF);
 #endif
 
 
-/* --- Simple HOGP: HID Service + a single input report characteristic --- */
+/* --- HID over GATT profile state --- */
 
-/* HID Information (bcdHID=0x0111, country=0, flags=0x02 (normally remote wake)) */
-/* HID Information (bcdHID=0x0111, country=0, flags=0x03 (remote wake + normally connectable)) */
+/* HID Information
+ *  - bcdHID = 0x0101 (HID Class Spec 1.01)
+ *  - country code = 0
+ *  - flags = 0x03 (RemoteWake | NormallyConnectable)
+ */
 static const uint8_t hid_info[] = { 0x01, 0x01, 0x00, 0x03 };
 
-/* Minimal boot keyboard report map (8-byte input report: modifiers, reserved, 6 keys) */
-/* HID Report Map parity with BlueZ (Keyboard Report ID 1, Consumer Report ID 2) */
+/* HID Report Map
+ *
+ * Report ID 1: standard keyboard input report
+ *   - 8 bytes: modifiers, reserved, 6 key slots
+ *
+ * Report ID 2: consumer control input report
+ *   - 2 bytes: single 16-bit Consumer usage (little-endian)
+ */
 static const uint8_t report_map[] = {
     0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x01, 0x05, 0x07, 0x19, 0xE0,
     0x29, 0xE7, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02,
@@ -147,7 +159,7 @@ static const uint8_t report_map[] = {
     0x2A, 0xFF, 0x03, 0x75, 0x10, 0x95, 0x01, 0x81, 0x00, 0xC0,
 };
 /* --- Battery Service (0x180F) --- */
-static uint8_t battery_level = 100; /* Fake 100% */
+static uint8_t battery_level = 100; /* Fixed level for mains-powered bridge behaviour */
 static bool notify_batt_enabled;
 
 
@@ -219,7 +231,7 @@ static const struct bt_le_conn_param low_latency_conn_params = {
     .interval_max = 12,
     .latency = 0,
     .timeout = 400,
-}; /* 7.5-15 ms, latency 0, timeout 4 s */
+}; /* 15 ms, latency 0, timeout 4 s */
 
 
 /* Report Reference descriptor payload: [Report ID, Report Type (Input=1)] */
@@ -929,19 +941,6 @@ static void sw1_feedback_work_fn(struct k_work *work)
     k_work_schedule(&sw1_feedback_work, K_MSEC(200));
 }
 
-/* Test/bring-up sequence tuning.
- * We keep this conservative to improve iOS/tvOS reliability on (re)connect:
- * - Wait for encryption + CCCs to settle
- * - Send an "all keys up" (empty) report before any key down
- * - Stagger keyboard and consumer reports
- * - Retry on temporary notify back-pressure (-ENOMEM/-EAGAIN/-EBUSY)
- */
-#define TEST_PREROLL_DELAY_MS 60
-#define TEST_KEY_HOLD_MS      35
-#define TEST_CC_RELEASE_MS    120
-
-
-
 
 static ssize_t read_hid_info(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                              void *buf, uint16_t len, uint16_t offset)
@@ -1236,7 +1235,7 @@ BT_GATT_SERVICE_DEFINE(dis_svc,
 /* Advertising data: Flags + HID service UUID (16-bit) */
 static const struct bt_data ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-    /* Advertise as HID (Generic) and Battery in the 16-bit UUID list */
+    /* Advertise public 16-bit services: HID and Battery */
     BT_DATA_BYTES(BT_DATA_UUID16_ALL,
                   0x12, 0x18, /* 0x1812 HID */
                   0x0F, 0x18  /* 0x180F Battery */
@@ -1369,7 +1368,7 @@ static int send_keyboard_report(const uint8_t report8[8])
         return -EACCES;
     }
 
-    /* Match BlueZ behavior: route based on Protocol Mode.
+    /* Route based on Protocol Mode.
      *  - protocol_mode == 0x00: Boot protocol -> notify Boot Keyboard Input Report (2A22)
      *  - protocol_mode == 0x01: Report protocol -> notify Keyboard Report characteristic (2A4D + Report Ref ID 1)
      */
@@ -1656,7 +1655,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 
     k_timer_stop(&blink_timer);
     set_leds_conn();
-    /* Stop advertising once connected (spec parity) */
+    /* Stop advertising once connected */
     int adv_stop_err = bt_le_adv_stop();
     if ((adv_stop_err == 0) || (adv_stop_err == -EALREADY)) {
         cmd_evt_adv(false);
