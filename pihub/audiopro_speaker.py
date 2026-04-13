@@ -66,6 +66,30 @@ _PLM_TO_SOURCE = {
 
 _PHYSICAL_SOURCES = {"hdmi", "optical", "line-in", "bluetooth"}
 
+from bisect import bisect_left
+
+# Logical "-30 dB .. 0 dB" style ladder, tuned for real-world use.
+VOLUME_STEPS = [
+    7, 8, 9, 10, 11, 12, 13, 14, 15, 17,
+    19, 21, 23, 25, 27, 30, 33, 37, 41, 45,
+    49, 54, 59, 64, 70, 76, 82, 88, 94, 99, 100
+]
+
+
+def _nearest_step_index(value: int, steps: list[int]) -> int:
+    value = max(0, min(100, int(value)))
+
+    pos = bisect_left(steps, value)
+    if pos <= 0:
+        return 0
+    if pos >= len(steps):
+        return len(steps) - 1
+
+    before = steps[pos - 1]
+    after = steps[pos]
+    if abs(value - before) <= abs(after - value):
+        return pos - 1
+    return pos
 
 def _now() -> float:
     return time.time()
@@ -835,13 +859,29 @@ class AudioProSpeaker:
     async def volume_up(self) -> None:
         v = self._state.volume
         cur = int(round((v or 0.0) * 100))
-        nxt = _clamp_int(cur + self._volume_step_pct, 0, 100)
+
+        if cur <= 0:
+            nxt = VOLUME_STEPS[0]
+        else:
+            idx = _nearest_step_index(cur, VOLUME_STEPS)
+            idx = min(idx + 1, len(VOLUME_STEPS) - 1)
+            nxt = VOLUME_STEPS[idx]
+
         await self._tcp_command(f"MCU+VOL+{nxt:03d}", action="volume_up")
 
     async def volume_down(self) -> None:
         v = self._state.volume
         cur = int(round((v or 0.0) * 100))
-        nxt = _clamp_int(cur - self._volume_step_pct, 0, 100)
+
+        if cur <= 0:
+            nxt = 0
+        else:
+            idx = _nearest_step_index(cur, VOLUME_STEPS)
+            if idx == 0:
+                nxt = 0
+            else:
+                nxt = VOLUME_STEPS[idx - 1]
+
         await self._tcp_command(f"MCU+VOL+{nxt:03d}", action="volume_down")
 
     async def set_volume(self, pct: int) -> None:
