@@ -10,6 +10,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
+from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 
 import aiohttp
 import pychromecast
@@ -18,8 +19,12 @@ logger = logging.getLogger(__name__)
 logging.getLogger("pychromecast.discovery").setLevel(logging.ERROR)
 
 DEFAULT_MEDIA_RECEIVER_APP_ID = "CC1AD845"
-AIRPLAY_PORT = 45167
 AIRPLAY_ACTIVE_BIT = 0x800
+
+HTTP_TIMEOUT_S = 3.0
+AIRPLAY_DISCOVERY_TIMEOUT_S = 2.0
+AIRPLAY_INFO_TIMEOUT_S = 2.0
+AIRPLAY_SERVICE_TYPE = "_airplay._tcp.local."
 
 HTTP_TIMEOUT_S = 3.0
 
@@ -29,6 +34,24 @@ CAST_DISCOVERY_TIMEOUT_S = 5
 def _now() -> float:
     return time.time()
 
+class _AirPlayServiceListener(ServiceListener):
+    def __init__(self) -> None:
+        self.matches: list[tuple[str, Any]] = []
+
+    def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        info = zc.get_service_info(
+            type_,
+            name,
+            timeout=int(AIRPLAY_DISCOVERY_TIMEOUT_S * 1000),
+        )
+        if info is not None:
+            self.matches.append((name, info))
+
+    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        self.add_service(zc, type_, name)
+
+    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        pass
 
 @dataclass
 class SamsungSoundbarLocalState:
@@ -83,6 +106,10 @@ class SamsungSoundbarLocal:
         self._cast_browser = None
         self._cast_uuid = None
         self._cast_friendly_name = None
+
+        self._airplay_port = None
+        self._airplay_service_name = None
+
         self._last_send_monotonic = 0.0
 
         self._availability_logged_down = False
@@ -118,6 +145,8 @@ class SamsungSoundbarLocal:
             "source": s.source,
             "listen_active": s.listen_active,
             "update_age_s": age_i,
+            "airplay_port": self._airplay_port,
+            "airplay_service_name": self._airplay_service_name,
         }
 
     async def start(self) -> None:
@@ -400,11 +429,50 @@ class SamsungSoundbarLocal:
         await asyncio.sleep(0.35)
         await self.request_refresh()
 
-    async def _read_airplay_flags(self) -> int | None:
-        url = f"http://{self._speaker_ip}:{AIRPLAY_PORT}/info"
+    async def _resolve_airplay_service(self) -> tuple[int | None, str | None]:
+        def _resolve() -> tuple[int | None, str | None]:
+            zc = Zeroconf()
+            listener = _AirPlayServiceListener()
+            browser = ServiceBrowser(zc, AIRPLAY_SERVICE_TYPE, listener)
+
+            try:
+                time.sleep(AIRPLAY_DISCOVERY_TIMEOUT_S)
+
+                for name, info in listener.matches:
+                    addresses: list[str] = []
+                    with contextlib.suppress(Exception):
+                        addresses = info.parsed_addresses()
+
+                    if self._speaker_ip in addresses:
+                        return info.port, name
+
+                return None, None
+            finally:
+                with contextlib.suppress(Exception):
+                    browser.cancel()
+                with contextlib.suppress(Exception):
+                    zc.close()
+
+        port, name = await asyncio.to_thread(_resolve)
+
+        if port:
+            if port != self._airplay_port or name != self._airplay_service_name:
+                logger.info(
+                    "airplay service resolved speaker_ip=%s port=%s service=%s",
+                    self._speaker_ip,
+                    port,
+                    name or "unknown",
+                )
+            self._airplay_port = port
+            self._airplay_service_name = name
+
+        return port, name
+
+    async def _fetch_airplay_flags(self, port: int) -> int | None:
+        url = f"http://{self._speaker_ip}:{port}/info"
 
         def _fetch() -> int | None:
-            with urllib.request.urlopen(url, timeout=2.0) as resp:
+            with urllib.request.urlopen(url, timeout=AIRPLAY_INFO_TIMEOUT_S) as resp:
                 payload = resp.read()
             data = plistlib.loads(payload)
             value = data.get("statusFlags")
@@ -412,10 +480,49 @@ class SamsungSoundbarLocal:
                 return value
             return None
 
+        return await asyncio.to_thread(_fetch)
+
+    async def _read_airplay_flags(self) -> int | None:
+        port = self._airplay_port
+
+        if not port:
+            port, _name = await self._resolve_airplay_service()
+            if not port:
+                logger.debug(
+                    "airplay service resolve failed speaker_ip=%s",
+                    self._speaker_ip,
+                )
+                return None
+
         try:
-            return await asyncio.to_thread(_fetch)
+            return await self._fetch_airplay_flags(port)
+        except Exception as exc:
+            logger.info(
+                "airplay endpoint refresh needed speaker_ip=%s old_port=%s error=%s",
+                self._speaker_ip,
+                port,
+                exc,
+            )
+            self._airplay_port = None
+            self._airplay_service_name = None
+
+        port, _name = await self._resolve_airplay_service()
+        if not port:
+            logger.debug(
+                "airplay service re-resolve failed speaker_ip=%s",
+                self._speaker_ip,
+            )
+            return None
+
+        try:
+            return await self._fetch_airplay_flags(port)
         except Exception:
-            logger.debug("airplay /info read failed speaker_ip=%s", self._speaker_ip, exc_info=True)
+            logger.debug(
+                "airplay /info read failed speaker_ip=%s port=%s",
+                self._speaker_ip,
+                port,
+                exc_info=True,
+            )
             return None
 
     def _apply_status(self, *, airplay_flags: int | None, cast_status: dict[str, Any]) -> None:
