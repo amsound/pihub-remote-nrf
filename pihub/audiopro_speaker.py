@@ -39,6 +39,8 @@ POLL_PHYSICAL_S = 60.0
 MUTE_GET_DELAY_S = 0.02      # tiny settle delay after MUT+GET
 MUTE_GET_TIMEOUT_S = 0.5     # wait for AXX+MUT+... after GET
 
+HDMI_SOFT_MUTE_RESTORE_DEFAULT_PCT = 30
+
 HINT_PINFGET_DELAY_S = 1.0
 
 # PLM input modes -> app-friendly "source"
@@ -179,6 +181,9 @@ class AudioProSpeaker:
 
         # Mute GET waiter
         self._mute_evt = asyncio.Event()
+
+        self._physical_mute_restore_pct: int | None = None
+        self._physical_muted = False
 
         # State change callback for external state change
         self._state_change_callback = state_change_callback
@@ -860,12 +865,36 @@ class AudioProSpeaker:
     # - commands where firmware already emits adequate state do not force a refresh
 
     async def volume_up(self) -> None:
+        src = (self._state.source or "").strip().lower()
+
+        if src == "hdmi" and self._physical_muted:
+            restore = self._physical_mute_restore_pct
+            if restore is None or restore <= 0:
+                restore = HDMI_SOFT_MUTE_RESTORE_DEFAULT_PCT
+            self._physical_muted = False
+            self._state.muted = False
+            nxt = _clamp_int(restore + self._volume_step_pct, 0, 100)
+            await self._tcp_command(f"MCU+VOL+{nxt:03d}", action="volume_up")
+            return
+
         v = self._state.volume
         cur = int(round((v or 0.0) * 100))
         nxt = _clamp_int(cur + self._volume_step_pct, 0, 100)
         await self._tcp_command(f"MCU+VOL+{nxt:03d}", action="volume_up")
 
     async def volume_down(self) -> None:
+        src = (self._state.source or "").strip().lower()
+
+        if src == "hdmi" and self._physical_muted:
+            restore = self._physical_mute_restore_pct
+            if restore is None or restore <= 0:
+                restore = HDMI_SOFT_MUTE_RESTORE_DEFAULT_PCT
+            self._physical_muted = False
+            self._state.muted = False
+            nxt = _clamp_int(restore - self._volume_step_pct, 0, 100)
+            await self._tcp_command(f"MCU+VOL+{nxt:03d}", action="volume_down")
+            return
+
         v = self._state.volume
         cur = int(round((v or 0.0) * 100))
         nxt = _clamp_int(cur - self._volume_step_pct, 0, 100)
@@ -876,9 +905,35 @@ class AudioProSpeaker:
         await self._tcp_command(f"MCU+VOL+{target:03d}", action="set_volume")
 
     async def set_muted(self, target: bool) -> None:
-        # Always GET before SET because mute may have changed elsewhere.
-        # We require the GET send itself to succeed; otherwise this command fails
-        # like the other user-facing control methods.
+        src = (self._state.source or "").strip().lower()
+
+        # HDMI path: firmware mute appears to be ineffective, so emulate mute
+        # by storing the current volume and setting volume to 0.
+        if src == "hdmi":
+            cur_pct = 0 if self._state.volume is None else int(round(self._state.volume * 100))
+
+            if target:
+                if not self._physical_muted:
+                    if cur_pct > 0:
+                        self._physical_mute_restore_pct = cur_pct
+                    elif self._physical_mute_restore_pct is None:
+                        self._physical_mute_restore_pct = 30
+
+                self._physical_muted = True
+                self._state.muted = True
+                await self.set_volume(0)
+                return
+
+            restore = self._physical_mute_restore_pct
+            if restore is None or restore <= 0:
+                restore = HDMI_SOFT_MUTE_RESTORE_DEFAULT_PCT
+
+            self._physical_muted = False
+            self._state.muted = False
+            await self.set_volume(restore)
+            return
+
+        # Default firmware mute path for software/network inputs.
         self._mute_evt.clear()
         await self._tcp_command("MCU+MUT+GET", action="set_muted_get")
 
