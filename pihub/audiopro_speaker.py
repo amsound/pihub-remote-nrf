@@ -98,6 +98,22 @@ def _now() -> float:
 def _clamp_int(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
 
+def _is_multiroom_secondary_active(pinf: dict[str, Any]) -> bool:
+    """
+    Audio Pro / LinkPlay quirk:
+
+    In multiroom slave mode, PINFGET may report:
+      mode=099
+      status=stop
+    even while the speaker is actively playing as a joined secondary.
+
+    Empirically:
+      type=1 -> active joined secondary
+      type=0 -> not actively joined / idle
+    """
+    mode = str(pinf.get("mode", "")).strip().zfill(3)
+    type_flag = str(pinf.get("type", "")).strip()
+    return mode == "099" and type_flag == "1"
 
 def _parse_payload(payload: bytes) -> str:
     # Payloads are ASCII like "AXX+VOL+030" or longer ending with "&"
@@ -673,16 +689,28 @@ class AudioProSpeaker:
                             self._state.playback_status = None
                         changed = True
 
-                    # status only meaningful for wifi-ish / network-ish sources
+                    # status only meaningful for wifi-ish / network-ish sources,
+                    # with one important Audio Pro / LinkPlay multiroom-secondary quirk:
+                    # in slave mode (099), active joined playback may still report status="stop".
                     st = str(data.get("status", "")).strip().lower()
+                    multiroom_secondary_active = _is_multiroom_secondary_active(data)
+
                     if self._state.source in _PHYSICAL_SOURCES:
                         # Always blank playback status on physical inputs
                         if self._state.playback_status is not None:
                             self._state.playback_status = None
                             changed = True
-                    elif st:
-                        self._state.playback_status = st
-                        changed = True
+                    else:
+                        effective_status = st
+
+                        # Override raw "stop" when this unit is an active multiroom secondary.
+                        if self._state.source == "multiroom-secondary" and multiroom_secondary_active:
+                            effective_status = "play"
+
+                        if effective_status:
+                            if self._state.playback_status != effective_status:
+                                self._state.playback_status = effective_status
+                                changed = True
 
                     # vol/mute included here too
                     if "vol" in data:
