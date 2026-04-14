@@ -25,7 +25,6 @@ from .unifying_reader import UnifyingReader
 from .ble_dongle import BleDongleLink
 from .samsung_tv import TvController, ssdp_listener, start_discovery_tasks, stop_discovery_tasks
 from .audiopro_speaker import AudioProSpeaker
-from .samsung_soundbar import SamsungSoundbar
 from .samsung_soundbar_local import SamsungSoundbarLocal
 from .speaker import SpeakerLike
 from .settings import SettingsStore
