@@ -108,16 +108,32 @@ async def send_wol_once_multi(
     mac: str,
     *,
     broadcasts: list[str],
-    port: int = 9,
+    ports: list[int],
+    count: int = 3,
+    gap_s: float = 0.08,
 ) -> None:
     """
-    Send one WoL packet to each candidate broadcast target.
+    Send a short WoL spray to each candidate broadcast target on multiple ports.
+
+    For each burst round:
+    - send one magic packet to every broadcast target
+    - on every requested port
+    - wait a short gap before the next round
     """
-    for broadcast in broadcasts:
-        try:
-            send_wol(mac, port=port, broadcast=broadcast)
-        except Exception:
-            logger.debug("tv wol send failed broadcast=%s", broadcast, exc_info=True)
+    for burst_idx in range(count):
+        for broadcast in broadcasts:
+            for port in ports:
+                try:
+                    send_wol(mac, port=port, broadcast=broadcast)
+                except Exception:
+                    logger.debug(
+                        "tv wol send failed broadcast=%s port=%s",
+                        broadcast,
+                        port,
+                        exc_info=True,
+                    )
+        if burst_idx + 1 < count:
+            await asyncio.sleep(gap_s)
 
 
 # --- Samsung websocket control plane ---
@@ -720,9 +736,11 @@ class TvController:
 
             RECOVERY_WINDOW_S = 30.0
 
-            WOL_LOOP_INTERVAL_S = 0.15
-            WOL_PORT = 9
+            WOL_LOOP_INTERVAL_S = 0.25
+            WOL_PORTS = [9, 7]
             WOL_BROADCASTS = _default_wol_broadcasts(self.tv_ip)
+            WOL_BURST_COUNT = 3
+            WOL_BURST_GAP_S = 0.08
 
             WS_FAST_INTERVAL_S = 0.25
             WS_SLOW_INTERVAL_S = 0.8
@@ -756,7 +774,9 @@ class TvController:
                         await send_wol_once_multi(
                             self.tv_mac,
                             broadcasts=WOL_BROADCASTS,
-                            port=WOL_PORT,
+                            ports=WOL_PORTS,
+                            count=WOL_BURST_COUNT,
+                            gap_s=WOL_BURST_GAP_S,
                         )
                     except Exception:
                         logger.debug("tv wol loop send failed", exc_info=True)
