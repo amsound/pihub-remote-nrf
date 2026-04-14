@@ -150,14 +150,6 @@ async def main() -> None:
                 speaker = AudioProSpeaker(
                     speaker_ip=cfg.speaker_ip,
                 )
-        elif cfg.speaker_backend == "samsung_soundbar":
-            if cfg.smartthings_device_id:
-                speaker = SamsungSoundbar(
-                    device_id=cfg.smartthings_device_id,
-                    poll_interval_s=cfg.smartthings_poll_interval_s,
-                    token_file=cfg.smartthings_token_file,
-                    tv=tv,
-                )
         elif cfg.speaker_backend == "samsung_soundbar_local":
             if cfg.speaker_ip:
                 speaker = SamsungSoundbarLocal(
