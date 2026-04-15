@@ -35,26 +35,26 @@ POLL_WIFI_PAUSED_S = 10.0
 POLL_WIFI_IDLE_S = 30.0
 POLL_PHYSICAL_S = 60.0
 
-# Mute safety knobs
-MUTE_GET_DELAY_S = 0.02      # tiny settle delay after MUT+GET
-MUTE_GET_TIMEOUT_S = 0.5     # wait for AXX+MUT+... after GET
-
 HDMI_SOFT_MUTE_RESTORE_DEFAULT_PCT = 30
 
 HINT_PINFGET_DELAY_S = 1.0
 
-# PLM input modes -> app-friendly "source"
-# (Doc: https://developer.arylic.com/tcpapi/ — see "Current Input Mode" / PLM table.)
-# You asked for:
-#   airplay / line-in / bluetooth / hdmi / optical / multiroom-secondary / idle
-#   Everything else that is "network-y" gets grouped under "wifi".
+PINFGET_MIN_GAP_S = 1.0
+PINFGET_HINT_DELAY_S = 0.75
+
+PINFGET_TRIGGER_PMS = {"000", "001"}
+PINFGET_TRIGGER_KEYS = {"FFF"}  # only these KEY values trigger PINFGET
+
+_NETWORK_SOURCES = {"wifi", "airplay", "multiroom-secondary"}
+
 _PLM_TO_SOURCE = {
     "000": "idle",
-    "001": "airplay",
     "040": "line-in",
     "041": "bluetooth",
-    "049": "hdmi",
     "043": "optical",
+    "049": "hdmi",
+
+    "001": "airplay",
     "099": "multiroom-secondary",
 
     # Umbrella these under "wifi"
@@ -123,9 +123,10 @@ class SpeakerState:
     playback_status: str | None = None  # play/pause/stop/load/... (wifi-ish only; physical inputs => None)
     volume: float | None = None         # 0..1
     muted: bool | None = None
+    source: str | None = None
 
-    source: str | None = None           # wifi/bluetooth/line-in/optical/hdmi/airplay/...
     last_update_ts: float | None = None
+    last_play_ts: float | None = None
 
 
 class AudioProSpeaker:
@@ -133,12 +134,12 @@ class AudioProSpeaker:
     TCP API driver.
 
       - start/stop
-      - volume_up/volume_down/mute_toggle (+ set_muted)
+      - set volume/volume_up/volume_down/mute_toggle (+ set_muted)
       - play/pause/stop_playback/next_track/previous_track/play_pause
-      - preset (+ next_preset/previous_preset)
-      - play_url (still uses httpapi.asp)
-      - set_source (best-effort via PLM if supported)
-      - power_off
+      - set preset/next_preset/previous_preset
+      - play_url (uses httpapi.asp with cmd "setURL:{url}")
+      - set_source 
+      - power_off (uses httpapi.asp with default cmd "setShutdown:0")
     """
 
     def __init__(
@@ -153,7 +154,7 @@ class AudioProSpeaker:
     ) -> None:
         self._speaker_ip = speaker_ip.strip()
         self._tcp_port = int(tcp_port)
-        self._volume_step_pct = _clamp_int(int(VOLUME_STEP_PCT), 1, 25)
+        self._volume_step_pct = _clamp_int(int(VOLUME_STEP_PCT), 1, 10)
         self._command_interval_s = max(0.2, float(command_interval_s))  # doc says >=200ms
         
         self._reconnect_s = max(1.0, float(reconnect_s))
@@ -187,6 +188,9 @@ class AudioProSpeaker:
 
         # State change callback for external state change
         self._state_change_callback = state_change_callback
+
+        self._pending_pinfget_task: asyncio.Task | None = None
+        self._last_pinfget_monotonic = 0.0
 
     # ---------- small public helpers ----------
 
@@ -585,184 +589,65 @@ class AudioProSpeaker:
                     self._on_payload(payload)
 
     def _on_payload(self, payload: str) -> None:
-        changed = False
-
-        old_source = self._state.source
-        old_status = self._state.playback_status
-        old_ready = self._state.ready
-
-        def _listen_active(source: str | None, status: str | None) -> bool:
-            src = (source or "").strip().lower()
-            st = (status or "").strip().lower()
-            return src in {"wifi", "airplay", "multiroom-secondary"} and st in {"load", "play"}
-
-        old_listen_active = _listen_active(old_source, old_status)
-
-        # Examples:
-        #   AXX+VOL+030
-        #   AXX+MUT+001
-        #   AXX+PLM+010
-        #   AXX+PLY+INF{ ... }&
-        #   AXX+PLY+NEW
-        #   AXX+PMS+000
         p = payload.strip()
         if p.endswith("&"):
             p = p[:-1]
 
         if p.startswith("AXX+VOL+"):
-            v = p.split("+", 2)[2]
-            try:
-                vi = int(v)
-                self._state.volume = _clamp_int(vi, 0, 100) / 100.0
-                changed = True
-            except Exception:
-                pass
+            self._handle_vol(p)
+            return
 
-        elif p.startswith("AXX+MUT+"):
-            m = p.split("+", 2)[2]
-            if m in ("000", "001"):
-                self._state.muted = (m == "001")
-                changed = True
-                self._mute_evt.set()
+        if p.startswith("AXX+MUT+"):
+            self._handle_mut(p)
+            return
 
-        elif p.startswith("AXX+PLM+"):
-            mode = p.split("+", 2)[2]
-            self._state.source = _PLM_TO_SOURCE.get(mode, "unknown")
+        if p.startswith("AXX+PLM+"):
+            self._handle_plm(p)
+            return
 
-            # Physical inputs: playback status not applicable / not trusted
-            if self._state.source in _PHYSICAL_SOURCES:
-                self._state.playback_status = None
+        if p.startswith("AXX+PLY+INF"):
+            self._handle_ply_inf(p)
+            return
 
-            changed = True
+        if p.startswith("AXX+PMS+"):
+            self._handle_pms(p)
+            return
 
-        elif p.startswith("AXX+PMS+"):
-            code = p.split("+", 2)[2]
+        if p.startswith("AXX+PLY+NEW"):
+            self._handle_ply_new(p)
+            return
 
-            if code in {"000", "001"}:
-                self._wake_poll_loop()
-                asyncio.create_task(self._delayed_pinfget())
+        if p.startswith("AXX+KEY+"):
+            self._handle_key(p)
+            return
 
-        elif p.startswith("AXX+PLY+INF"):
-            # JSON blob after "AXX+PLY+INF"
-            j = p[len("AXX+PLY+INF"):].strip()
-            if j.startswith("{") and j.endswith("}"):
-                try:
-                    data = json.loads(j)
+        self._handle_unknown(p)
 
-                    # Gate: first valid PINFGET parse makes us "ready"
-                    was_ready = self._state.ready
-                    self._state.ready = True
-                    if not was_ready:
-                        logger.info(
-                            "speaker tcp link ready speaker_ip=%s (initial status received)",
-                            self._speaker_ip,
-                        )
+    def _compute_poll_interval(self) -> float:
+        src = (self._state.source or "unknown").strip().lower()
+        st = (self._state.playback_status or "").strip().lower()
 
-                    # Mode can mirror PLM
-                    mode = str(data.get("mode", "")).strip()
-                    if mode:
-                        self._state.source = _PLM_TO_SOURCE.get(
-                            mode.zfill(3),
-                            self._state.source or "unknown",
-                        )
-                        if self._state.source in _PHYSICAL_SOURCES:
-                            self._state.playback_status = None
-                        changed = True
+        if src in _PHYSICAL_SOURCES:
+            return 10.0
 
-                    # status only meaningful for wifi-ish / network-ish sources,
-                    # with one important Audio Pro / LinkPlay multiroom-secondary quirk:
-                    # in slave mode (099), active joined playback may still report status="stop".
-                    st = str(data.get("status", "")).strip().lower()
-                    multiroom_secondary_active = _is_multiroom_secondary_active(data)
+        if src in _NETWORK_SOURCES:
+            if st == "load":
+                return 2.0
+            if st == "play":
+                return 5.0
+            if st == "stop":
+                if self._state.last_play_ts is not None:
+                    age = _now() - self._state.last_play_ts
+                    if age < 60.0:
+                        return 10.0
+                return 15.0
+            return 10.0
 
-                    if self._state.source in _PHYSICAL_SOURCES:
-                        # Always blank playback status on physical inputs
-                        if self._state.playback_status is not None:
-                            self._state.playback_status = None
-                            changed = True
-                    else:
-                        effective_status = st
-
-                        # Override raw "stop" when this unit is an active multiroom secondary.
-                        if self._state.source == "multiroom-secondary" and multiroom_secondary_active:
-                            effective_status = "play"
-
-                        if effective_status:
-                            if self._state.playback_status != effective_status:
-                                self._state.playback_status = effective_status
-                                changed = True
-
-                    # vol/mute included here too
-                    if "vol" in data:
-                        try:
-                            vi = int(str(data["vol"]))
-                            self._state.volume = _clamp_int(vi, 0, 100) / 100.0
-                            changed = True
-                        except Exception:
-                            pass
-
-                    if "mute" in data:
-                        try:
-                            mi = int(str(data["mute"]))
-                            self._state.muted = (mi != 0)
-                            changed = True
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-        elif p.startswith("AXX+PLY+NEW"):
-            # Hint: pull authoritative state
-            self._wake_poll_loop()
-            asyncio.create_task(self._delayed_pinfget())
-
-        # else: ignore
-
-        if changed:
-            self._state.last_update_ts = _now()
-
-        if (
-            self._state.source != old_source
-            or self._state.playback_status != old_status
-            or self._state.ready != old_ready
-        ):
-            self._wake_poll_loop()
-
-        new_listen_active = _listen_active(self._state.source, self._state.playback_status)
-        if not old_listen_active and new_listen_active:
-            self._emit_state_change(
-                "listen",
-                {
-                    "domain": "speaker",
-                    "source": self._state.source,
-                    "playback_status": self._state.playback_status,
-                },
-            )
-
+        return 15.0
+    
     async def _poll_loop(self) -> None:
-        """
-        Gentle polling to catch out-of-band changes (app/CEC/stream stalls).
-
-        Rules:
-        - Wi-Fi source: 10s play/load, 15s pause, 60s idle/stop/unknown
-        - Physical sources: 60s liveness poll
-
-        This task only does timed state refresh. It does not own reconnect logic.
-        Any send/read failure should bubble out to the runner.
-        """
         while self._enabled and not self._stop_evt.is_set():
-            src = self._state.source or "unknown"
-
-            if src in {"wifi", "airplay", "multiroom-secondary"}:
-                st = (self._state.playback_status or "").lower()
-                if st in {"play", "load"}:
-                    interval = POLL_WIFI_PLAYING_S
-                elif st == "pause":
-                    interval = POLL_WIFI_PAUSED_S
-                else:
-                    interval = POLL_WIFI_IDLE_S
-            else:
-                interval = POLL_PHYSICAL_S
+            interval = self._compute_poll_interval()
 
             self._poll_wake_evt.clear()
 
@@ -776,6 +661,7 @@ class AudioProSpeaker:
                 pass
 
             await self._pinfget()
+            self._last_pinfget_monotonic = time.monotonic()
 
     def _listen_signal_active(self) -> bool:
         source = (self._state.source or "").strip().lower()
@@ -808,6 +694,220 @@ class AudioProSpeaker:
 
     def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:
         self._spawn_state_change_callback(name, payload)
+
+    def _apply_updates(
+        self,
+        *,
+        source: str | None = None,
+        playback_status: str | None = None,
+        volume_pct: int | None = None,
+        muted: bool | None = None,
+        ready: bool | None = None,
+    ) -> None:
+        old_source = self._state.source
+        old_status = self._state.playback_status
+        old_ready = self._state.ready
+
+        changed = False
+
+        if source is not None and source != self._state.source:
+            self._state.source = source
+            changed = True
+
+        if playback_status is not None and playback_status != self._state.playback_status:
+            self._state.playback_status = playback_status
+            changed = True
+            if playback_status == "play":
+                self._state.last_play_ts = _now()
+
+        if volume_pct is not None:
+            v = _clamp_int(int(volume_pct), 0, 100) / 100.0
+            if self._state.volume != v:
+                self._state.volume = v
+                changed = True
+
+        if muted is not None and muted != self._state.muted:
+            self._state.muted = muted
+            changed = True
+
+        if ready is not None and ready != self._state.ready:
+            self._state.ready = ready
+            changed = True
+
+        if changed:
+            self._state.last_update_ts = _now()
+
+        if (
+            self._state.source != old_source
+            or self._state.playback_status != old_status
+            or self._state.ready != old_ready
+        ):
+            self._wake_poll_loop()
+
+        self._emit_listen_edge(old_source, old_status)
+
+    def _emit_listen_edge(self, old_source: str | None, old_status: str | None) -> None:
+        def _active(source: str | None, status: str | None) -> bool:
+            src = (source or "").strip().lower()
+            st = (status or "").strip().lower()
+            return src in _NETWORK_SOURCES and st in {"load", "play"}
+
+        old_active = _active(old_source, old_status)
+        new_active = _active(self._state.source, self._state.playback_status)
+
+        if not old_active and new_active:
+            self._emit_state_change(
+                "listen",
+                {
+                    "domain": "speaker",
+                    "source": self._state.source,
+                    "playback_status": self._state.playback_status,
+                },
+            )
+
+    def _request_pinfget(self, *, reason: str, delay_s: float = PINFGET_HINT_DELAY_S) -> None:
+        if not self._enabled or self._stop_evt.is_set():
+            return
+
+        task = self._pending_pinfget_task
+        if task is not None and not task.done():
+            return
+
+        self._pending_pinfget_task = asyncio.create_task(
+            self._run_scheduled_pinfget(delay_s=delay_s, reason=reason),
+            name=f"speaker_pinfget[{self._speaker_ip}]",
+        )
+        self._pending_pinfget_task.add_done_callback(self._clear_pending_pinfget)
+
+    def _clear_pending_pinfget(self, task: asyncio.Task) -> None:
+        if self._pending_pinfget_task is task:
+            self._pending_pinfget_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug("speaker pinfget refresh failed: %s", e)
+
+    async def _run_scheduled_pinfget(self, *, delay_s: float, reason: str) -> None:
+        if delay_s > 0:
+            await asyncio.sleep(delay_s)
+
+        now_mono = time.monotonic()
+        since_last = now_mono - self._last_pinfget_monotonic
+        if since_last < PINFGET_MIN_GAP_S:
+            await asyncio.sleep(PINFGET_MIN_GAP_S - since_last)
+
+        await self._pinfget()
+        self._last_pinfget_monotonic = time.monotonic()
+
+    def _parse_ply_inf_json(self, payload: str) -> dict[str, Any] | None:
+        p = payload.strip()
+        if p.endswith("&"):
+            p = p[:-1]
+
+        if not p.startswith("AXX+PLY+INF"):
+            return None
+
+        raw = p[len("AXX+PLY+INF"):].strip()
+        if not (raw.startswith("{") and raw.endswith("}")):
+            return None
+
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None
+
+        return {
+            "type": str(data.get("type", "")).strip(),
+            "mode": str(data.get("mode", "")).strip().zfill(3),
+            "vendor": str(data.get("vendor", "")).strip(),
+            "status": str(data.get("status", "")).strip().lower(),
+            "vol": str(data.get("vol", "")).strip(),
+            "mute": str(data.get("mute", "")).strip(),
+        }
+    
+    def _handle_vol(self, payload: str) -> None:
+        try:
+            vol_s = payload.strip().split("+")[-1]
+            self._apply_updates(volume_pct=int(vol_s))
+        except Exception:
+            return
+
+    def _handle_mut(self, payload: str) -> None:
+        code = payload.strip().split("+")[-1]
+        if code not in {"000", "001"}:
+            return
+        self._apply_updates(muted=(code == "001"))
+        self._mute_evt.set()
+
+    def _handle_plm(self, payload: str) -> None:
+        mode = payload.strip().split("+")[-1].strip().zfill(3)
+        source = _PLM_TO_SOURCE.get(mode, "unknown")
+
+        if source in _PHYSICAL_SOURCES:
+            self._apply_updates(source=source, playback_status=None)
+        else:
+            self._apply_updates(source=source)
+
+        self._request_pinfget(reason=f"plm:{mode}")
+
+    def _handle_pms(self, payload: str) -> None:
+        code = payload.strip().split("+")[-1]
+        if code in PINFGET_TRIGGER_PMS:
+            self._request_pinfget(reason=f"pms:{code}")
+
+    def _handle_ply_new(self, payload: str) -> None:
+        self._request_pinfget(reason="ply_new")
+
+    def _handle_key(self, payload: str) -> None:
+        code = payload.strip().split("+")[-1]
+        if code in PINFGET_TRIGGER_KEYS:
+            self._request_pinfget(reason=f"key:{code}")
+
+    def _handle_ply_inf(self, payload: str) -> None:
+        info = self._parse_ply_inf_json(payload)
+        if not info:
+            return
+
+        source = _PLM_TO_SOURCE.get(info["mode"], self._state.source or "unknown")
+        status = info["status"]
+
+        if source in _PHYSICAL_SOURCES:
+            status = None
+        elif source == "multiroom-secondary" and info["type"] == "1":
+            status = "play"
+
+        try:
+            vol_pct = int(info["vol"])
+        except Exception:
+            vol_pct = None
+
+        if info["mute"] == "0":
+            muted = False
+        elif info["mute"] == "1":
+            muted = True
+        else:
+            muted = None
+
+        was_ready = self._state.ready
+
+        self._apply_updates(
+            source=source,
+            playback_status=status,
+            volume_pct=vol_pct,
+            muted=muted,
+            ready=True,
+        )
+
+        if not was_ready and self._state.ready:
+            logger.info(
+                "speaker tcp link ready speaker_ip=%s (initial status received)",
+                self._speaker_ip,
+            )
+
+    def _handle_unknown(self, payload: str) -> None:
+        return
 
     # ---------- controls (TCP) ----------
 
@@ -917,10 +1017,10 @@ class AudioProSpeaker:
                     if cur_pct > 0:
                         self._physical_mute_restore_pct = cur_pct
                     elif self._physical_mute_restore_pct is None:
-                        self._physical_mute_restore_pct = 30
+                        self._physical_mute_restore_pct = HDMI_SOFT_MUTE_RESTORE_DEFAULT_PCT
 
                 self._physical_muted = True
-                self._state.muted = True
+                self._apply_updates(muted=True)
                 await self.set_volume(0)
                 return
 
@@ -929,26 +1029,18 @@ class AudioProSpeaker:
                 restore = HDMI_SOFT_MUTE_RESTORE_DEFAULT_PCT
 
             self._physical_muted = False
-            self._state.muted = False
+            self._apply_updates(muted=False)
             await self.set_volume(restore)
             return
 
         # Default firmware mute path for software/network inputs.
-        self._mute_evt.clear()
-        await self._tcp_command("MCU+MUT+GET", action="set_muted_get")
-
-        with contextlib.suppress(Exception):
-            await asyncio.sleep(MUTE_GET_DELAY_S)
-            await asyncio.wait_for(self._mute_evt.wait(), timeout=MUTE_GET_TIMEOUT_S)
-
-        cur = bool(self._state.muted) if self._state.muted is not None else False
-        if cur == bool(target):
-            self._spawn_pinfget()
+        current = self._state.muted
+        if current is not None and bool(current) == bool(target):
             return
 
         new = "001" if target else "000"
         await self._tcp_command(f"MCU+MUT+{new}", action="set_muted")
-        self._spawn_pinfget()
+        self._apply_updates(muted=target)
 
     async def mute_toggle(self) -> None:
         cur = bool(self._state.muted) if self._state.muted is not None else False
