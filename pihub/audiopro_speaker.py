@@ -29,12 +29,6 @@ DEFAULT_HTTP_POWEROFF_CMD = "setShutdown:0"
 HTTP_SCHEME = "https"
 VOLUME_STEP_PCT = 2
 
-# Poll knobs (tweak here)
-POLL_WIFI_PLAYING_S = 10.0   # play OR load
-POLL_WIFI_PAUSED_S = 10.0
-POLL_WIFI_IDLE_S = 30.0
-POLL_PHYSICAL_S = 60.0
-
 HDMI_SOFT_MUTE_RESTORE_DEFAULT_PCT = 30
 
 HINT_PINFGET_DELAY_S = 1.0
@@ -68,29 +62,14 @@ _PLM_TO_SOURCE = {
 
 _PHYSICAL_SOURCES = {"hdmi", "optical", "line-in", "bluetooth"}
 
+_UNSET = object()
+
 def _now() -> float:
     return time.time()
 
 
 def _clamp_int(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
-
-def _is_multiroom_secondary_active(pinf: dict[str, Any]) -> bool:
-    """
-    Audio Pro / LinkPlay quirk:
-
-    In multiroom slave mode, PINFGET may report:
-      mode=099
-      status=stop
-    even while the speaker is actively playing as a joined secondary.
-
-    Empirically:
-      type=1 -> active joined secondary
-      type=0 -> not actively joined / idle
-    """
-    mode = str(pinf.get("mode", "")).strip().zfill(3)
-    type_flag = str(pinf.get("type", "")).strip()
-    return mode == "099" and type_flag == "1"
 
 def _parse_payload(payload: bytes) -> str:
     # Payloads are ASCII like "AXX+VOL+030" or longer ending with "&"
@@ -542,10 +521,6 @@ class AudioProSpeaker:
             raise ConnectionError("not connected")
         await self._send("MCU+PINFGET")
 
-    async def _delayed_pinfget(self, delay_s: float = HINT_PINFGET_DELAY_S) -> None:
-        await asyncio.sleep(delay_s)
-        await self._pinfget()
-
     async def _read_loop(self) -> None:
         assert self._reader is not None
 
@@ -663,11 +638,6 @@ class AudioProSpeaker:
             await self._pinfget()
             self._last_pinfget_monotonic = time.monotonic()
 
-    def _listen_signal_active(self) -> bool:
-        source = (self._state.source or "").strip().lower()
-        playback = (self._state.playback_status or "").strip().lower()
-        return source in {"wifi", "airplay", "multiroom-secondary"} and playback in {"load", "play"}
-
     def _spawn_state_change_callback(self, name: str, payload: dict[str, Any]) -> None:
         cb = self._state_change_callback
         if cb is None:
@@ -698,8 +668,8 @@ class AudioProSpeaker:
     def _apply_updates(
         self,
         *,
-        source: str | None = None,
-        playback_status: str | None = None,
+        source: str | object = _UNSET,
+        playback_status: str | None | object = _UNSET,
         volume_pct: int | None = None,
         muted: bool | None = None,
         ready: bool | None = None,
@@ -710,11 +680,11 @@ class AudioProSpeaker:
 
         changed = False
 
-        if source is not None and source != self._state.source:
+        if source is not _UNSET and source != self._state.source:
             self._state.source = source
             changed = True
 
-        if playback_status is not None and playback_status != self._state.playback_status:
+        if playback_status is not _UNSET and playback_status != self._state.playback_status:
             self._state.playback_status = playback_status
             changed = True
             if playback_status == "play":
@@ -919,18 +889,6 @@ class AudioProSpeaker:
         if detail:
             raise RuntimeError(f"{action}_not_sent: {detail}")
         raise RuntimeError(f"{action}_not_sent")
-    
-    def _log_pinfget_result(self, task: asyncio.Task[None]) -> None:
-        try:
-            task.result()
-        except Exception as e:
-            logger.debug("speaker pinfget refresh failed: %s", e)
-
-    def _spawn_pinfget(self, *, delayed: bool = False) -> None:
-        task = asyncio.create_task(
-            self._delayed_pinfget() if delayed else self._pinfget()
-        )
-        task.add_done_callback(self._log_pinfget_result)
 
     async def _tcp_command(
         self,
@@ -944,7 +902,8 @@ class AudioProSpeaker:
         await self._require_control_sent(ok, action=action)
 
         if refresh:
-            self._spawn_pinfget(delayed=delayed_refresh)
+            delay_s = 0.75 if delayed_refresh else 0.25
+            self._request_pinfget(reason=f"cmd:{action}", delay_s=delay_s)
 
     async def _http_command(
         self,
@@ -958,7 +917,8 @@ class AudioProSpeaker:
         await self._require_control_sent(ok, action=action)
 
         if refresh:
-            self._spawn_pinfget(delayed=delayed_refresh)
+            delay_s = 0.75 if delayed_refresh else 0.25
+            self._request_pinfget(reason=f"http:{action}", delay_s=delay_s)
 
     # Refresh policy is intentional and firmware-specific:
     # - commands that do not reliably produce sufficient state updates schedule PINFGET
