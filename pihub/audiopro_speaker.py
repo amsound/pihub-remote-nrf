@@ -25,21 +25,17 @@ _HTTPAPI_PATH = "/httpapi.asp"
 _HTTP_TIMEOUT_S = 2.0
 SEND_TIMEOUT_S = 2.0        # fail fast if a TCP send/drain stalls
 DEFAULT_HTTP_POWEROFF_CMD = "setShutdown:0"
-
 HTTP_SCHEME = "https"
+
 VOLUME_STEP_PCT = 2
 
 HDMI_SOFT_MUTE_RESTORE_DEFAULT_PCT = 30
 
 HINT_PINFGET_DELAY_S = 1.0
-
 PINFGET_MIN_GAP_S = 1.0
-PINFGET_HINT_DELAY_S = 0.75
-
+PINFGET_HINT_DELAY_S = 1.0
 PINFGET_TRIGGER_PMS = {"000", "001"}
 PINFGET_TRIGGER_KEYS = {"FFF"}  # only these KEY values trigger PINFGET
-
-_NETWORK_SOURCES = {"wifi", "airplay", "multiroom-secondary"}
 
 _PLM_TO_SOURCE = {
     "000": "idle",
@@ -61,12 +57,12 @@ _PLM_TO_SOURCE = {
 }
 
 _PHYSICAL_SOURCES = {"hdmi", "optical", "line-in", "bluetooth"}
+_NETWORK_SOURCES = {"wifi", "airplay", "multiroom-secondary"}
 
 _UNSET = object()
 
 def _now() -> float:
     return time.time()
-
 
 def _clamp_int(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
@@ -78,11 +74,9 @@ def _parse_payload(payload: bytes) -> str:
     except Exception:
         return ""
 
-
 def _needs_amp(s: str) -> bool:
     # Doc: payloads longer than 11 bytes should end with '&'
     return len(s.encode("utf-8")) > 11 and not s.endswith("&")
-
 
 def _mk_packet(payload_text: str) -> bytes:
     pb = payload_text.encode("utf-8")
@@ -103,6 +97,7 @@ class SpeakerState:
     volume: float | None = None         # 0..1
     muted: bool | None = None
     source: str | None = None
+    source_detail: str | None = None    # Specifically for WiFi source mode like TuneIn or Custom URL
 
     last_update_ts: float | None = None
     last_play_ts: float | None = None
@@ -159,9 +154,6 @@ class AudioProSpeaker:
         self._log_http_drop_once = False
         self._link_down_logged = False
 
-        # Mute GET waiter
-        self._mute_evt = asyncio.Event()
-
         self._physical_mute_restore_pct: int | None = None
         self._physical_muted = False
 
@@ -196,6 +188,7 @@ class AudioProSpeaker:
             "volume_pct": None if s.volume is None else int(round(s.volume * 100)),
             "muted": s.muted,
             "source": s.source,
+            "source_detail": self._state.source_detail,
             "last_update_ts": last_i,
             "update_age_s": age_i,
         }
@@ -222,6 +215,8 @@ class AudioProSpeaker:
     async def stop(self) -> None:
         self._enabled = False
         self._stop_evt.set()
+        self._cancel_pending_pinfget()
+
         self._poll_wake_evt.set()
 
         await self._cancel_task(self._task, name="runner_task")
@@ -376,6 +371,7 @@ class AudioProSpeaker:
         logger.info("speaker tcp connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
 
     async def _disconnect(self) -> None:
+        self._cancel_pending_pinfget()
         self._state.reachable = False
         self._state.connected = False
         self._state.ready = False
@@ -668,7 +664,8 @@ class AudioProSpeaker:
     def _apply_updates(
         self,
         *,
-        source: str | object = _UNSET,
+        source: str | None | object = _UNSET,
+        source_detail: str | None | object = _UNSET,
         playback_status: str | None | object = _UNSET,
         volume_pct: int | None = None,
         muted: bool | None = None,
@@ -682,6 +679,10 @@ class AudioProSpeaker:
 
         if source is not _UNSET and source != self._state.source:
             self._state.source = source
+            changed = True
+
+        if source_detail is not _UNSET and source_detail != self._state.source_detail:
+            self._state.source_detail = source_detail
             changed = True
 
         if playback_status is not _UNSET and playback_status != self._state.playback_status:
@@ -755,21 +756,62 @@ class AudioProSpeaker:
         try:
             task.result()
         except asyncio.CancelledError:
-            pass
+            logger.debug("speaker scheduled PINFGET cancelled speaker_ip=%s", self._speaker_ip)
         except Exception as e:
-            logger.debug("speaker pinfget refresh failed: %s", e)
+            logger.debug("speaker scheduled PINFGET failed speaker_ip=%s error=%s", self._speaker_ip, e)
 
     async def _run_scheduled_pinfget(self, *, delay_s: float, reason: str) -> None:
+        logger.debug(
+            "speaker scheduling PINFGET speaker_ip=%s delay_s=%.2f reason=%s",
+            self._speaker_ip,
+            delay_s,
+            reason,
+        )
+
         if delay_s > 0:
             await asyncio.sleep(delay_s)
+
+        if not self._enabled or self._stop_evt.is_set():
+            logger.debug(
+                "speaker scheduled PINFGET skipped speaker_ip=%s reason=%s state=disabled_or_stopped",
+                self._speaker_ip,
+                reason,
+            )
+            return
 
         now_mono = time.monotonic()
         since_last = now_mono - self._last_pinfget_monotonic
         if since_last < PINFGET_MIN_GAP_S:
-            await asyncio.sleep(PINFGET_MIN_GAP_S - since_last)
+            extra = PINFGET_MIN_GAP_S - since_last
+            logger.debug(
+                "speaker delaying PINFGET for min gap speaker_ip=%s extra_s=%.2f reason=%s",
+                self._speaker_ip,
+                extra,
+                reason,
+            )
+            await asyncio.sleep(extra)
 
+        if not self._enabled or self._stop_evt.is_set():
+            logger.debug(
+                "speaker scheduled PINFGET aborted speaker_ip=%s reason=%s state=disabled_or_stopped",
+                self._speaker_ip,
+                reason,
+            )
+            return
+
+        logger.debug(
+            "speaker running scheduled PINFGET speaker_ip=%s reason=%s",
+            self._speaker_ip,
+            reason,
+        )
         await self._pinfget()
         self._last_pinfget_monotonic = time.monotonic()
+
+    def _cancel_pending_pinfget(self) -> None:
+        task = self._pending_pinfget_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._pending_pinfget_task = None
 
     def _parse_ply_inf_json(self, payload: str) -> dict[str, Any] | None:
         p = payload.strip()
@@ -809,16 +851,15 @@ class AudioProSpeaker:
         if code not in {"000", "001"}:
             return
         self._apply_updates(muted=(code == "001"))
-        self._mute_evt.set()
 
     def _handle_plm(self, payload: str) -> None:
         mode = payload.strip().split("+")[-1].strip().zfill(3)
         source = _PLM_TO_SOURCE.get(mode, "unknown")
 
         if source in _PHYSICAL_SOURCES:
-            self._apply_updates(source=source, playback_status=None)
+            self._apply_updates(source=source, source_detail=None, playback_status=None)
         else:
-            self._apply_updates(source=source)
+            self._apply_updates(source=source, source_detail=None)
 
         self._request_pinfget(reason=f"plm:{mode}")
 
@@ -864,6 +905,7 @@ class AudioProSpeaker:
 
         self._apply_updates(
             source=source,
+            source_detail=info["vendor"] or None,
             playback_status=status,
             volume_pct=vol_pct,
             muted=muted,
