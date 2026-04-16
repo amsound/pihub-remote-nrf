@@ -1076,30 +1076,6 @@ class AudioProSpeaker:
     async def previous_preset(self) -> None:
         await self._tcp_command("MCU+KEY+PRE", action="previous_preset")
 
-    async def set_source(self, source: str) -> None:
-        src = (source or "").strip().lower()
-        want_mode: str | None = None
-        if src == "wifi":
-            want_mode = "010"
-        elif src == "hdmi":
-            want_mode = "049"
-        elif src == "optical":
-            want_mode = "043"
-        elif src in ("line-in", "linein"):
-            want_mode = "040"
-        elif src in ("bluetooth", "bt"):
-            want_mode = "041"
-
-        if not want_mode:
-            raise RuntimeError(f"set_source_unsupported:{source}")
-
-        await self._tcp_command(
-            f"MCU+PLM+{want_mode}",
-            action="set_source",
-            refresh=True,
-            delayed_refresh=True,
-        )
-
     # -------------- HTTP API --------------
 
     async def power_off(self) -> None:
@@ -1113,6 +1089,28 @@ class AudioProSpeaker:
 
         cmd = f"setPlayerCmd:play:{url}"
         await self._http_command(cmd, action="play_url", refresh=True)
+
+    async def set_source(self, source: str) -> None:
+        src = (source or "").strip().lower()
+
+        source_map = {
+            "wifi": "wifi",
+            "hdmi": "HDMI",
+            "optical": "optical",
+            "line-in": "line-in",
+            "bluetooth": "bluetooth",
+        }
+
+        want_http_mode = source_map.get(src)
+        if not want_http_mode:
+            raise RuntimeError(f"set_source_unsupported:{source}")
+
+        await self._http_command(
+            f"setPlayerCmd:switchmode:{want_http_mode}",
+            action="set_source",
+            refresh=True,
+            delayed_refresh=True,
+        )
 
     async def _http_cmd(self, cmd: str) -> None:
         if not self._session:
