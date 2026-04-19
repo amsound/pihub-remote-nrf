@@ -88,6 +88,13 @@ class SequenceRunner:
             "tv_was_on": lambda snap: bool(snap.get("tv_was_on")),
             "tv_was_off": lambda snap: bool(snap.get("tv_was_off")),
             "speaker_source_listen": lambda snap: str(snap.get("speaker_source") or "") in LISTEN_SOURCES,
+            "speaker_multiroom_guest_active": lambda snap: bool(snap.get("speaker_multiroom_guest_active")),
+            "speaker_multiroom_host_active": lambda snap: bool(snap.get("speaker_multiroom_host_active")),
+            "speaker_listen_alone": lambda snap: (
+                str(snap.get("speaker_source") or "") in LISTEN_SOURCES
+                and not bool(snap.get("speaker_multiroom_guest_active"))
+                and not bool(snap.get("speaker_multiroom_host_active"))
+            ),
         }
         self._defs: dict[str, SequenceDefinition] = {
             "listen": SequenceDefinition(
@@ -134,10 +141,28 @@ class SequenceRunner:
                 target_mode="watch",
                 steps=(
                     SequenceStep(
-                        "stop",
+                        "stop_host",
                         "speaker",
                         "stop_playback",
-                        when="speaker_source_listen",
+                        when="speaker_multiroom_host_active",
+                    ),
+                    SequenceStep(
+                        "leave_group",
+                        "speaker",
+                        "leave_native_multiroom_if_needed",
+                        when="speaker_multiroom_guest_active",
+                    ),
+                    SequenceStep(
+                        "leave_group_host",
+                        "speaker",
+                        "leave_native_multiroom_if_needed",
+                        when="speaker_multiroom_host_active",
+                    ),
+                    SequenceStep(
+                        "stop_alone",
+                        "speaker",
+                        "stop_playback",
+                        when="speaker_listen_alone",
                     ),
                     SequenceStep(
                         "tv_on",
@@ -260,16 +285,46 @@ class SequenceRunner:
                         timeout_s=8.0,
                     ),
                     SequenceStep(
-                        "stop",
+                        "stop_host",
                         "speaker",
                         "stop_playback",
-                        when="speaker_source_listen",
+                        when="speaker_multiroom_host_active",
                     ),
                     SequenceStep(
-                        "speaker_off",
+                        "leave_group_guest",
+                        "speaker",
+                        "leave_native_multiroom_if_needed",
+                        when="speaker_multiroom_guest_active",
+                    ),
+                    SequenceStep(
+                        "leave_group_host",
+                        "speaker",
+                        "leave_native_multiroom_if_needed",
+                        when="speaker_multiroom_host_active",
+                    ),
+                    SequenceStep(
+                        "stop_alone",
+                        "speaker",
+                        "stop_playback",
+                        when="speaker_listen_alone",
+                    ),
+                    SequenceStep(
+                        "speaker_off_guest",
                         "speaker",
                         "power_off",
-                        when="speaker_source_listen",
+                        when="speaker_multiroom_guest_active",
+                    ),
+                    SequenceStep(
+                        "speaker_off_host",
+                        "speaker",
+                        "power_off",
+                        when="speaker_multiroom_host_active",
+                    ),
+                    SequenceStep(
+                        "speaker_off_alone",
+                        "speaker",
+                        "power_off",
+                        when="speaker_listen_alone",
                     ),
                 ),
             ),
@@ -414,13 +469,27 @@ class SequenceRunner:
         return True
 
     def _build_snapshot(self) -> dict[str, Any]:
-        speaker_source = self._speaker_source()
+        speaker_snapshot = {}
+        if self._speaker is not None:
+            try:
+                speaker_snapshot = self._speaker.snapshot() or {}
+            except Exception:
+                speaker_snapshot = {}
+
+        speaker_source = str(speaker_snapshot.get("source") or "").strip().lower()
         tv_was_on = self._tv_is_on()
+
         return {
             "current_mode": self._runtime.mode,
             "tv_was_on": tv_was_on,
             "tv_was_off": not tv_was_on,
             "speaker_source": speaker_source,
+            "speaker_multiroom_guest_active": bool(
+                speaker_snapshot.get("multiroom_guest_active", False)
+            ),
+            "speaker_multiroom_host_active": bool(
+                speaker_snapshot.get("multiroom_host_active", False)
+            ),
         }
 
     def _predicate(self, name: str, snapshot: dict[str, Any]) -> bool:
@@ -781,6 +850,13 @@ class SequenceRunner:
         if step.domain == "speaker" and step.action == "set_source":
             self._require_speaker_ready(step=step)
             await self._speaker.set_source(str(args["source"]))
+            return
+
+        if step.domain == "speaker" and step.action == "leave_native_multiroom_if_needed":
+            self._require_speaker_ready(step=step)
+            await self._speaker.leave_native_multiroom_if_needed(
+                ["192.168.70.43", "192.168.70.45", "192.168.70.46"]
+            )
             return
 
         if step.domain == "ble" and step.action == "return_home":
