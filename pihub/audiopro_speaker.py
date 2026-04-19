@@ -1107,6 +1107,15 @@ class AudioProSpeaker:
 
     # -------------- HTTP API --------------
 
+    async def get_multiroom_slave_list(self, *, target_ip: str | None = None) -> dict[str, Any]:
+        """
+        Query a speaker's native multiroom guest list.
+
+        - target_ip=None means query self
+        - target_ip='x.x.x.x' queries another speaker on the LAN
+        """
+        return await self._http_cmd_json("multiroom:getSlaveList", target_ip=target_ip)
+
     async def refresh_multiroom_host_state(self) -> None:
         """
         Refresh native multiroom host state from the speaker's HTTP API.
@@ -1118,7 +1127,7 @@ class AudioProSpeaker:
         slaves > 0  => currently hosting a native multiroom group
         slaves == 0 => not currently hosting guests
         """
-        data = await self._http_cmd_json("multiroom:getSlaveList")
+        data = await self.get_multiroom_slave_list()
 
         try:
             slave_count = int(data.get("slaves", 0))
@@ -1140,6 +1149,100 @@ class AudioProSpeaker:
         if changed:
             self._state.last_update_ts = _now()
             self._wake_poll_loop()
+
+    async def _find_multiroom_host_ip(self, speaker_ips: list[str]) -> str | None:
+        """
+        Find which peer currently hosts this speaker as a native multiroom guest.
+
+        We accept a host only if its getSlaveList() contains this speaker's IP.
+        This keeps unrelated groups out of scope.
+        """
+        my_ip = self._speaker_ip.strip()
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        for ip in speaker_ips:
+            candidate = str(ip or "").strip()
+            if not candidate or candidate == my_ip or candidate in seen:
+                continue
+            seen.add(candidate)
+            candidates.append(candidate)
+
+        for candidate_ip in candidates:
+            try:
+                data = await self.get_multiroom_slave_list(target_ip=candidate_ip)
+            except Exception as exc:
+                logger.debug(
+                    "multiroom host probe failed target_ip=%s speaker_ip=%s error=%s",
+                    candidate_ip,
+                    my_ip,
+                    exc,
+                )
+                continue
+
+            slave_list = data.get("slave_list") or []
+            if not isinstance(slave_list, list):
+                continue
+
+            for item in slave_list:
+                if not isinstance(item, dict):
+                    continue
+                slave_ip = str(item.get("ip", "")).strip()
+                if slave_ip == my_ip:
+                    return candidate_ip
+
+        return None
+
+    async def leave_native_multiroom_if_needed(self, speaker_ips: list[str]) -> str:
+        """
+        Cleanly leave native Linkplay multiroom if this speaker is involved.
+
+        Returns:
+        - "guest_kicked"    : this speaker was an active guest and was removed from host
+        - "host_ungrouped"  : this speaker was hosting guests and ungrouped them
+        - "noop"            : no native multiroom action was needed
+        """
+        # Refresh self host state first so host decisions are based on current HTTP truth.
+        try:
+            await self.refresh_multiroom_host_state()
+        except Exception as exc:
+            logger.debug(
+                "multiroom host refresh failed before leave speaker_ip=%s error=%s",
+                self._speaker_ip,
+                exc,
+            )
+
+        if self._state.multiroom_guest_active:
+            host_ip = await self._find_multiroom_host_ip(speaker_ips)
+            if not host_ip:
+                raise RuntimeError("multiroom_host_not_found_for_guest")
+
+            body = await self._http_cmd_text(
+                f"multiroom:SlaveKickout:{self._speaker_ip}",
+                target_ip=host_ip,
+            )
+            if body != "OK":
+                raise RuntimeError(f"multiroom_slave_kickout_failed:{body!r}")
+
+            # Immediate local truth adjustment; follow with authoritative refresh.
+            self._state.multiroom_guest_active = False
+            self._state.last_update_ts = _now()
+            self._request_pinfget(reason="multiroom_guest_kickout", delay_s=0.5)
+            return "guest_kicked"
+
+        if self._state.multiroom_host_active:
+            body = await self._http_cmd_text("multiroom:Ungroup")
+            if body != "OK":
+                raise RuntimeError(f"multiroom_ungroup_failed:{body!r}")
+
+            self._state.multiroom_host_active = False
+            self._state.multiroom_slave_count = 0
+            self._state.last_update_ts = _now()
+            self._request_pinfget(reason="multiroom_host_ungroup", delay_s=0.5)
+            return "host_ungrouped"
+
+        return "noop"
 
     async def power_off(self) -> None:
         """Courtesy amplifier off via HTTP API, but only when ready and actually sent."""
@@ -1175,12 +1278,13 @@ class AudioProSpeaker:
             delayed_refresh=True,
         )
 
-    async def _http_cmd_text(self, cmd: str) -> str:
+    async def _http_cmd_text(self, cmd: str, *, target_ip: str | None = None) -> str:
         if not self._session:
             timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
             self._session = aiohttp.ClientSession(timeout=timeout)
 
-        endpoint = f"{HTTP_SCHEME}://{self._speaker_ip}{_HTTPAPI_PATH}"
+        ip = (target_ip or self._speaker_ip).strip()
+        endpoint = f"{HTTP_SCHEME}://{ip}{_HTTPAPI_PATH}"
         params = {"command": cmd}
 
         async with self._session.get(endpoint, params=params, ssl=False) as resp:
@@ -1189,9 +1293,8 @@ class AudioProSpeaker:
                 raise RuntimeError(f"httpapi status {resp.status}")
             return body.strip()
 
-
-    async def _http_cmd_json(self, cmd: str) -> dict[str, Any]:
-        body = await self._http_cmd_text(cmd)
+    async def _http_cmd_json(self, cmd: str, *, target_ip: str | None = None) -> dict[str, Any]:
+        body = await self._http_cmd_text(cmd, target_ip=target_ip)
         try:
             data = json.loads(body)
         except Exception as exc:
