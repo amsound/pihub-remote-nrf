@@ -99,6 +99,11 @@ class SpeakerState:
     source: str | None = None
     source_detail: str | None = None    # Specifically for WiFi source mode like TuneIn or Custom URL
 
+    # Native Linkplay multiroom state
+    multiroom_guest_active: bool = False
+    multiroom_host_active: bool = False
+    multiroom_slave_count: int = 0
+
     last_update_ts: float | None = None
     last_play_ts: float | None = None
 
@@ -189,6 +194,11 @@ class AudioProSpeaker:
             "muted": s.muted,
             "source": s.source,
             "source_detail": self._state.source_detail,
+
+            "multiroom_guest_active": bool(s.multiroom_guest_active),
+            "multiroom_host_active": bool(s.multiroom_host_active),
+            "multiroom_slave_count": int(s.multiroom_slave_count),
+
             "last_update_ts": last_i,
             "update_age_s": age_i,
         }
@@ -274,6 +284,15 @@ class AudioProSpeaker:
             "outcome": "refresh_requested",
             "errors": errors,
         }
+
+    async def refresh_multiroom_state(self) -> None:
+        """
+        Refresh HTTP-derived native multiroom state.
+
+        Guest-active remains driven by PINFGET/TCP state.
+        Host-active is refreshed from getSlaveList().
+        """
+        await self.refresh_multiroom_host_state()
 
     async def _runner(self) -> None:
         attempt = 0
@@ -884,9 +903,15 @@ class AudioProSpeaker:
         source = _PLM_TO_SOURCE.get(info["mode"], self._state.source or "unknown")
         status = info["status"]
 
+        multiroom_guest_active = (
+            source == "multiroom-secondary" and info["type"] == "1"
+        )
+
         if source in _PHYSICAL_SOURCES:
             status = None
-        elif source == "multiroom-secondary" and info["type"] == "1":
+        elif multiroom_guest_active:
+            # Linkplay quirk:
+            # active multiroom guest playback can still report status="stop"
             status = "play"
 
         try:
@@ -911,6 +936,10 @@ class AudioProSpeaker:
             muted=muted,
             ready=True,
         )
+
+        if self._state.multiroom_guest_active != multiroom_guest_active:
+            self._state.multiroom_guest_active = multiroom_guest_active
+            self._state.last_update_ts = _now()
 
         if not was_ready and self._state.ready:
             logger.info(
@@ -1078,6 +1107,40 @@ class AudioProSpeaker:
 
     # -------------- HTTP API --------------
 
+    async def refresh_multiroom_host_state(self) -> None:
+        """
+        Refresh native multiroom host state from the speaker's HTTP API.
+
+        Source of truth:
+        /httpapi.asp?command=multiroom:getSlaveList
+
+        We treat:
+        slaves > 0  => currently hosting a native multiroom group
+        slaves == 0 => not currently hosting guests
+        """
+        data = await self._http_cmd_json("multiroom:getSlaveList")
+
+        try:
+            slave_count = int(data.get("slaves", 0))
+        except Exception:
+            slave_count = 0
+
+        host_active = slave_count > 0
+
+        changed = False
+
+        if self._state.multiroom_slave_count != slave_count:
+            self._state.multiroom_slave_count = slave_count
+            changed = True
+
+        if self._state.multiroom_host_active != host_active:
+            self._state.multiroom_host_active = host_active
+            changed = True
+
+        if changed:
+            self._state.last_update_ts = _now()
+            self._wake_poll_loop()
+
     async def power_off(self) -> None:
         """Courtesy amplifier off via HTTP API, but only when ready and actually sent."""
         cmd = getattr(self, "_http_poweroff_cmd", DEFAULT_HTTP_POWEROFF_CMD)
@@ -1112,7 +1175,7 @@ class AudioProSpeaker:
             delayed_refresh=True,
         )
 
-    async def _http_cmd(self, cmd: str) -> None:
+    async def _http_cmd_text(self, cmd: str) -> str:
         if not self._session:
             timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
             self._session = aiohttp.ClientSession(timeout=timeout)
@@ -1121,6 +1184,22 @@ class AudioProSpeaker:
         params = {"command": cmd}
 
         async with self._session.get(endpoint, params=params, ssl=False) as resp:
-            _ = await resp.text(errors="replace")
+            body = await resp.text(errors="replace")
             if resp.status >= 400:
                 raise RuntimeError(f"httpapi status {resp.status}")
+            return body.strip()
+
+
+    async def _http_cmd_json(self, cmd: str) -> dict[str, Any]:
+        body = await self._http_cmd_text(cmd)
+        try:
+            data = json.loads(body)
+        except Exception as exc:
+            raise RuntimeError(f"httpapi invalid json for {cmd}: {body!r}") from exc
+
+        if not isinstance(data, dict):
+            raise RuntimeError(f"httpapi unexpected json for {cmd}: {data!r}")
+        return data
+
+    async def _http_cmd(self, cmd: str) -> None:
+        _ = await self._http_cmd_text(cmd)
