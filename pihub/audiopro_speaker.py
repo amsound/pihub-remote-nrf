@@ -173,6 +173,7 @@ class AudioProSpeaker:
         self._state_change_callback = state_change_callback
 
         self._pending_pinfget_task: asyncio.Task | None = None
+        self._pending_multiroom_host_ip_task: asyncio.Task | None = None
         self._last_pinfget_monotonic = 0.0
 
     # ---------- small public helpers ----------
@@ -234,6 +235,7 @@ class AudioProSpeaker:
         self._enabled = False
         self._stop_evt.set()
         self._cancel_pending_pinfget()
+        self._cancel_pending_multiroom_host_ip_refresh()
 
         self._poll_wake_evt.set()
 
@@ -419,6 +421,7 @@ class AudioProSpeaker:
 
     async def _disconnect(self) -> None:
         self._cancel_pending_pinfget()
+        self._cancel_pending_multiroom_host_ip_refresh()
         self._state.reachable = False
         self._state.connected = False
         self._state.ready = False
@@ -870,6 +873,83 @@ class AudioProSpeaker:
             task.cancel()
         self._pending_pinfget_task = None
 
+    def _request_multiroom_guest_host_refresh(
+        self,
+        *,
+        reason: str,
+        delay_s: float = 0.25,
+    ) -> None:
+        if not self._enabled or self._stop_evt.is_set():
+            return
+
+        if not self._known_speaker_ips:
+            return
+
+        if not self._state.multiroom_guest_active:
+            return
+
+        task = self._pending_multiroom_host_ip_task
+        if task is not None and not task.done():
+            return
+
+        self._pending_multiroom_host_ip_task = asyncio.create_task(
+            self._run_scheduled_multiroom_guest_host_refresh(delay_s=delay_s, reason=reason),
+            name=f"speaker_guest_host_refresh[{self._speaker_ip}]",
+        )
+        self._pending_multiroom_host_ip_task.add_done_callback(
+            self._clear_pending_multiroom_host_ip_refresh
+        )
+
+    def _clear_pending_multiroom_host_ip_refresh(self, task: asyncio.Task) -> None:
+        if self._pending_multiroom_host_ip_task is task:
+            self._pending_multiroom_host_ip_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            logger.debug(
+                "speaker scheduled guest host refresh cancelled speaker_ip=%s",
+                self._speaker_ip,
+            )
+        except Exception as e:
+            logger.debug(
+                "speaker scheduled guest host refresh failed speaker_ip=%s error=%s",
+                self._speaker_ip,
+                e,
+            )
+
+    async def _run_scheduled_multiroom_guest_host_refresh(
+        self,
+        *,
+        delay_s: float,
+        reason: str,
+    ) -> None:
+        logger.debug(
+            "speaker scheduling guest host refresh speaker_ip=%s delay_s=%.2f reason=%s",
+            self._speaker_ip,
+            delay_s,
+            reason,
+        )
+
+        if delay_s > 0:
+            await asyncio.sleep(delay_s)
+
+        if not self._enabled or self._stop_evt.is_set():
+            return
+
+        if not self._state.multiroom_guest_active:
+            return
+
+        if not self._known_speaker_ips:
+            return
+
+        await self.refresh_multiroom_guest_host_ip(self._known_speaker_ips)
+
+    def _cancel_pending_multiroom_host_ip_refresh(self) -> None:
+        task = self._pending_multiroom_host_ip_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._pending_multiroom_host_ip_task = None
+
     def _parse_ply_inf_json(self, payload: str) -> dict[str, Any] | None:
         p = payload.strip()
         if p.endswith("&"):
@@ -1021,8 +1101,14 @@ class AudioProSpeaker:
         if self._state.multiroom_guest_active != multiroom_guest_active:
             self._state.multiroom_guest_active = multiroom_guest_active
 
-            if not multiroom_guest_active:
+            if multiroom_guest_active:
+                self._request_multiroom_guest_host_refresh(
+                    reason="guest_active",
+                    delay_s=0.25,
+                )
+            else:
                 self._state.multiroom_host_ip = None
+                self._cancel_pending_multiroom_host_ip_refresh()
 
             self._state.last_update_ts = _now()
 
