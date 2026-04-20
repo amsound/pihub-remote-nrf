@@ -1241,7 +1241,11 @@ class AudioProSpeaker:
             return
 
         new = "001" if target else "000"
-        await self._tcp_command(f"MCU+MUT+{new}", action="set_muted")
+        await self._tcp_command(
+            f"MCU+MUT+{new}",
+            action="set_muted",
+            refresh=True,
+        )
         self._apply_updates(muted=target)
 
     async def mute_toggle(self) -> None:
