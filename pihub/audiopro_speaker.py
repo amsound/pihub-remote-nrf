@@ -295,11 +295,9 @@ class AudioProSpeaker:
                 logger.debug("speaker request_refresh slvget failed", exc_info=True)
                 errors.append(f"slvget_failed:{exc!r}")
 
-        if self._state.multiroom_guest_active:
+        if self._state.multiroom_guest_active and self._known_speaker_ips:
             try:
-                if self._known_speaker_ips:
-                    await self.refresh_multiroom_guest_host_ip(self._known_speaker_ips)
-                    guest_host_refreshed = True
+                await self.refresh_multiroom_guest_host_ip(self._known_speaker_ips)
                 guest_host_refreshed = True
             except Exception as exc:
                 logger.debug("speaker request_refresh guest host lookup failed", exc_info=True)

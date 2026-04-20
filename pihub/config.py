@@ -12,6 +12,22 @@ def _env_bool(name: str, default: bool) -> bool:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
+def _env_csv(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name)
+    if raw is None:
+        return list(default)
+
+    items: list[str] = []
+    seen: set[str] = set()
+
+    for part in raw.split(","):
+        value = part.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        items.append(value)
+
+    return items if items else list(default)
 
 @dataclass(frozen=True)
 class Config:
@@ -34,6 +50,8 @@ class Config:
 
     # Audio Pro
     speaker_ip: str
+    # Audio Pro peer discovery / multiroom support
+    known_speaker_ips: list[str]
 
     # Samsung SmartThings soundbar
     smartthings_device_id: str
@@ -66,6 +84,10 @@ class Config:
         speaker_backend = (os.getenv("SPEAKER_BACKEND", "audiopro") or "audiopro").strip().lower()
 
         speaker_ip = (os.getenv("SPEAKER_IP", "") or "").strip()
+        known_speaker_ips = _env_csv(
+            "KNOWN_SPEAKER_IPS",
+            ["192.168.70.43", "192.168.70.45", "192.168.70.46"],
+        )
 
         smartthings_device_id = (os.getenv("SMARTTHINGS_DEVICE_ID", "") or "").strip()
         smartthings_token_file = (
@@ -90,6 +112,7 @@ class Config:
             tv_name=tv_name,
             speaker_backend=speaker_backend,
             speaker_ip=speaker_ip,
+            known_speaker_ips=known_speaker_ips,
             smartthings_device_id=smartthings_device_id,
             smartthings_token_file=smartthings_token_file,
             smartthings_poll_interval_s=smartthings_poll_interval_s,

@@ -149,6 +149,7 @@ async def main() -> None:
             if cfg.speaker_ip:
                 speaker = AudioProSpeaker(
                     speaker_ip=cfg.speaker_ip,
+                    known_speaker_ips=cfg.known_speaker_ips,
                 )
         elif cfg.speaker_backend == "samsung_soundbar_local":
             if cfg.speaker_ip:
