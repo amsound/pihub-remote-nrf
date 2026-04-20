@@ -984,10 +984,9 @@ class AudioProSpeaker:
             return
 
     def _handle_mut(self, payload: str) -> None:
-        code = payload.strip().split("+")[-1]
-        if code not in {"000", "001"}:
-            return
-        self._apply_updates(muted=(code == "001"))
+        # AXX+MUT+XXX is not reliable across all inputs/modes.
+        # Treat PINFGET["mute"] as authoritative.
+        return
 
     def _handle_plm(self, payload: str) -> None:
         mode = payload.strip().split("+")[-1].strip().zfill(3)
