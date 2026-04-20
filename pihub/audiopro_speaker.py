@@ -103,6 +103,7 @@ class SpeakerState:
     multiroom_guest_active: bool = False
     multiroom_host_active: bool = False
     multiroom_slave_count: int = 0
+    multiroom_host_ip: str | None = None
 
     last_update_ts: float | None = None
     last_play_ts: float | None = None
@@ -130,8 +131,14 @@ class AudioProSpeaker:
         reconnect_s: float = 3.0,
         connect_timeout_s: float = 3.0,
         state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        known_speaker_ips: list[str] | None = None,
     ) -> None:
         self._speaker_ip = speaker_ip.strip()
+        self._known_speaker_ips = [
+            str(ip).strip()
+            for ip in (known_speaker_ips or [])
+            if str(ip).strip()
+        ]
         self._tcp_port = int(tcp_port)
         self._volume_step_pct = _clamp_int(int(VOLUME_STEP_PCT), 1, 10)
         self._command_interval_s = max(0.2, float(command_interval_s))  # doc says >=200ms
@@ -198,6 +205,7 @@ class AudioProSpeaker:
             "multiroom_guest_active": bool(s.multiroom_guest_active),
             "multiroom_host_active": bool(s.multiroom_host_active),
             "multiroom_slave_count": int(s.multiroom_slave_count),
+            "multiroom_host_ip": s.multiroom_host_ip,
 
             "last_update_ts": last_i,
             "update_age_s": age_i,
@@ -245,6 +253,11 @@ class AudioProSpeaker:
         """
         Best-effort immediate state refresh.
 
+        Refreshes:
+        - PINFGET over TCP for source/playback/guest truth
+        - SLV+GET over TCP for host/slave-count truth
+        - cached host IP lookup when currently acting as a guest
+
         Returns structured outcome so operator APIs can report truthfully whether
         the refresh path actually succeeded.
         """
@@ -257,6 +270,8 @@ class AudioProSpeaker:
 
         errors: list[str] = []
         pinfget_sent = False
+        slvget_sent = False
+        guest_host_refreshed = False
 
         try:
             self._wake_poll_loop()
@@ -267,12 +282,30 @@ class AudioProSpeaker:
         if self._state.connected:
             try:
                 await self._pinfget()
+                self._last_pinfget_monotonic = time.monotonic()
                 pinfget_sent = True
             except Exception as exc:
                 logger.debug("speaker request_refresh pinfget failed", exc_info=True)
                 errors.append(f"pinfget_failed:{exc!r}")
 
-        if self._state.connected and not pinfget_sent:
+            try:
+                await self._slvget()
+                slvget_sent = True
+            except Exception as exc:
+                logger.debug("speaker request_refresh slvget failed", exc_info=True)
+                errors.append(f"slvget_failed:{exc!r}")
+
+        if self._state.multiroom_guest_active:
+            try:
+                if self._known_speaker_ips:
+                    await self.refresh_multiroom_guest_host_ip(self._known_speaker_ips)
+                    guest_host_refreshed = True
+                guest_host_refreshed = True
+            except Exception as exc:
+                logger.debug("speaker request_refresh guest host lookup failed", exc_info=True)
+                errors.append(f"guest_host_refresh_failed:{exc!r}")
+
+        if self._state.connected and not (pinfget_sent or slvget_sent):
             return {
                 "ok": False,
                 "outcome": "refresh_failed",
@@ -283,16 +316,12 @@ class AudioProSpeaker:
             "ok": True,
             "outcome": "refresh_requested",
             "errors": errors,
+            "details": {
+                "pinfget_sent": pinfget_sent,
+                "slvget_sent": slvget_sent,
+                "guest_host_refreshed": guest_host_refreshed,
+            },
         }
-
-    async def refresh_multiroom_state(self) -> None:
-        """
-        Refresh HTTP-derived native multiroom state.
-
-        Guest-active remains driven by PINFGET/TCP state.
-        Host-active is refreshed from getSlaveList().
-        """
-        await self.refresh_multiroom_host_state()
 
     async def _runner(self) -> None:
         attempt = 0
@@ -325,6 +354,7 @@ class AudioProSpeaker:
 
                 # Initial truth pull / readiness gate.
                 await self._pinfget()
+                await self._slvget()
                 await self._wait_ready()
                 attempt = 0
 
@@ -536,6 +566,12 @@ class AudioProSpeaker:
             raise ConnectionError("not connected")
         await self._send("MCU+PINFGET")
 
+    async def _slvget(self) -> None:
+        """Ask the speaker whether it is currently hosting a native multiroom group."""
+        if not self._writer:
+            raise ConnectionError("not connected")
+        await self._send("MCU+SLV+GET")
+
     async def _read_loop(self) -> None:
         assert self._reader is not None
 
@@ -601,6 +637,10 @@ class AudioProSpeaker:
 
         if p.startswith("AXX+PMS+"):
             self._handle_pms(p)
+            return
+
+        if p.startswith("AXX+SLV+"):
+            self._handle_slv(p)
             return
 
         if p.startswith("AXX+PLY+NEW"):
@@ -887,6 +927,49 @@ class AudioProSpeaker:
         if code in PINFGET_TRIGGER_PMS:
             self._request_pinfget(reason=f"pms:{code}")
 
+    def _handle_slv(self, payload: str) -> None:
+        """
+        Handle native multiroom hosting state.
+
+        Observed forms:
+        AXX+SLV+000  -> not hosting
+        AXX+SLV+001  -> hosting 1 guest
+        AXX+SLV+002  -> hosting 2 guests
+        AXX+SLV+YES  -> this speaker is a guest (informational only)
+        AXX+SLV+NOT  -> this speaker is not a guest (informational only)
+        """
+        code = payload.strip().split("+")[-1].strip()
+
+        # Numeric forms are authoritative host-state hints.
+        if code.isdigit():
+            try:
+                slave_count = int(code)
+            except Exception:
+                return
+
+            host_active = slave_count > 0
+            changed = False
+
+            if self._state.multiroom_slave_count != slave_count:
+                self._state.multiroom_slave_count = slave_count
+                changed = True
+
+            if self._state.multiroom_host_active != host_active:
+                self._state.multiroom_host_active = host_active
+                changed = True
+
+            if changed:
+                self._state.last_update_ts = _now()
+                self._wake_poll_loop()
+            return
+
+        # YES/NOT are useful hints, but guest truth still comes from PINFGET type.
+        if code == "NOT":
+            if self._state.multiroom_host_ip is not None:
+                self._state.multiroom_host_ip = None
+                self._state.last_update_ts = _now()
+            return
+
     def _handle_ply_new(self, payload: str) -> None:
         self._request_pinfget(reason="ply_new")
 
@@ -939,6 +1022,10 @@ class AudioProSpeaker:
 
         if self._state.multiroom_guest_active != multiroom_guest_active:
             self._state.multiroom_guest_active = multiroom_guest_active
+
+            if not multiroom_guest_active:
+                self._state.multiroom_host_ip = None
+
             self._state.last_update_ts = _now()
 
         if not was_ready and self._state.ready:
@@ -1116,40 +1203,6 @@ class AudioProSpeaker:
         """
         return await self._http_cmd_json("multiroom:getSlaveList", target_ip=target_ip)
 
-    async def refresh_multiroom_host_state(self) -> None:
-        """
-        Refresh native multiroom host state from the speaker's HTTP API.
-
-        Source of truth:
-        /httpapi.asp?command=multiroom:getSlaveList
-
-        We treat:
-        slaves > 0  => currently hosting a native multiroom group
-        slaves == 0 => not currently hosting guests
-        """
-        data = await self.get_multiroom_slave_list()
-
-        try:
-            slave_count = int(data.get("slaves", 0))
-        except Exception:
-            slave_count = 0
-
-        host_active = slave_count > 0
-
-        changed = False
-
-        if self._state.multiroom_slave_count != slave_count:
-            self._state.multiroom_slave_count = slave_count
-            changed = True
-
-        if self._state.multiroom_host_active != host_active:
-            self._state.multiroom_host_active = host_active
-            changed = True
-
-        if changed:
-            self._state.last_update_ts = _now()
-            self._wake_poll_loop()
-
     async def _find_multiroom_host_ip(self, speaker_ips: list[str]) -> str | None:
         """
         Find which peer currently hosts this speaker as a native multiroom guest.
@@ -1193,6 +1246,28 @@ class AudioProSpeaker:
                     return candidate_ip
 
         return None
+    
+    async def refresh_multiroom_guest_host_ip(self, speaker_ips: list[str]) -> str | None:
+        """
+        Refresh cached host IP for this speaker if it is currently an active guest.
+        """
+        if not self._state.multiroom_guest_active:
+            if self._state.multiroom_host_ip is not None:
+                self._state.multiroom_host_ip = None
+                self._state.last_update_ts = _now()
+            return None
+
+        return await self.resolve_multiroom_host_ip(speaker_ips)
+    
+    async def resolve_multiroom_host_ip(self, speaker_ips: list[str]) -> str | None:
+        """
+        Resolve and cache the current host IP for this speaker when it is an active guest.
+        """
+        host_ip = await self._find_multiroom_host_ip(speaker_ips)
+        if host_ip != self._state.multiroom_host_ip:
+            self._state.multiroom_host_ip = host_ip
+            self._state.last_update_ts = _now()
+        return host_ip
 
     async def leave_native_multiroom_if_needed(self, speaker_ips: list[str]) -> str:
         """
@@ -1203,18 +1278,12 @@ class AudioProSpeaker:
         - "host_ungrouped"  : this speaker was hosting guests and ungrouped them
         - "noop"            : no native multiroom action was needed
         """
-        # Refresh self host state first so host decisions are based on current HTTP truth.
-        try:
-            await self.refresh_multiroom_host_state()
-        except Exception as exc:
-            logger.debug(
-                "multiroom host refresh failed before leave speaker_ip=%s error=%s",
-                self._speaker_ip,
-                exc,
-            )
-
         if self._state.multiroom_guest_active:
-            host_ip = await self._find_multiroom_host_ip(speaker_ips)
+            host_ip = self._state.multiroom_host_ip
+
+            if not host_ip:
+                host_ip = await self.resolve_multiroom_host_ip(speaker_ips)
+
             if not host_ip:
                 raise RuntimeError("multiroom_host_not_found_for_guest")
 
@@ -1223,10 +1292,21 @@ class AudioProSpeaker:
                 target_ip=host_ip,
             )
             if body != "OK":
-                raise RuntimeError(f"multiroom_slave_kickout_failed:{body!r}")
+                # Cache may be stale; clear and retry one discovery pass.
+                self._state.multiroom_host_ip = None
+                retry_host_ip = await self.resolve_multiroom_host_ip(speaker_ips)
+                if not retry_host_ip:
+                    raise RuntimeError(f"multiroom_slave_kickout_failed:{body!r}")
 
-            # Immediate local truth adjustment; follow with authoritative refresh.
+                body = await self._http_cmd_text(
+                    f"multiroom:SlaveKickout:{self._speaker_ip}",
+                    target_ip=retry_host_ip,
+                )
+                if body != "OK":
+                    raise RuntimeError(f"multiroom_slave_kickout_failed:{body!r}")
+
             self._state.multiroom_guest_active = False
+            self._state.multiroom_host_ip = None
             self._state.last_update_ts = _now()
             self._request_pinfget(reason="multiroom_guest_kickout", delay_s=0.5)
             return "guest_kicked"
