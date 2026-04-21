@@ -93,6 +93,8 @@ class SpeakerState:
     ready: bool = False                 # becomes true only after first successful PINFGET parse
     last_error: str | None = None
 
+    powered_on: bool | None = None
+
     playback_status: str | None = None  # play/pause/stop/load/... (wifi-ish only; physical inputs => None)
     volume: float | None = None         # 0..1
     muted: bool | None = None
@@ -197,6 +199,7 @@ class AudioProSpeaker:
             "reachable": bool(s.reachable),
             "connected": bool(s.connected),
             "ready": bool(s.ready),
+            "powered_on": s.powered_on,
             "playback_status": s.playback_status,
             "volume_pct": None if s.volume is None else int(round(s.volume * 100)),
             "muted": s.muted,
@@ -273,6 +276,7 @@ class AudioProSpeaker:
         errors: list[str] = []
         pinfget_sent = False
         slvget_sent = False
+        pstget_sent = False
         guest_host_refreshed = False
 
         try:
@@ -297,6 +301,13 @@ class AudioProSpeaker:
                 logger.debug("speaker request_refresh slvget failed", exc_info=True)
                 errors.append(f"slvget_failed:{exc!r}")
 
+            try:
+                await self._pstget()
+                pstget_sent = True
+            except Exception as exc:
+                logger.debug("speaker request_refresh pstget failed", exc_info=True)
+                errors.append(f"pstget_failed:{exc!r}")
+
         if self._state.multiroom_guest_active and self._known_speaker_ips:
             try:
                 await self.refresh_multiroom_guest_host_ip(self._known_speaker_ips)
@@ -305,7 +316,7 @@ class AudioProSpeaker:
                 logger.debug("speaker request_refresh guest host lookup failed", exc_info=True)
                 errors.append(f"guest_host_refresh_failed:{exc!r}")
 
-        if self._state.connected and not (pinfget_sent or slvget_sent):
+        if self._state.connected and not (pinfget_sent or slvget_sent or pstget_sent):
             return {
                 "ok": False,
                 "outcome": "refresh_failed",
@@ -319,6 +330,7 @@ class AudioProSpeaker:
             "details": {
                 "pinfget_sent": pinfget_sent,
                 "slvget_sent": slvget_sent,
+                "pstget_sent": pstget_sent,
                 "guest_host_refreshed": guest_host_refreshed,
             },
         }
@@ -355,6 +367,7 @@ class AudioProSpeaker:
                 # Initial truth pull / readiness gate.
                 await self._pinfget()
                 await self._slvget()
+                await self._pstget()
                 await self._wait_ready()
                 attempt = 0
 
@@ -573,6 +586,12 @@ class AudioProSpeaker:
             raise ConnectionError("not connected")
         await self._send("MCU+SLV+GET")
 
+    async def _pstget(self) -> None:
+        """Ask the speaker for explicit power-state truth."""
+        if not self._writer:
+            raise ConnectionError("not connected")
+        await self._send("MCU+PST+GET")
+
     async def _read_loop(self) -> None:
         assert self._reader is not None
 
@@ -638,6 +657,14 @@ class AudioProSpeaker:
 
         if p.startswith("AXX+PMS+"):
             self._handle_pms(p)
+            return
+
+        if p.startswith("AXX+POW+"):
+            self._handle_pow(p)
+            return
+
+        if p.startswith("AXX+PST+"):
+            self._handle_pst(p)
             return
 
         if p.startswith("AXX+SLV+"):
@@ -1001,8 +1028,54 @@ class AudioProSpeaker:
 
     def _handle_pms(self, payload: str) -> None:
         code = payload.strip().split("+")[-1]
+
+        if code == "000":
+            if self._state.powered_on is not True:
+                self._state.powered_on = True
+                self._state.last_update_ts = _now()
+                self._wake_poll_loop()
+
         if code in PINFGET_TRIGGER_PMS:
             self._request_pinfget(reason=f"pms:{code}")
+
+    def _handle_pow(self, payload: str) -> None:
+        """
+        Handle power event hints.
+
+        Observed:
+        AXX+POW+001 -> power off
+        """
+        code = payload.strip().split("+")[-1].strip()
+
+        if code == "001":
+            if self._state.powered_on is not False:
+                self._state.powered_on = False
+                self._state.last_update_ts = _now()
+                self._wake_poll_loop()
+
+    def _handle_pst(self, payload: str) -> None:
+        """
+        Handle explicit power-state truth.
+
+        Observed:
+        AXX+PST+000 -> on
+        AXX+PST+001 -> on
+        AXX+PST+003 -> off
+        """
+        code = payload.strip().split("+")[-1].strip()
+
+        powered_on: bool | None = None
+        if code in {"000", "001"}:
+            powered_on = True
+        elif code == "003":
+            powered_on = False
+        else:
+            return
+
+        if self._state.powered_on != powered_on:
+            self._state.powered_on = powered_on
+            self._state.last_update_ts = _now()
+            self._wake_poll_loop()
 
     def _handle_slv(self, payload: str) -> None:
         """
