@@ -736,11 +736,11 @@ class TvController:
 
             RECOVERY_WINDOW_S = 30.0
 
-            WOL_LOOP_INTERVAL_S = 0.25
+            WOL_LOOP_INTERVAL_S = 0.40
             WOL_PORTS = [9, 7]
             WOL_BROADCASTS = _default_wol_broadcasts(self.tv_ip)
-            WOL_BURST_COUNT = 3
-            WOL_BURST_GAP_S = 0.08
+            WOL_BURST_COUNT = 5
+            WOL_BURST_GAP_S = 0.06
 
             WS_FAST_INTERVAL_S = 0.25
             WS_SLOW_INTERVAL_S = 0.8
