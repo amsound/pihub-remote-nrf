@@ -733,6 +733,12 @@ class TvController:
             # that intentionally here: do not "clean up" the websocket based only on
             # presence state, and do not assume presence false/unknown means the control
             # channel is gone.
+            #
+            # In addition, some newer Samsung TVs (for example newer Frame firmware)
+            # can keep the websocket reachable far beyond the recent-off window. If we
+            # already hold a saved Samsung websocket token, treat websocket reconnect +
+            # one-shot KEY_POWER as a normal wake path too, while still keeping WoL for
+            # older TVs that rely on it.
 
             RECOVERY_WINDOW_S = 30.0
 
@@ -753,7 +759,10 @@ class TvController:
                 self._last_power_off_request_ts is not None
                 and (start - self._last_power_off_request_ts) <= RECOVERY_WINDOW_S
             )
-            rescue_toggle_attempted = False
+
+            token_present = self.ws.state.token_present
+            websocket_wake_enabled = rescue_recent_off or token_present
+            ws_power_toggle_attempted = False
 
             last_wol = -1e9
             last_ws_attempt = -1e9
@@ -767,7 +776,9 @@ class TvController:
                     await self.ws.connect(self._session)
                     return True
 
-                ws_interval_s = WS_FAST_INTERVAL_S if elapsed < WS_FAST_WINDOW_S else WS_SLOW_INTERVAL_S
+                ws_interval_s = (
+                    WS_FAST_INTERVAL_S if elapsed < WS_FAST_WINDOW_S else WS_SLOW_INTERVAL_S
+                )
 
                 if (now - last_wol) >= WOL_LOOP_INTERVAL_S:
                     try:
@@ -783,21 +794,39 @@ class TvController:
                     last_wol = now
 
                 ws_connected_now = self.ws.state.connected
-                if rescue_recent_off and not ws_connected_now and (now - last_ws_attempt) >= ws_interval_s:
+                if (
+                    websocket_wake_enabled
+                    and not ws_connected_now
+                    and (now - last_ws_attempt) >= ws_interval_s
+                ):
                     last_ws_attempt = now
                     try:
                         ws_connected_now = await self.ws.connect(self._session)
                     except Exception:
                         ws_connected_now = False
 
-                if rescue_recent_off and ws_connected_now and not rescue_toggle_attempted:
+                if (
+                    websocket_wake_enabled
+                    and ws_connected_now
+                    and not ws_power_toggle_attempted
+                ):
                     try:
-                        rescue_toggle_attempted = True
-                        await self.ws.send_key("KEY_POWER")
+                        ws_power_toggle_attempted = True
+                        sent = await self.ws.send_key("KEY_POWER")
+                        logger.debug(
+                            "tv websocket wake attempted tv_ip=%s token_present=%s rescue_recent_off=%s sent=%s",
+                            self.tv_ip,
+                            "true" if token_present else "false",
+                            "true" if rescue_recent_off else "false",
+                            "true" if sent else "false",
+                        )
                     except Exception:
-                        logger.debug("tv rescue power toggle failed", exc_info=True)
+                        logger.debug("tv websocket wake failed", exc_info=True)
 
-                if elapsed >= HTTP_PROBE_START_DELAY_S and (now - last_http_probe) >= HTTP_PROBE_INTERVAL_S:
+                if (
+                    elapsed >= HTTP_PROBE_START_DELAY_S
+                    and (now - last_http_probe) >= HTTP_PROBE_INTERVAL_S
+                ):
                     last_http_probe = now
                     try:
                         if await presence_probe_up(self._session, self.tv_ip):
