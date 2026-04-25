@@ -320,8 +320,8 @@ class BleDongleLink:
 
     async def power_on(self) -> None:
         steps = [
-            {"usage": "consumer", "code": "power", "key_hold_ms": 40},
-            {"wait_ms": 3000},
+            {"usage": "consumer", "code": "menu", "key_hold_ms": 40},
+            {"wait_ms": 1000},
             {"usage": "consumer", "code": "menu", "key_hold_ms": 40},
         ]
         await self.run_macro(steps)
