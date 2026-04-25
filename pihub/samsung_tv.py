@@ -250,10 +250,18 @@ class TvWsClient:
             raise
         except Exception as exc:
             logger.debug("rx loop ended: %r", exc)
+        finally:
+            async with self._lock:
+                if self._ws is ws:
+                    self._ws = None
+                    self.state.connected = False
+                    if self._logged_connected is True:
+                        self._logged_connected = False
+                        logger.debug("tv websocket disconnected")
 
     async def connect(self, session: aiohttp.ClientSession, *, timeout_s: float = 2.0) -> bool:
         async with self._lock:
-            if self._ws and not self._ws.closed:
+            if self._ws and not self._ws.closed and self.state.connected:
                 return True
 
             url = self._ws_url()
@@ -318,10 +326,12 @@ class TvWsClient:
             },
         }
 
+        ws_to_close = None
         async with self._lock:
             ws = self._ws
             if ws is None or ws.closed:
                 self.state.connected = False
+                self._ws = None
                 return False
             try:
                 await ws.send_str(json.dumps(payload))
@@ -329,7 +339,16 @@ class TvWsClient:
             except Exception as exc:
                 self.state.connected = False
                 self.state.last_error = repr(exc)
-                return False
+                if self._ws is ws:
+                    self._ws = None
+                    ws_to_close = ws
+
+        if ws_to_close and not ws_to_close.closed:
+            try:
+                await ws_to_close.close()
+            except Exception:
+                pass
+        return False
 
 
 # --- Controller ---
