@@ -25,7 +25,7 @@ from .unifying_reader import UnifyingReader
 from .ble_dongle import BleDongleLink
 from .samsung_tv import TvController, ssdp_listener, start_discovery_tasks, stop_discovery_tasks
 from .audiopro_speaker import AudioProSpeaker
-from .samsung_soundbar_local import SamsungSoundbarLocal
+from .samsung_soundbar import SamsungSoundbar
 from .speaker import SpeakerLike
 from .settings import SettingsStore
 from .history import HistoryStore
@@ -151,9 +151,9 @@ async def main() -> None:
                     speaker_ip=cfg.speaker_ip,
                     known_speaker_ips=cfg.known_speaker_ips,
                 )
-        elif cfg.speaker_backend == "samsung_soundbar_local":
+        elif cfg.speaker_backend == "samsung_soundbar":
             if cfg.speaker_ip:
-                speaker = SamsungSoundbarLocal(
+                speaker = SamsungSoundbar(
                     speaker_ip=cfg.speaker_ip,
                     tv=tv,
                 )

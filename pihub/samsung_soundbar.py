@@ -54,7 +54,7 @@ class _AirPlayServiceListener(ServiceListener):
         pass
 
 @dataclass
-class SamsungSoundbarLocalState:
+class SamsungSoundbarState:
     reachable: bool = False
     connected: bool = False
     ready: bool = False
@@ -78,7 +78,7 @@ class SamsungSoundbarLocalState:
     last_update_ts: float | None = None
 
 
-class SamsungSoundbarLocal:
+class SamsungSoundbar:
     def __init__(
         self,
         *,
@@ -99,7 +99,7 @@ class SamsungSoundbarLocal:
         self._refresh_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
 
-        self._state = SamsungSoundbarLocalState()
+        self._state = SamsungSoundbarState()
         self._session: aiohttp.ClientSession | None = None
 
         self._cast = None
@@ -126,7 +126,7 @@ class SamsungSoundbarLocal:
         return self._enabled
 
     @property
-    def state(self) -> SamsungSoundbarLocalState:
+    def state(self) -> SamsungSoundbarState:
         return self._state
 
     def snapshot(self) -> dict[str, Any]:
@@ -135,7 +135,7 @@ class SamsungSoundbarLocal:
         last_i = None if s.last_update_ts is None else int(s.last_update_ts)
         age_i = None if last_i is None else max(0, now_i - last_i)
         return {
-            "backend": "samsung_soundbar_local",
+            "backend": "samsung_soundbar",
             "reachable": bool(s.reachable),
             "connected": bool(s.connected),
             "ready": bool(s.ready),
@@ -252,7 +252,7 @@ class SamsungSoundbarLocal:
 
         if (not self._availability_logged_down) or (failure_key != self._last_failure_key):
             logger.warning(
-                "SamsungSoundbarLocal unavailable speaker_ip=%s error=%s",
+                "SamsungSoundbar unavailable speaker_ip=%s error=%s",
                 self._speaker_ip,
                 exc,
             )
@@ -623,7 +623,7 @@ class SamsungSoundbarLocal:
             )
         except Exception:
             logger.exception(
-                "SamsungSoundbarLocal state change callback spawn failed name=%s",
+                "SamsungSoundbar state change callback spawn failed name=%s",
                 name,
             )
             return
@@ -633,12 +633,12 @@ class SamsungSoundbarLocal:
                 t.result()
             except asyncio.CancelledError:
                 logger.debug(
-                    "SamsungSoundbarLocal state change callback cancelled name=%s",
+                    "SamsungSoundbar state change callback cancelled name=%s",
                     name,
                 )
             except Exception:
                 logger.exception(
-                    "SamsungSoundbarLocal state change callback failed name=%s",
+                    "SamsungSoundbar state change callback failed name=%s",
                     name,
                 )
 
