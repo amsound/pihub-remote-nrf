@@ -396,17 +396,41 @@ class TvController:
         self._state_change_callback = state_change_callback
 
         self._pending_watch_signal_task: Optional[asyncio.Task] = None
+        self._ws_warm_task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
 
+        # Best-effort warm-up. This must not block startup and must not be treated
+        # as power truth. It only prepares the control path for TVs whose network
+        # stack stays up while the panel is off.
+        if self._ws_warm_task is None or self._ws_warm_task.done():
+            self._ws_warm_task = asyncio.create_task(
+                self._warm_ws_control_path(),
+                name="tv:ws_warmup",
+            )
+
+    async def _warm_ws_control_path(self) -> None:
+        if not self._session:
+            return
+
+        try:
+            await self.ws.connect(self._session, timeout_s=2.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("tv websocket warm-up failed", exc_info=True)
+
     async def stop(self) -> None:
         self._cancel_pending_watch_signal()
+
+        task, self._ws_warm_task = self._ws_warm_task, None
+        if task and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
         await self.ws.close()
-        sess, self._session = self._session, None
-        if sess:
-            await sess.close()
 
     # Presence cache is the local truth used for watch/listen logic and health.
     # Updating presence here must not implicitly tear down the websocket control
@@ -804,48 +828,63 @@ class TvController:
         async def key_power_worker() -> None:
             nonlocal key_power_sent
 
-            # Immediate path: no artificial delay. WoL and KEY_POWER both start
-            # straight away, but KEY_POWER is strictly one-shot.
-            if stop_event.is_set() or self._presence_cached is True:
-                return
+            # Immediate path: no artificial delay. WoL and KEY_POWER connection attempts
+            # both start straight away. We may retry websocket connection, but KEY_POWER
+            # itself is strictly one-shot.
+            WS_CONNECT_TIMEOUT_S = 2.0
+            WS_CONNECT_RETRY_INTERVAL_S = 0.35
 
-            try:
-                ws_connected = self.ws.state.connected
-                if not ws_connected:
-                    ws_connected = await self.ws.connect(self._session, timeout_s=1.0)
+            while not stop_event.is_set() and self._presence_cached is not True:
+                try:
+                    ws_connected = self.ws.state.connected
 
-                # SSDP alive / M-SEARCH may have landed while websocket connect was
-                # in flight. Re-check before even attempting the dangerous toggle.
-                if stop_event.is_set() or self._presence_cached is True:
-                    return
+                    if not ws_connected:
+                        ws_connected = await self.ws.connect(
+                            self._session,
+                            timeout_s=WS_CONNECT_TIMEOUT_S,
+                        )
 
-                if not ws_connected:
-                    return
-
-                async with self._power_key_lock:
-                    # Final guard immediately before sending the toggle.
-                    if attempt_id != self._power_key_attempt_id:
-                        return
-                    if key_power_sent:
-                        return
+                    # SSDP alive / M-SEARCH may have landed while websocket connect was
+                    # in flight. Re-check before attempting the dangerous toggle.
                     if stop_event.is_set() or self._presence_cached is True:
                         return
 
-                    key_power_sent = True
-                    sent = await self.ws.send_key("KEY_POWER")
-                    logger.debug(
-                        "tv power_on one-shot KEY_POWER attempted tv_ip=%s sent=%s",
-                        self.tv_ip,
-                        "true" if sent else "false",
-                    )
+                    if ws_connected:
+                        async with self._power_key_lock:
+                            # Final guard immediately before sending the toggle.
+                            if attempt_id != self._power_key_attempt_id:
+                                return
+                            if key_power_sent:
+                                return
+                            if stop_event.is_set() or self._presence_cached is True:
+                                return
 
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # Treat failure as an attempt. Do not retry KEY_POWER during this
-                # power_on(), because a late retry could become a toggle-off.
-                key_power_sent = True
-                logger.debug("tv power_on one-shot KEY_POWER failed", exc_info=True)
+                            # From this point on, treat the toggle as attempted even if
+                            # send_key() returns False. A local websocket send failure can
+                            # be ambiguous: the TV may still have received the frame.
+                            key_power_sent = True
+                            sent = await self.ws.send_key("KEY_POWER")
+                            logger.debug(
+                                "tv power_on one-shot KEY_POWER attempted tv_ip=%s sent=%s",
+                                self.tv_ip,
+                                "true" if sent else "false",
+                            )
+                            return
+
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.debug("tv power_on websocket connect/send path failed", exc_info=True)
+
+                # Connection failure is not a KEY_POWER attempt. Retry connection quickly
+                # until presence arrives or power_on() times out/cancels this worker.
+                try:
+                    await asyncio.wait_for(
+                        stop_event.wait(),
+                        timeout=WS_CONNECT_RETRY_INTERVAL_S,
+                    )
+                except asyncio.TimeoutError:
+                    pass
 
         async def msearch_worker() -> None:
             # Optional detection accelerator. This does not wake the TV, so it is safe.
