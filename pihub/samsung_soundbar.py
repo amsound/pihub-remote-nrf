@@ -167,7 +167,7 @@ class SamsungSoundbar:
         logger.info("initialised local samsung soundbar backend speaker_ip=%s", self._speaker_ip)
         self._task = asyncio.create_task(
             self._runner(),
-            name=f"samsung_soundbar_local[{self._speaker_ip}]",
+            name=f"samsung_soundbar[{self._speaker_ip}]",
         )
 
     async def stop(self) -> None:
@@ -619,7 +619,7 @@ class SamsungSoundbar:
         try:
             task = asyncio.create_task(
                 cb(name, payload),
-                name=f"samsung_soundbar_local_state_change:{name}",
+                name=f"samsung_soundbar_state_change:{name}",
             )
         except Exception:
             logger.exception(
