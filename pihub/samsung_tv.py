@@ -882,9 +882,9 @@ class TvController:
                             # send_key() returns False. A local websocket send failure can
                             # be ambiguous: the TV may still have received the frame.
                             key_power_sent = True
-                            sent = await self.ws.send_key("KEY_POWER")
+                            sent = await self.ws.send_key("KEY_0")
                             logger.debug(
-                                "tv power_on one-shot KEY_POWER attempted tv_ip=%s sent=%s",
+                                "tv power_on one-shot KEY_0 attempted tv_ip=%s sent=%s",
                                 self.tv_ip,
                                 "true" if sent else "false",
                             )
