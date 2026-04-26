@@ -192,14 +192,6 @@ class SequenceRunner:
                         timeout_s=8.0,
                     ),
                     SequenceStep(
-                        "delay_2s",
-                        "system",
-                        "sleep",
-                        {"seconds": 2.0},
-                        when="tv_was_off",
-                        mode="await",
-                    ),
-                    SequenceStep(
                         "send_ble_macro",
                         "ble",
                         "power_on",
