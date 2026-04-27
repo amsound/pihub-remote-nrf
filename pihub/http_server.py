@@ -1080,18 +1080,18 @@ pre.json {{
                     ("Volume", lambda d: fmt_volume((d.get("details") or {}).get("volume_pct"))),
                     ("Muted", lambda d: "✅" if (d.get("details") or {}).get("muted") else "—"),
                     (
-                        "Last change",
-                        lambda d: (
-                            self._fmt_age_compact((d.get("details") or {}).get("update_age_s"))
-                            if (d.get("details") or {}).get("update_age_s") is not None
-                            else None
-                        ),
-                    ),
-                    (
                         "Playback",
                         lambda d: (
                             pretty_text((d.get("details") or {}).get("playback_status"))
                             if pretty_text((d.get("details") or {}).get("playback_status")) != "—"
+                            else None
+                        ),
+                    ),
+                    (
+                        "Last change",
+                        lambda d: (
+                            self._fmt_age_compact((d.get("details") or {}).get("update_age_s"))
+                            if (d.get("details") or {}).get("update_age_s") is not None
                             else None
                         ),
                     ),
