@@ -276,6 +276,7 @@ class SequenceRunner:
                         "ble",
                         "power_on",
                         when="tv_is_off",
+                        mode="await",
                     ),
                     SequenceStep(
                         "speaker_watch_volume",
@@ -309,6 +310,7 @@ class SequenceRunner:
                         "speaker",
                         "set_volume",
                         {"setting": "watch_volume_pct"},
+                        mode="await",
                     ),
                 ),
             ),
@@ -322,6 +324,7 @@ class SequenceRunner:
                         "ble",
                         "power_off",
                         when="tv_is_on",
+                        mode="await",
                     ),
                     SequenceStep(
                         "speaker_stop",
