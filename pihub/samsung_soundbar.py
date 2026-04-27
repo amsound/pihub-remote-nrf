@@ -1,15 +1,14 @@
-"""Local Samsung soundbar backend using Google Cast + AirPlay /info."""
+"""Local Samsung soundbar backend using Google Cast + AirPlay mDNS."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
-import plistlib
 import time
-import urllib.request
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
+
 from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 
 import aiohttp
@@ -22,36 +21,36 @@ DEFAULT_MEDIA_RECEIVER_APP_ID = "CC1AD845"
 AIRPLAY_ACTIVE_BIT = 0x800
 
 HTTP_TIMEOUT_S = 3.0
-AIRPLAY_DISCOVERY_TIMEOUT_S = 2.0
-AIRPLAY_INFO_TIMEOUT_S = 2.0
 AIRPLAY_SERVICE_TYPE = "_airplay._tcp.local."
-
-HTTP_TIMEOUT_S = 3.0
+AIRPLAY_MDNS_RESOLVE_TIMEOUT_MS = 2000
 
 VOLUME_STEP = 0.01
 CAST_DISCOVERY_TIMEOUT_S = 5
 
+
 def _now() -> float:
     return time.time()
 
+
 class _AirPlayServiceListener(ServiceListener):
-    def __init__(self) -> None:
-        self.matches: list[tuple[str, Any]] = []
+    """Long-lived AirPlay mDNS listener.
+
+    Zeroconf invokes these callbacks from its own thread, so this class only
+    forwards the event into SamsungSoundbar via call_soon_threadsafe().
+    """
+
+    def __init__(self, owner: "SamsungSoundbar") -> None:
+        self._owner = owner
 
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        info = zc.get_service_info(
-            type_,
-            name,
-            timeout=int(AIRPLAY_DISCOVERY_TIMEOUT_S * 1000),
-        )
-        if info is not None:
-            self.matches.append((name, info))
+        self._owner._airplay_mdns_event_from_thread(zc, type_, name, removed=False)
 
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        self.add_service(zc, type_, name)
+        self._owner._airplay_mdns_event_from_thread(zc, type_, name, removed=False)
 
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        pass
+        self._owner._airplay_mdns_event_from_thread(zc, type_, name, removed=True)
+
 
 @dataclass
 class SamsungSoundbarState:
@@ -73,7 +72,9 @@ class SamsungSoundbarState:
     friendly_name: str | None = None
     cast_app_id: str | None = None
     cast_app_name: str | None = None
+
     airplay_flags: int | None = None
+    airplay_device: str | None = None
 
     last_update_ts: float | None = None
 
@@ -102,13 +103,17 @@ class SamsungSoundbar:
         self._state = SamsungSoundbarState()
         self._session: aiohttp.ClientSession | None = None
 
+        self._loop: asyncio.AbstractEventLoop | None = None
+
         self._cast = None
         self._cast_browser = None
         self._cast_uuid = None
         self._cast_friendly_name = None
 
-        self._airplay_port = None
-        self._airplay_service_name = None
+        self._airplay_zc: Zeroconf | None = None
+        self._airplay_browser: ServiceBrowser | None = None
+        self._airplay_listener: _AirPlayServiceListener | None = None
+        self._airplay_service_raw_name: str | None = None
 
         self._last_send_monotonic = 0.0
 
@@ -144,9 +149,9 @@ class SamsungSoundbar:
             "muted": s.muted,
             "source": s.source,
             "listen_active": s.listen_active,
+            "last_update_ts": last_i,
             "update_age_s": age_i,
-            "airplay_port": self._airplay_port,
-            "airplay_service_name": self._airplay_service_name,
+            "airplay_device": s.airplay_device,
         }
 
     async def start(self) -> None:
@@ -157,12 +162,15 @@ class SamsungSoundbar:
             raise RuntimeError("speaker_ip_missing")
 
         self._enabled = True
+        self._loop = asyncio.get_running_loop()
         self._stop_evt.clear()
         self._poll_wake_evt.clear()
 
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_S)
             self._session = aiohttp.ClientSession(timeout=timeout)
+
+        self._start_airplay_mdns()
 
         logger.info("initialised local samsung soundbar backend speaker_ip=%s", self._speaker_ip)
         self._task = asyncio.create_task(
@@ -175,6 +183,8 @@ class SamsungSoundbar:
         self._stop_evt.set()
         self._poll_wake_evt.set()
 
+        self._stop_airplay_mdns()
+
         if self._task:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -186,6 +196,7 @@ class SamsungSoundbar:
         if self._session and not self._session.closed:
             await self._session.close()
         self._session = None
+        self._loop = None
 
     async def request_refresh(self) -> dict[str, Any]:
         if not self._enabled:
@@ -210,11 +221,12 @@ class SamsungSoundbar:
                 self._poll_wake_evt.set()
                 await self._refresh_now()
         except Exception as exc:
-            self._state.reachable = False
-            self._state.connected = False
-            self._state.ready = False
-            self._state.last_error = str(exc)
-            self._state.last_update_ts = _now()
+            self._apply_state_updates(
+                reachable=False,
+                connected=False,
+                ready=False,
+                last_error=str(exc),
+            )
             self._note_refresh_failure(exc)
             errors.append(f"refresh_failed:{exc!r}")
             return {
@@ -278,11 +290,12 @@ class SamsungSoundbar:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._state.reachable = False
-                self._state.connected = False
-                self._state.ready = False
-                self._state.last_error = str(exc)
-                self._state.last_update_ts = _now()
+                self._apply_state_updates(
+                    reachable=False,
+                    connected=False,
+                    ready=False,
+                    last_error=str(exc),
+                )
 
                 self._note_refresh_failure(exc)
 
@@ -292,23 +305,9 @@ class SamsungSoundbar:
                     pass
 
     async def _refresh_now(self) -> None:
-        old_listen = bool(self._state.listen_active)
-
-        airplay_flags = await self._read_airplay_flags()
         await self._ensure_cast()
         cast_status = await self._read_cast_status()
-
-        self._apply_status(airplay_flags=airplay_flags, cast_status=cast_status)
-
-        if not old_listen and self._state.listen_active:
-            self._emit_state_change(
-                "listen",
-                {
-                    "domain": "speaker",
-                    "source": self._state.source,
-                    "playback_status": self._state.playback_status,
-                },
-            )
+        self._apply_cast_snapshot(cast_status)
 
     async def _ensure_cast(self) -> None:
         if self._cast is not None:
@@ -373,7 +372,7 @@ class SamsungSoundbar:
                 return cast, browser
 
         # Bootstrap fallback: host-directed discovery path. Keep this because
-        # your config is IP-based and it works across your VLAN setup.
+        # config is IP-based and it works across the local/VLAN setup.
         casts, browser = pychromecast.get_chromecasts(known_hosts=[self._speaker_ip])
         if not casts:
             raise RuntimeError(f"cast_not_found:{self._speaker_ip}")
@@ -429,106 +428,236 @@ class SamsungSoundbar:
         await asyncio.sleep(0.35)
         await self.request_refresh()
 
-    async def _resolve_airplay_service(self) -> tuple[int | None, str | None]:
-        def _resolve() -> tuple[int | None, str | None]:
-            zc = Zeroconf()
-            listener = _AirPlayServiceListener()
-            browser = ServiceBrowser(zc, AIRPLAY_SERVICE_TYPE, listener)
+    # ---- AirPlay mDNS ----
 
-            try:
-                time.sleep(AIRPLAY_DISCOVERY_TIMEOUT_S)
+    def _start_airplay_mdns(self) -> None:
+        if self._airplay_zc is not None:
+            return
 
-                for name, info in listener.matches:
-                    addresses: list[str] = []
-                    with contextlib.suppress(Exception):
-                        addresses = info.parsed_addresses()
+        zc = Zeroconf()
+        listener = _AirPlayServiceListener(self)
+        browser = ServiceBrowser(zc, AIRPLAY_SERVICE_TYPE, listener)
 
-                    if self._speaker_ip in addresses:
-                        return info.port, name
+        self._airplay_zc = zc
+        self._airplay_listener = listener
+        self._airplay_browser = browser
 
-                return None, None
-            finally:
-                with contextlib.suppress(Exception):
-                    browser.cancel()
-                with contextlib.suppress(Exception):
-                    zc.close()
+        logger.info(
+            "airplay mdns listener started speaker_ip=%s service_type=%s",
+            self._speaker_ip,
+            AIRPLAY_SERVICE_TYPE,
+        )
 
-        port, name = await asyncio.to_thread(_resolve)
+    def _stop_airplay_mdns(self) -> None:
+        browser = self._airplay_browser
+        zc = self._airplay_zc
 
-        if port:
-            if port != self._airplay_port or name != self._airplay_service_name:
-                logger.info(
-                    "airplay service resolved speaker_ip=%s port=%s service=%s",
-                    self._speaker_ip,
-                    port,
-                    name or "unknown",
-                )
-            self._airplay_port = port
-            self._airplay_service_name = name
+        self._airplay_browser = None
+        self._airplay_listener = None
+        self._airplay_zc = None
 
-        return port, name
+        with contextlib.suppress(Exception):
+            if browser is not None:
+                browser.cancel()
+        with contextlib.suppress(Exception):
+            if zc is not None:
+                zc.close()
 
-    async def _fetch_airplay_flags(self, port: int) -> int | None:
-        url = f"http://{self._speaker_ip}:{port}/info"
+    def _airplay_mdns_event_from_thread(
+        self,
+        zc: Zeroconf,
+        type_: str,
+        name: str,
+        *,
+        removed: bool,
+    ) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
 
-        def _fetch() -> int | None:
-            with urllib.request.urlopen(url, timeout=AIRPLAY_INFO_TIMEOUT_S) as resp:
-                payload = resp.read()
-            data = plistlib.loads(payload)
-            value = data.get("statusFlags")
-            if isinstance(value, int):
-                return value
-            return None
-
-        return await asyncio.to_thread(_fetch)
-
-    async def _read_airplay_flags(self) -> int | None:
-        port = self._airplay_port
-
-        if not port:
-            port, _name = await self._resolve_airplay_service()
-            if not port:
-                logger.debug(
-                    "airplay service resolve failed speaker_ip=%s",
-                    self._speaker_ip,
-                )
-                return None
+        if removed:
+            loop.call_soon_threadsafe(self._handle_airplay_removed, name)
+            return
 
         try:
-            return await self._fetch_airplay_flags(port)
-        except Exception as exc:
-            logger.info(
-                "airplay endpoint refresh needed speaker_ip=%s old_port=%s error=%s",
-                self._speaker_ip,
-                port,
-                exc,
+            info = zc.get_service_info(
+                type_,
+                name,
+                timeout=AIRPLAY_MDNS_RESOLVE_TIMEOUT_MS,
             )
-            self._airplay_port = None
-            self._airplay_service_name = None
-
-        port, _name = await self._resolve_airplay_service()
-        if not port:
-            logger.debug(
-                "airplay service re-resolve failed speaker_ip=%s",
-                self._speaker_ip,
-            )
-            return None
-
-        try:
-            return await self._fetch_airplay_flags(port)
         except Exception:
             logger.debug(
-                "airplay /info read failed speaker_ip=%s port=%s",
+                "airplay mdns resolve failed speaker_ip=%s service=%s",
                 self._speaker_ip,
-                port,
+                name,
                 exc_info=True,
             )
+            return
+
+        if info is None:
+            return
+
+        addresses: list[str] = []
+        with contextlib.suppress(Exception):
+            addresses = list(info.parsed_addresses())
+
+        if self._speaker_ip not in addresses:
+            return
+
+        flags = self._parse_airplay_txt_flags(getattr(info, "properties", None))
+        device = self._clean_airplay_device_name(name)
+
+        loop.call_soon_threadsafe(
+            self._handle_airplay_update,
+            name,
+            device,
+            flags,
+            addresses,
+        )
+
+    def _handle_airplay_update(
+        self,
+        raw_name: str,
+        device: str | None,
+        flags: int | None,
+        addresses: list[str],
+    ) -> None:
+        if not self._enabled:
+            return
+
+        self._airplay_service_raw_name = raw_name
+
+        logger.debug(
+            "airplay mdns update speaker_ip=%s device=%s flags=%s addresses=%s",
+            self._speaker_ip,
+            device or "unknown",
+            None if flags is None else hex(flags),
+            addresses,
+        )
+
+        self._apply_airplay_snapshot(
+            airplay_flags=flags,
+            airplay_device=device,
+        )
+
+    def _handle_airplay_removed(self, raw_name: str) -> None:
+        if raw_name != self._airplay_service_raw_name:
+            return
+
+        logger.info(
+            "airplay mdns service removed speaker_ip=%s service=%s",
+            self._speaker_ip,
+            raw_name,
+        )
+
+        self._airplay_service_raw_name = None
+        self._apply_airplay_snapshot(
+            airplay_flags=None,
+            airplay_device=self._state.airplay_device,
+        )
+
+    @staticmethod
+    def _parse_airplay_txt_flags(properties: Any) -> int | None:
+        if not isinstance(properties, dict):
             return None
 
-    def _apply_status(self, *, airplay_flags: int | None, cast_status: dict[str, Any]) -> None:
+        raw = None
+        for key in (b"flags", "flags"):
+            if key in properties:
+                raw = properties[key]
+                break
+
+        if raw is None:
+            return None
+
+        if isinstance(raw, bytes):
+            raw = raw.decode("ascii", errors="ignore")
+
+        text = str(raw).strip()
+        if not text:
+            return None
+
+        try:
+            return int(text, 0)
+        except ValueError:
+            logger.debug("airplay mdns flags parse failed raw=%r", raw)
+            return None
+
+    @staticmethod
+    def _clean_airplay_device_name(name: Any) -> str | None:
+        text = SamsungSoundbar._norm_str(name)
+        if not text:
+            return None
+
+        suffix = "." + AIRPLAY_SERVICE_TYPE
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+        elif text.endswith(AIRPLAY_SERVICE_TYPE):
+            text = text[: -len(AIRPLAY_SERVICE_TYPE)]
+
+        text = text.rstrip(".").strip()
+
+        # AirPlay/DNS-SD instance names often use hyphens where the displayed
+        # device name uses spaces: Living-Room._airplay._tcp.local. -> Living Room.
+        text = text.replace("-", " ")
+
+        return text or None
+
+    # ---- State application ----
+
+    def _apply_state_updates(self, **updates: Any) -> bool:
+        changed = False
+
+        for key, value in updates.items():
+            if not hasattr(self._state, key):
+                raise AttributeError(f"unknown_state_field:{key}")
+
+            if getattr(self._state, key) != value:
+                setattr(self._state, key, value)
+                changed = True
+
+        if changed:
+            self._state.last_update_ts = _now()
+
+        return changed
+
+    def _apply_airplay_snapshot(
+        self,
+        *,
+        airplay_flags: int | None,
+        airplay_device: str | None,
+    ) -> None:
+        old_listen = bool(self._state.listen_active)
+
         listen_active = bool(
             isinstance(airplay_flags, int) and (airplay_flags & AIRPLAY_ACTIVE_BIT)
         )
+
+        source = self._derive_source(
+            listen_active=listen_active,
+            cast_app_id=self._state.cast_app_id,
+        )
+        playback_status = self._derive_playback_status(
+            listen_active=listen_active,
+            cast_app_id=self._state.cast_app_id,
+        )
+
+        changed = self._apply_state_updates(
+            airplay_flags=airplay_flags,
+            airplay_device=airplay_device,
+            listen_active=listen_active,
+            source=source,
+            playback_status=playback_status,
+            power_on=True if (listen_active or self._state.cast_app_id) else None,
+            raw_input_source=self._state.cast_app_id,
+            sound_from="airplay" if listen_active else ("google_cast" if self._state.cast_app_id else None),
+        )
+
+        if changed:
+            self._maybe_emit_listen_edge(old_listen)
+
+    def _apply_cast_snapshot(self, cast_status: dict[str, Any]) -> None:
+        old_listen = bool(self._state.listen_active)
 
         app_id = self._norm_str(cast_status.get("app_id"))
         app_name = self._norm_str(cast_status.get("app_name"))
@@ -543,25 +672,19 @@ class SamsungSoundbar:
         muted = cast_status.get("muted")
         muted_norm = bool(muted) if isinstance(muted, bool) else None
 
+        listen_active = bool(
+            isinstance(self._state.airplay_flags, int)
+            and (self._state.airplay_flags & AIRPLAY_ACTIVE_BIT)
+        )
+
         source = self._derive_source(
             listen_active=listen_active,
             cast_app_id=app_id,
         )
-
         playback_status = self._derive_playback_status(
             listen_active=listen_active,
             cast_app_id=app_id,
         )
-
-        self._state.reachable = True
-        self._state.connected = True
-        self._state.ready = True
-        self._state.last_error = None
-
-        self._state.friendly_name = friendly_name
-        self._state.cast_app_id = app_id
-        self._state.cast_app_name = app_name
-        self._state.airplay_flags = airplay_flags
 
         if friendly_name:
             self._cast_friendly_name = friendly_name
@@ -571,17 +694,37 @@ class SamsungSoundbar:
         if cast_uuid is not None:
             self._cast_uuid = cast_uuid
 
-        self._state.volume = volume_norm
-        self._state.muted = muted_norm
-        self._state.listen_active = listen_active
-        self._state.source = source
-        self._state.playback_status = playback_status
+        changed = self._apply_state_updates(
+            reachable=True,
+            connected=True,
+            ready=True,
+            last_error=None,
+            friendly_name=friendly_name,
+            cast_app_id=app_id,
+            cast_app_name=app_name,
+            volume=volume_norm,
+            muted=muted_norm,
+            listen_active=listen_active,
+            source=source,
+            playback_status=playback_status,
+            power_on=True if (listen_active or app_id) else None,
+            raw_input_source=app_id,
+            sound_from="airplay" if listen_active else ("google_cast" if app_id else None),
+        )
 
-        self._state.power_on = True if (listen_active or app_id) else None
-        self._state.raw_input_source = app_id
-        self._state.sound_from = "airplay" if listen_active else ("google_cast" if app_id else None)
+        if changed:
+            self._maybe_emit_listen_edge(old_listen)
 
-        self._state.last_update_ts = _now()
+    def _maybe_emit_listen_edge(self, old_listen: bool) -> None:
+        if not old_listen and self._state.listen_active:
+            self._emit_state_change(
+                "listen",
+                {
+                    "domain": "speaker",
+                    "source": self._state.source,
+                    "playback_status": self._state.playback_status,
+                },
+            )
 
     @staticmethod
     def _norm_str(value: Any) -> str | None:
