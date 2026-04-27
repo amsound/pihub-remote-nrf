@@ -769,9 +769,9 @@ class SequenceRunner:
 
         allowed = {
             ("speaker", "set_source"),
-            ("speaker", "stop_playback"),
             ("speaker", "play_listen_target"),
             ("speaker", "preset"),
+            ("speaker", "leave_native_multiroom_if_needed"),
         }
         return (step.domain, step.action) in allowed
 
