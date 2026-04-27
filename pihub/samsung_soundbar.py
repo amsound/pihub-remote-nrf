@@ -26,6 +26,7 @@ AIRPLAY_MDNS_RESOLVE_TIMEOUT_MS = 2000
 
 VOLUME_STEP = 0.01
 CAST_DISCOVERY_TIMEOUT_S = 5
+CAST_WATCHDOG_INTERVAL_S = 60.0
 
 
 def _now() -> float:
@@ -96,19 +97,17 @@ class SamsungSoundbar:
         self,
         *,
         speaker_ip: str,
-        poll_interval_s: float = 5.0,
         command_interval_s: float = 0.10,
         tv: Any = None,
         state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._speaker_ip = (speaker_ip or "").strip()
-        self._poll_interval_s = max(2.0, float(poll_interval_s))
         self._command_interval_s = max(0.05, float(command_interval_s))
 
         self._enabled = False
         self._task: asyncio.Task | None = None
         self._stop_evt = asyncio.Event()
-        self._poll_wake_evt = asyncio.Event()
+        self._watchdog_wake_evt = asyncio.Event()
         self._refresh_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
 
@@ -164,6 +163,11 @@ class SamsungSoundbar:
             "listen_active": s.listen_active,
             "last_update_ts": last_i,
             "update_age_s": age_i,
+            "watchdog_interval_s": int(CAST_WATCHDOG_INTERVAL_S),
+            "live_updates": {
+                "airplay": "mdns",
+                "cast": "status_listener",
+            },
             "airplay_device": s.airplay_device,
         }
 
@@ -177,7 +181,7 @@ class SamsungSoundbar:
         self._enabled = True
         self._loop = asyncio.get_running_loop()
         self._stop_evt.clear()
-        self._poll_wake_evt.clear()
+        self._watchdog_wake_evt.clear()
 
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_S)
@@ -194,7 +198,7 @@ class SamsungSoundbar:
     async def stop(self) -> None:
         self._enabled = False
         self._stop_evt.set()
-        self._poll_wake_evt.set()
+        self._watchdog_wake_evt.set()
 
         self._stop_airplay_mdns()
 
@@ -219,40 +223,12 @@ class SamsungSoundbar:
                 "errors": ["speaker_disabled"],
             }
 
-        if self._refresh_lock.locked():
-            self._poll_wake_evt.set()
-            return {
-                "ok": True,
-                "outcome": "refresh_coalesced",
-                "errors": [],
-            }
+        self._watchdog_wake_evt.set()
 
-        errors: list[str] = []
-
-        try:
-            async with self._refresh_lock:
-                self._poll_wake_evt.set()
-                await self._refresh_now()
-        except Exception as exc:
-            self._apply_state_updates(
-                reachable=False,
-                connected=False,
-                ready=False,
-                last_error=str(exc),
-            )
-            self._note_refresh_failure(exc)
-            errors.append(f"refresh_failed:{exc!r}")
-            return {
-                "ok": False,
-                "outcome": "refresh_failed",
-                "errors": errors,
-            }
-
-        self._note_refresh_success()
         return {
             "ok": True,
-            "outcome": "refresh_requested",
-            "errors": errors,
+            "outcome": "watchdog_woken",
+            "errors": [],
         }
 
     def _note_refresh_success(self) -> None:
@@ -286,16 +262,27 @@ class SamsungSoundbar:
         self._last_failure_key = failure_key
 
     async def _runner(self) -> None:
+        """Slow Cast watchdog.
+
+        Live state is event-driven:
+        - AirPlay source/activity comes from mDNS TXT updates.
+        - Cast volume/mute comes from pychromecast status callbacks.
+
+        This loop is only for recovery/reconcile:
+        - establish the initial Cast connection/status
+        - periodically check the Cast path still works
+        - reconnect if pychromecast silently drops
+        """
         while self._enabled and not self._stop_evt.is_set():
             try:
                 await self._refresh_now()
                 self._note_refresh_success()
 
-                self._poll_wake_evt.clear()
+                self._watchdog_wake_evt.clear()
                 try:
                     await asyncio.wait_for(
-                        self._poll_wake_evt.wait(),
-                        timeout=self._poll_interval_s,
+                        self._watchdog_wake_evt.wait(),
+                        timeout=CAST_WATCHDOG_INTERVAL_S,
                     )
                 except asyncio.TimeoutError:
                     pass
@@ -312,8 +299,12 @@ class SamsungSoundbar:
 
                 self._note_refresh_failure(exc)
 
+                self._watchdog_wake_evt.clear()
                 try:
-                    await asyncio.wait_for(self._stop_evt.wait(), timeout=self._poll_interval_s)
+                    await asyncio.wait_for(
+                        self._watchdog_wake_evt.wait(),
+                        timeout=CAST_WATCHDOG_INTERVAL_S,
+                    )
                 except asyncio.TimeoutError:
                     pass
 
@@ -548,9 +539,6 @@ class SamsungSoundbar:
             await self._ensure_cast()
             await asyncio.to_thread(fn, self._cast)
             self._last_send_monotonic = time.monotonic()
-
-        await asyncio.sleep(0.35)
-        await self.request_refresh()
 
     # ---- AirPlay mDNS ----
 
