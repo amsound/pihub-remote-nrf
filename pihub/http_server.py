@@ -1046,33 +1046,32 @@ pre.json {{
                 ],
                 "tv": [
                     (
-                        "TV",
+                        "Power",
                         lambda d: (
-                            "On" if (d.get("details") or {}).get("presence_on") is True
-                            else "Off" if (d.get("details") or {}).get("presence_on") is False
+                            "✅" if (d.get("details") or {}).get("presence_on") is True
+                            else "—" if (d.get("details") or {}).get("presence_on") is False
                             else "Unknown"
                         ),
                     ),
-                    ("Presence", lambda d: pretty_source((d.get("details") or {}).get("presence_source"))),
                     (
-                        "Last change",
+                        "WebSocket",
+                        lambda d: bool_mark(
+                            (d.get("details") or {}).get("ws_connected"),
+                            yes="✅",
+                            no="❌",
+                        ),
+                    ),
+                    (
+                        "Presence",
+                        lambda d: pretty_source((d.get("details") or {}).get("presence_source")),
+                    ),
+                    (
+                        "Last Change",
                         lambda d: (
                             self._fmt_age_compact((d.get("details") or {}).get("last_change_age_s"))
                             if (d.get("details") or {}).get("last_change_age_s") is not None
                             else None
                         ),
-                    ),
-                    (
-                        "WebSocket",
-                        lambda d: (
-                            bool_mark((d.get("details") or {}).get("ws_connected"))
-                            if (d.get("details") or {}).get("presence_on") is True and d.get("status") != "ok"
-                            else None
-                        ),
-                    ),
-                    (
-                        "Token",
-                        lambda d: "—" if (d.get("details") or {}).get("token_present") is False else None
                     ),
                 ],
                 "speaker": [
@@ -1081,7 +1080,7 @@ pre.json {{
                     ("Volume", lambda d: fmt_volume((d.get("details") or {}).get("volume_pct"))),
                     ("Muted", lambda d: "✅" if (d.get("details") or {}).get("muted") else "—"),
                     (
-                        "Last update",
+                        "Last change",
                         lambda d: (
                             self._fmt_age_compact((d.get("details") or {}).get("update_age_s"))
                             if (d.get("details") or {}).get("update_age_s") is not None
