@@ -371,18 +371,29 @@ class SamsungSoundbar:
             await asyncio.to_thread(_cleanup)
 
     def _connect_cast_blocking(self):
-        # Preferred reconnect path: use cached stable identifiers with the
-        # current public helper, while still seeding discovery with known_hosts.
+        # Configured IP is authoritative. pychromecast known_hosts helps discovery,
+        # but it does not guarantee returned casts are limited to that host.
+        # Always filter candidates by host before accepting one.
+
         if self._cast_uuid is not None:
             casts, browser = pychromecast.get_listed_chromecasts(
                 uuids=[self._cast_uuid],
                 known_hosts=[self._speaker_ip],
                 discovery_timeout=CAST_DISCOVERY_TIMEOUT_S,
             )
-            if casts:
-                cast = casts[0]
+            cast = self._select_configured_cast(casts)
+            if cast is not None:
                 cast.wait()
                 return cast, browser
+
+            with contextlib.suppress(Exception):
+                browser.stop_discovery()
+
+            logger.warning(
+                "cached cast uuid did not match configured speaker_ip=%s; clearing cached uuid",
+                self._speaker_ip,
+            )
+            self._cast_uuid = None
 
         if self._cast_friendly_name:
             casts, browser = pychromecast.get_listed_chromecasts(
@@ -390,18 +401,44 @@ class SamsungSoundbar:
                 known_hosts=[self._speaker_ip],
                 discovery_timeout=CAST_DISCOVERY_TIMEOUT_S,
             )
-            if casts:
-                cast = casts[0]
+            cast = self._select_configured_cast(casts)
+            if cast is not None:
                 cast.wait()
                 return cast, browser
 
-        # Bootstrap fallback: host-directed discovery path. Keep this because
-        # config is IP-based and it works across the local/VLAN setup.
-        casts, browser = pychromecast.get_chromecasts(known_hosts=[self._speaker_ip])
-        if not casts:
-            raise RuntimeError(f"cast_not_found:{self._speaker_ip}")
+            with contextlib.suppress(Exception):
+                browser.stop_discovery()
 
-        cast = casts[0]
+            logger.warning(
+                "cached cast friendly_name did not match configured speaker_ip=%s cached_name=%s; clearing cached name",
+                self._speaker_ip,
+                self._cast_friendly_name,
+            )
+            self._cast_friendly_name = None
+
+        casts, browser = pychromecast.get_chromecasts(known_hosts=[self._speaker_ip])
+        cast = self._select_configured_cast(casts)
+        if cast is None:
+            with contextlib.suppress(Exception):
+                browser.stop_discovery()
+
+            names = []
+            for candidate in casts:
+                cast_info = getattr(candidate, "cast_info", None)
+                names.append(
+                    {
+                        "host": self._cast_host(candidate),
+                        "friendly_name": (
+                            getattr(cast_info, "friendly_name", None)
+                            or getattr(candidate, "name", None)
+                        ),
+                    }
+                )
+
+            raise RuntimeError(
+                f"cast_not_found_for_configured_ip:{self._speaker_ip}:candidates={names!r}"
+            )
+
         cast.wait()
 
         self._cast_uuid = getattr(cast, "uuid", None)
@@ -411,6 +448,39 @@ class SamsungSoundbar:
         )
 
         return cast, browser
+    
+    @staticmethod
+    def _cast_host(cast: Any) -> str | None:
+        cast_info = getattr(cast, "cast_info", None)
+
+        for value in (
+            getattr(cast_info, "host", None),
+            getattr(cast, "host", None),
+            getattr(getattr(cast, "socket_client", None), "host", None),
+        ):
+            text = SamsungSoundbar._norm_str(value)
+            if text:
+                return text
+
+        return None
+
+    def _select_configured_cast(self, casts: list[Any]) -> Any | None:
+        for cast in casts:
+            host = self._cast_host(cast)
+            if host == self._speaker_ip:
+                return cast
+
+        for cast in casts:
+            cast_info = getattr(cast, "cast_info", None)
+            logger.debug(
+                "ignoring cast candidate speaker_ip=%s candidate_host=%s friendly_name=%s uuid=%s",
+                self._speaker_ip,
+                self._cast_host(cast) or "unknown",
+                getattr(cast_info, "friendly_name", None) or getattr(cast, "name", None) or "unknown",
+                getattr(cast, "uuid", None) or "unknown",
+            )
+
+        return None
 
     async def _read_cast_status(self) -> dict[str, Any]:
         if self._cast is None:
