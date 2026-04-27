@@ -26,6 +26,7 @@ class RuntimeEngine:
         settings: Any = None,
         history: HistoryStore | None = None,
         initial_mode: str = "power_off",
+        speaker_backend: str | None = None,
     ) -> None:
         self._dispatcher = dispatcher
         self._mode = initial_mode
@@ -38,7 +39,14 @@ class RuntimeEngine:
         self._startup_reconciled = False
         self._lock = asyncio.Lock()
         self._active_sequence_task: asyncio.Task | None = None
-        self._flows = FlowRunner(runtime=self, tv=tv, speaker=speaker, ble=ble, settings=settings)
+        self._flows = FlowRunner(
+            runtime=self,
+            tv=tv,
+            speaker=speaker,
+            ble=ble,
+            settings=settings,
+            speaker_backend=speaker_backend,
+        )
         self._history = history
 
     @property
