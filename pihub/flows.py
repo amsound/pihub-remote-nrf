@@ -85,285 +85,195 @@ class SequenceRunner:
         self._ble = ble
         self._settings = settings
         self._predicates: dict[str, Callable[[dict[str, Any]], bool]] = {
-            "tv_was_on": lambda snap: bool(snap.get("tv_was_on")),
-            "tv_was_off": lambda snap: bool(snap.get("tv_was_off")),
-            "speaker_source_listen": lambda snap: str(snap.get("speaker_source") or "") in LISTEN_SOURCES,
-            "speaker_multiroom_guest_active": lambda snap: bool(snap.get("speaker_multiroom_guest_active")),
-            "speaker_multiroom_host_active": lambda snap: bool(snap.get("speaker_multiroom_host_active")),
-            "speaker_listen_alone": lambda snap: (
+            "tv_is_on": lambda snap: bool(snap.get("tv_is_on")),
+            "tv_is_off": lambda snap: bool(snap.get("tv_is_off")),
+
+            "speaker_is_on_listen_source": lambda snap: (
                 str(snap.get("speaker_source") or "") in LISTEN_SOURCES
-                and not bool(snap.get("speaker_multiroom_guest_active"))
-                and not bool(snap.get("speaker_multiroom_host_active"))
+            ),
+            "speaker_is_in_multiroom": lambda snap: (
+                str(snap.get("speaker_source") or "") in LISTEN_SOURCES
+                and (
+                    bool(snap.get("speaker_is_multiroom_guest"))
+                    or bool(snap.get("speaker_is_multiroom_host"))
+                )
+            ),
+            "speaker_should_stop": lambda snap: (
+                str(snap.get("speaker_source") or "") in LISTEN_SOURCES
+                and not bool(snap.get("speaker_is_multiroom_guest"))
             ),
         }
+
         self._defs: dict[str, SequenceDefinition] = {
             "listen": SequenceDefinition(
                 name="listen",
                 target_mode="listen",
                 steps=(
                     SequenceStep(
-                        "send_ble_macro",
-                        "ble",
-                        "return_home",
-                        when="tv_was_on",
-                    ),
-                    SequenceStep(
-                        "delay_2.5s",
-                        "system",
-                        "sleep",
-                        {"seconds": 2.5},
-                        when="tv_was_on",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "tv_off",
+                        "tv_power_off",
                         "tv",
                         "power_off",
-                        when="tv_was_on",
+                        when="tv_is_on",
                         timeout_s=8.0,
                     ),
                     SequenceStep(
-                        "change_volume",
+                        "apple_tv_return_home",
+                        "ble",
+                        "return_home",
+                        when="tv_is_on",
+                    ),
+                    SequenceStep(
+                        "speaker_listen_volume",
                         "speaker",
                         "set_volume",
                         {"setting": "listen_volume_pct"},
                     ),
                     SequenceStep(
-                        "play_radio",
+                        "speaker_play_listen_target",
                         "speaker",
                         "play_listen_target",
                         {},
+                        mode="await",
                     ),
                 ),
             ),
+
             "watch": SequenceDefinition(
                 name="watch",
                 target_mode="watch",
                 steps=(
+                    *self._speaker_stop_steps(),
+
                     SequenceStep(
-                        "stop_host",
-                        "speaker",
-                        "stop_playback",
-                        when="speaker_multiroom_host_active",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "leave_group_guest",
-                        "speaker",
-                        "leave_native_multiroom_if_needed",
-                        when="speaker_multiroom_guest_active",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "delay_after_leave_group_guest",
-                        "system",
-                        "sleep",
-                        {"seconds": 1.0},
-                        when="speaker_multiroom_guest_active",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "leave_group_host",
-                        "speaker",
-                        "leave_native_multiroom_if_needed",
-                        when="speaker_multiroom_host_active",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "delay_after_leave_group_host",
-                        "system",
-                        "sleep",
-                        {"seconds": 1.0},
-                        when="speaker_multiroom_host_active",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "stop_alone",
-                        "speaker",
-                        "stop_playback",
-                        when="speaker_listen_alone",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "tv_on",
+                        "tv_power_on",
                         "tv",
                         "power_on",
-                        when="tv_was_off",
+                        when="tv_is_off",
                         timeout_s=8.0,
                     ),
                     SequenceStep(
-                        "send_ble_macro",
+                        "apple_tv_power_on",
                         "ble",
                         "power_on",
-                        when="tv_was_off",
+                        when="tv_is_off",
                     ),
                     SequenceStep(
-                        "delay_1s",
-                        "system",
-                        "sleep",
-                        {"seconds": 1.0},
-                        when="tv_was_off",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "change_volume",
+                        "speaker_watch_volume",
                         "speaker",
                         "set_volume",
                         {"setting": "watch_volume_pct"},
                     ),
                     SequenceStep(
-                        "change_source",
+                        "speaker_watch_source",
                         "speaker",
                         "set_source",
                         {"source": SPEAKER_WATCH_SOURCE},
+                        mode="await",
                     ),
                 ),
             ),
+
             "listen_signal": SequenceDefinition(
                 name="listen_signal",
                 target_mode="listen",
                 steps=(
                     SequenceStep(
-                        "send_ble_macro",
-                        "ble",
-                        "return_home",
-                        when="tv_was_on",
-                    ),
-                    SequenceStep(
-                        "delay_2.5s",
-                        "system",
-                        "sleep",
-                        {"seconds": 2.5},
-                        when="tv_was_on",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "tv_off",
+                        "tv_power_off",
                         "tv",
                         "power_off",
-                        when="tv_was_on",
+                        when="tv_is_on",
                         timeout_s=8.0,
+                    ),
+                    SequenceStep(
+                        "apple_tv_return_home",
+                        "ble",
+                        "return_home",
+                        when="tv_is_on",
+                        mode="await",
                     ),
                 ),
             ),
+
             "watch_signal": SequenceDefinition(
                 name="watch_signal",
                 target_mode="watch",
                 steps=(
                     SequenceStep(
-                        "delay_2.5s",
-                        "system",
-                        "sleep",
-                        {"seconds": 2.5},
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "change_volume",
+                        "speaker_watch_volume",
                         "speaker",
                         "set_volume",
                         {"setting": "watch_volume_pct"},
                     ),
                     SequenceStep(
-                        "change_source",
+                        "speaker_watch_source",
                         "speaker",
                         "set_source",
                         {"source": SPEAKER_WATCH_SOURCE},
+                        mode="await",
                     ),
                 ),
             ),
+
             "power_off": SequenceDefinition(
                 name="power_off",
                 target_mode="power_off",
                 steps=(
                     SequenceStep(
-                        "send_ble_macro",
-                        "ble",
-                        "return_home",
-                        when="tv_was_on",
-                    ),
-                    SequenceStep(
-                        "delay_2.5s",
-                        "system",
-                        "sleep",
-                        {"seconds": 2.5},
-                        when="tv_was_on",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "tv_off",
+                        "tv_power_off",
                         "tv",
                         "power_off",
-                        when="tv_was_on",
+                        when="tv_is_on",
                         timeout_s=8.0,
                     ),
                     SequenceStep(
-                        "stop_host",
-                        "speaker",
-                        "stop_playback",
-                        when="speaker_multiroom_host_active",
-                        mode="await",
+                        "apple_tv_return_home",
+                        "ble",
+                        "return_home",
+                        when="tv_is_on",
                     ),
-                    SequenceStep(
-                        "leave_group_guest",
-                        "speaker",
-                        "leave_native_multiroom_if_needed",
-                        when="speaker_multiroom_guest_active",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "delay_after_leave_group_guest",
-                        "system",
-                        "sleep",
-                        {"seconds": 1.0},
-                        when="speaker_multiroom_guest_active",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "leave_group_host",
-                        "speaker",
-                        "leave_native_multiroom_if_needed",
-                        when="speaker_multiroom_host_active",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "delay_after_leave_group_host",
-                        "system",
-                        "sleep",
-                        {"seconds": 1.0},
-                        when="speaker_multiroom_host_active",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "stop_alone",
-                        "speaker",
-                        "stop_playback",
-                        when="speaker_listen_alone",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "speaker_off_guest",
-                        "speaker",
-                        "power_off",
-                        when="speaker_multiroom_guest_active",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "speaker_off_host",
-                        "speaker",
-                        "power_off",
-                        when="speaker_multiroom_host_active",
-                        mode="await",
-                    ),
-                    SequenceStep(
-                        "speaker_off_alone",
-                        "speaker",
-                        "power_off",
-                        when="speaker_listen_alone",
-                        mode="await",
-                    ),
+
+                    *self._speaker_stop_steps(),
+                    *self._speaker_power_off_steps(),
                 ),
             ),
         }
+
+    def _speaker_stop_steps(self) -> tuple[SequenceStep, ...]:
+        return (
+            SequenceStep(
+                "speaker_stop",
+                "speaker",
+                "stop_playback",
+                when="speaker_should_stop",
+                mode="await",
+            ),
+            SequenceStep(
+                "speaker_leave_group",
+                "speaker",
+                "leave_native_multiroom_if_needed",
+                when="speaker_is_in_multiroom",
+                mode="await",
+            ),
+            SequenceStep(
+                "speaker_settle_after_group",
+                "system",
+                "sleep",
+                {"seconds": 1.0},
+                when="speaker_is_in_multiroom",
+                mode="await",
+            ),
+        )
+
+    def _speaker_power_off_steps(self) -> tuple[SequenceStep, ...]:
+        return (
+            SequenceStep(
+                "speaker_power_off",
+                "speaker",
+                "power_off",
+                when="speaker_is_on_listen_source",
+                mode="await",
+            ),
+        )
 
     def target_mode(self, name: str) -> str | None:
         seq = self._defs.get((name or "").strip())
@@ -512,17 +422,17 @@ class SequenceRunner:
                 speaker_snapshot = {}
 
         speaker_source = str(speaker_snapshot.get("source") or "").strip().lower()
-        tv_was_on = self._tv_is_on()
+        tv_is_on = self._tv_is_on()
 
         return {
             "current_mode": self._runtime.mode,
-            "tv_was_on": tv_was_on,
-            "tv_was_off": not tv_was_on,
+            "tv_is_on": tv_is_on,
+            "tv_is_off": not tv_is_on,
             "speaker_source": speaker_source,
-            "speaker_multiroom_guest_active": bool(
+            "speaker_is_multiroom_guest": bool(
                 speaker_snapshot.get("multiroom_guest_active", False)
             ),
-            "speaker_multiroom_host_active": bool(
+            "speaker_is_multiroom_host": bool(
                 speaker_snapshot.get("multiroom_host_active", False)
             ),
         }
@@ -936,9 +846,11 @@ class SequenceRunner:
     def _format_snapshot(snapshot: dict[str, Any]) -> str:
         keys = [
             "current_mode",
-            "tv_was_on",
-            "tv_was_off",
+            "tv_is_on",
+            "tv_is_off",
             "speaker_source",
+            "speaker_is_multiroom_guest",
+            "speaker_is_multiroom_host",
         ]
         parts = [f"{k}={snapshot.get(k)!r}" for k in keys if k in snapshot]
         return " ".join(parts)
