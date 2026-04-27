@@ -78,6 +78,7 @@ class SequenceRunner:
         speaker: Any = None,
         ble: Any = None,
         settings: Any = None,
+        speaker_backend: str | None = None,
     ) -> None:
         self._runtime = runtime
         self._tv = tv
@@ -104,7 +105,14 @@ class SequenceRunner:
             ),
         }
 
-        self._defs: dict[str, SequenceDefinition] = {
+        self._speaker_backend = (speaker_backend or self._speaker_backend_name()).strip().lower()
+        if self._speaker_backend == "samsung_soundbar":
+            self._defs = self._build_samsung_soundbar_flows()
+        else:
+            self._defs = self._build_audiopro_flows()
+
+    def _build_audiopro_flows(self) -> dict[str, SequenceDefinition]:
+        return {
             "listen": SequenceDefinition(
                 name="listen",
                 target_mode="listen",
@@ -234,6 +242,94 @@ class SequenceRunner:
 
                     *self._speaker_stop_steps(),
                     *self._speaker_power_off_steps(),
+                ),
+            ),
+        }
+
+    def _build_samsung_soundbar_flows(self) -> dict[str, SequenceDefinition]:
+        return {
+            "listen": SequenceDefinition(
+                name="listen",
+                target_mode="listen",
+                steps=(
+                    SequenceStep(
+                        "apple_tv_power_off",
+                        "ble",
+                        "power_off",
+                        when="tv_is_on",
+                    ),
+                    SequenceStep(
+                        "speaker_listen_volume",
+                        "speaker",
+                        "set_volume",
+                        {"setting": "listen_volume_pct"},
+                    ),
+                ),
+            ),
+
+            "watch": SequenceDefinition(
+                name="watch",
+                target_mode="watch",
+                steps=(
+                    SequenceStep(
+                        "apple_tv_power_on",
+                        "ble",
+                        "power_on",
+                        when="tv_is_off",
+                    ),
+                    SequenceStep(
+                        "speaker_watch_volume",
+                        "speaker",
+                        "set_volume",
+                        {"setting": "watch_volume_pct"},
+                    ),
+                ),
+            ),
+
+            "listen_signal": SequenceDefinition(
+                name="listen_signal",
+                target_mode="listen",
+                steps=(
+                    SequenceStep(
+                        "apple_tv_power_off",
+                        "ble",
+                        "power_off",
+                        when="tv_is_on",
+                        mode="await",
+                    ),
+                ),
+            ),
+
+            "watch_signal": SequenceDefinition(
+                name="watch_signal",
+                target_mode="watch",
+                steps=(
+                    SequenceStep(
+                        "speaker_watch_volume",
+                        "speaker",
+                        "set_volume",
+                        {"setting": "watch_volume_pct"},
+                    ),
+                ),
+            ),
+
+            "power_off": SequenceDefinition(
+                name="power_off",
+                target_mode="power_off",
+                steps=(
+                    SequenceStep(
+                        "apple_tv_power_off",
+                        "ble",
+                        "power_off",
+                        when="tv_is_on",
+                    ),
+                    SequenceStep(
+                        "speaker_stop",
+                        "speaker",
+                        "stop_playback",
+                        when="speaker_is_on_listen_source",
+                        mode="await",
+                    ),
                 ),
             ),
         }
@@ -814,6 +910,11 @@ class SequenceRunner:
             await self._ble.power_on()
             return
 
+        if step.domain == "ble" and step.action == "power_off":
+            self._require_ble_ready(step=step)
+            await self._ble.power_off()
+            return
+
         if step.domain == "tv" and step.action == "power_on":
             self._require_tv_flow_ready(step=step)
             ok = await self._tv.power_on()
@@ -960,6 +1061,7 @@ class FlowRunner:
         speaker: Any = None,
         ble: Any = None,
         settings: Any = None,
+        speaker_backend: str | None = None,
     ) -> None:
         self._sequences = SequenceRunner(
             runtime=runtime,
@@ -967,6 +1069,7 @@ class FlowRunner:
             speaker=speaker,
             ble=ble,
             settings=settings,
+            speaker_backend=speaker_backend,
         )
 
     def target_mode(self, name: str) -> str | None:

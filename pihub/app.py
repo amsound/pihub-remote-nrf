@@ -176,6 +176,7 @@ async def main() -> None:
         settings=settings,
         history=history,
         initial_mode="power_off",
+        speaker_backend=cfg.speaker_backend,
     )
 
     async def _on_domain_state_change(name: str, payload: dict[str, Any]) -> None:
