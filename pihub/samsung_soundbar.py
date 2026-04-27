@@ -163,7 +163,6 @@ class SamsungSoundbar:
             "listen_active": s.listen_active,
             "last_update_ts": last_i,
             "update_age_s": age_i,
-            "watchdog_interval_s": int(CAST_WATCHDOG_INTERVAL_S),
             "airplay_device": s.airplay_device,
         }
 
