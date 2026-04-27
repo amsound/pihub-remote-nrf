@@ -1078,7 +1078,7 @@ pre.json {{
                     ("Backend", lambda d: pretty_text((d.get("details") or {}).get("backend"))),
                     ("Input", lambda d: pretty_source((d.get("details") or {}).get("source"))),
                     ("Volume", lambda d: fmt_volume((d.get("details") or {}).get("volume_pct"))),
-                    ("Muted", lambda d: "✅" if (d.get("details") or {}).get("muted") else "—"),
+                    ("Muted", lambda d: "✅" if (d.get("details") or {}).get("muted") else None),
                     (
                         "Playback",
                         lambda d: (
