@@ -1355,7 +1355,7 @@ pre.json {{
         settings = self._settings.snapshot()
 
         backend = self._speaker_backend
-        is_soundbar = backend in {"samsung_soundbar", "samsung_soundbar_local"}
+        is_soundbar = backend in {"samsung_soundbar"}
 
         def selected(name: str, value: str) -> str:
             return ' selected="selected"' if str(settings.get(name)) == value else ""
@@ -2720,7 +2720,7 @@ button:hover {{
       }}
 
       function isSoundbarBackend() {{
-        return currentBackend === "samsung_soundbar" || currentBackend === "samsung_soundbar_local";
+        return currentBackend === "samsung_soundbar";
       }}
 
       function applyNumberPadVisibility() {{

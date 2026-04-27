@@ -69,8 +69,8 @@ services:
 
       # Speaker backend selection:
       # audiopro
-      # samsung_soundbar_local
-      SPEAKER_BACKEND: "samsung_soundbar_local"
+      # samsung_soundbar
+      SPEAKER_BACKEND: "samsung_soundbar"
       SPEAKER_IP: "192.168.xx.xx"
 
       # DEBUG: 1           # Verbose Logging
@@ -121,8 +121,8 @@ docker compose up -d
 | `TV_TOKEN_FILE` | Samsung TV token path | `/data/samsungtv-token.txt` |
 | `TV_NAME` | Name presented to the Samsung TV | `PiHub Remote` |
 | `TV_ENABLED` | enable Samsung TV domain | default `true` |
-| `SPEAKER_BACKEND` | speaker backend selection | `audiopro` or `samsung_soundbar_local`; default `audiopro` |
-| `SPEAKER_IP` | speaker IP address | required for `audiopro` and `samsung_soundbar_local` |
+| `SPEAKER_BACKEND` | speaker backend selection | `audiopro` or `samsung_soundbar`; default `audiopro` |
+| `SPEAKER_IP` | speaker IP address | required for `audiopro` and `samsung_soundbar` |
 | `SPEAKER_ENABLED` | enable speaker domain | default `true` |
 | `DEBUG` | Debug knob | defaults to INFO/WARN |
 
@@ -131,7 +131,7 @@ Keymap is bundled with the application and loaded from packaged assets in produc
 ## 🔊 Local Samsung soundbar backend
 
 For:
-SPEAKER_BACKEND=samsung_soundbar_local
+SPEAKER_BACKEND=samsung_soundbar
 
 * PiHub uses two local surfaces on the soundbar:
 	*	Google Cast for:
