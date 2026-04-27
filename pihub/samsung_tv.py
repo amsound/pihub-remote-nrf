@@ -226,10 +226,22 @@ class TvWsClient:
         return base
 
     async def _rx_loop(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        close_reason = "rx_loop_ended"
         try:
             async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.CLOSE:
+                    close_reason = "ws_close"
+                    break
+                if msg.type == aiohttp.WSMsgType.CLOSED:
+                    close_reason = "ws_closed"
+                    break
+                if msg.type == aiohttp.WSMsgType.ERROR:
+                    close_reason = "ws_error"
+                    break
+
                 if msg.type != aiohttp.WSMsgType.TEXT:
                     continue
+
                 try:
                     payload = json.loads(msg.data)
                 except Exception:
@@ -246,18 +258,27 @@ class TvWsClient:
                     tok = data.get("token")
                     if isinstance(tok, str) and tok.strip():
                         self._write_token(tok)
+
         except asyncio.CancelledError:
+            close_reason = "cancelled"
             raise
         except Exception as exc:
+            close_reason = f"rx_exception:{exc!r}"
             logger.debug("rx loop ended: %r", exc)
         finally:
             async with self._lock:
+                # Only clear/log if this RX loop belongs to the current websocket.
                 if self._ws is ws:
                     self._ws = None
                     self.state.connected = False
+
                     if self._logged_connected is True:
                         self._logged_connected = False
-                        logger.debug("tv websocket disconnected")
+                        logger.info(
+                            "websocket disconnected tv_ip=%s reason=%s",
+                            self._tv_ip,
+                            close_reason,
+                        )
 
     async def connect(self, session: aiohttp.ClientSession, *, timeout_s: float = 2.0) -> bool:
         async with self._lock:
@@ -278,7 +299,7 @@ class TvWsClient:
 
                 if self._logged_connected is None or self._logged_connected is False:
                     self._logged_connected = True
-                    logger.debug("tv websocket connected")
+                    logger.info("websocket connected tv_ip=%s", self._tv_ip)
 
                 if self._rx_task and not self._rx_task.done():
                     self._rx_task.cancel()
@@ -291,7 +312,11 @@ class TvWsClient:
                 self.state.last_error = repr(exc)
                 if self._logged_connected is True:
                     self._logged_connected = False
-                    logger.debug("tv websocket disconnected")
+                    logger.info(
+                        "websocket disconnected tv_ip=%s reason=connect_failed error=%r",
+                        self._tv_ip,
+                        exc,
+                    )
                 logger.debug("connect failed: %r", exc)
                 self._ws = None
                 return False
@@ -307,7 +332,7 @@ class TvWsClient:
 
             if self._logged_connected is True:
                 self._logged_connected = False
-                logger.debug("tv websocket disconnected")
+                logger.info("websocket disconnected tv_ip=%s reason=local_close", self._tv_ip)
 
         if ws and not ws.closed:
             try:
