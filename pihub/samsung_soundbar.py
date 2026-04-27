@@ -51,6 +51,18 @@ class _AirPlayServiceListener(ServiceListener):
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         self._owner._airplay_mdns_event_from_thread(zc, type_, name, removed=True)
 
+class _CastStatusListener:
+    """Receives pychromecast receiver status updates.
+
+    pychromecast invokes this from its own thread. Forward into the asyncio loop.
+    """
+
+    def __init__(self, owner: "SamsungSoundbar") -> None:
+        self._owner = owner
+
+    def new_cast_status(self, status: Any) -> None:
+        self._owner._cast_status_event_from_thread(status)
+
 
 @dataclass
 class SamsungSoundbarState:
@@ -109,6 +121,7 @@ class SamsungSoundbar:
         self._cast_browser = None
         self._cast_uuid = None
         self._cast_friendly_name = None
+        self._cast_status_listener: _CastStatusListener | None = None
 
         self._airplay_zc: Zeroconf | None = None
         self._airplay_browser: ServiceBrowser | None = None
@@ -317,6 +330,12 @@ class SamsungSoundbar:
         self._cast = cast
         self._cast_browser = browser
 
+        if self._cast_status_listener is None:
+            self._cast_status_listener = _CastStatusListener(self)
+
+        with contextlib.suppress(Exception):
+            cast.register_status_listener(self._cast_status_listener)
+
         if not self._cast_connected_logged:
             cast_info = getattr(cast, "cast_info", None)
             friendly_name = getattr(cast_info, "friendly_name", None) or getattr(cast, "name", None)
@@ -330,12 +349,17 @@ class SamsungSoundbar:
     async def _disconnect_cast(self) -> None:
         cast = self._cast
         browser = self._cast_browser
+        listener = self._cast_status_listener
+
         self._cast = None
         self._cast_browser = None
         self._cast_connected_logged = False
         self._cast_ready_logged = False
 
         def _cleanup() -> None:
+            with contextlib.suppress(Exception):
+                if cast is not None and listener is not None:
+                    cast.unregister_status_listener(listener)
             with contextlib.suppress(Exception):
                 if browser is not None:
                     browser.stop_discovery()
@@ -413,6 +437,36 @@ class SamsungSoundbar:
         except Exception:
             await self._disconnect_cast()
             raise
+
+    def _cast_status_event_from_thread(self, status: Any) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+
+        loop.call_soon_threadsafe(self._handle_cast_status_event, status)
+
+
+    def _handle_cast_status_event(self, status: Any) -> None:
+        if not self._enabled:
+            return
+
+        cast = self._cast
+        cast_info = getattr(cast, "cast_info", None) if cast is not None else None
+
+        cast_status = {
+            "friendly_name": (
+                getattr(cast_info, "friendly_name", None)
+                or getattr(cast, "name", None)
+                if cast is not None
+                else None
+            ),
+            "app_id": getattr(cast, "app_id", None) if cast is not None else None,
+            "app_name": getattr(cast, "app_display_name", None) if cast is not None else None,
+            "volume": getattr(status, "volume_level", None),
+            "muted": getattr(status, "volume_muted", None),
+        }
+
+        self._apply_cast_snapshot(cast_status)
 
     async def _cast_command(self, fn) -> None:
         async with self._send_lock:
