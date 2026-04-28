@@ -45,6 +45,11 @@ class Config:
     tv_token_file: str
     tv_name: str
 
+    # Apple TV AirPlay session detector
+    apple_tv_ip: str
+    apple_tv_airplay_enabled: bool
+    apple_tv_airplay_debounce_s: float
+
     # Speaker backend selection
     speaker_backend: str
 
@@ -52,11 +57,6 @@ class Config:
     speaker_ip: str
     # Audio Pro peer discovery / multiroom support
     known_speaker_ips: list[str]
-
-    # Samsung SmartThings soundbar
-    smartthings_device_id: str
-    smartthings_token_file: str
-    smartthings_poll_interval_s: int
 
     # Domain toggles
     tv_enabled: bool
@@ -81,6 +81,15 @@ class Config:
         tv_token_file = (os.getenv("TV_TOKEN_FILE", "/data/samsungtv-token.txt") or "").strip()
         tv_name = (os.getenv("TV_NAME", "PiHub Remote") or "").strip()
 
+        apple_tv_ip = (os.getenv("APPLE_TV_IP", "") or "").strip()
+        apple_tv_airplay_enabled = _env_bool("APPLE_TV_AIRPLAY_ENABLED", True)
+        try:
+            apple_tv_airplay_debounce_s = float(
+                os.getenv("APPLE_TV_AIRPLAY_DEBOUNCE_S", "2.5")
+            )
+        except ValueError:
+            apple_tv_airplay_debounce_s = 2.5
+
         speaker_backend = (os.getenv("SPEAKER_BACKEND", "audiopro") or "audiopro").strip().lower()
 
         speaker_ip = (os.getenv("SPEAKER_IP", "") or "").strip()
@@ -88,16 +97,6 @@ class Config:
             "KNOWN_SPEAKER_IPS",
             ["192.168.70.43", "192.168.70.45", "192.168.70.46"],
         )
-
-        smartthings_device_id = (os.getenv("SMARTTHINGS_DEVICE_ID", "") or "").strip()
-        smartthings_token_file = (
-            os.getenv("SMARTTHINGS_TOKEN_FILE", "/data/smartthings-token.json")
-            or "/data/smartthings-token.json"
-        ).strip()
-        try:
-            smartthings_poll_interval_s = int(os.getenv("SMARTTHINGS_POLL_INTERVAL_S", "30"))
-        except ValueError:
-            smartthings_poll_interval_s = 30
 
         return Config(
             tv_enabled=tv_enabled,
@@ -110,10 +109,10 @@ class Config:
             tv_mac=tv_mac,
             tv_token_file=tv_token_file,
             tv_name=tv_name,
+            apple_tv_ip=apple_tv_ip,
+            apple_tv_airplay_enabled=apple_tv_airplay_enabled,
+            apple_tv_airplay_debounce_s=apple_tv_airplay_debounce_s,
             speaker_backend=speaker_backend,
             speaker_ip=speaker_ip,
             known_speaker_ips=known_speaker_ips,
-            smartthings_device_id=smartthings_device_id,
-            smartthings_token_file=smartthings_token_file,
-            smartthings_poll_interval_s=smartthings_poll_interval_s,
         )

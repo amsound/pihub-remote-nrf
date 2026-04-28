@@ -26,6 +26,7 @@ from .ble_dongle import BleDongleLink
 from .samsung_tv import TvController, ssdp_listener, start_discovery_tasks, stop_discovery_tasks
 from .audiopro_speaker import AudioProSpeaker
 from .samsung_soundbar import SamsungSoundbar
+from .apple_tv_airplay import AppleTvAirPlay
 from .speaker import SpeakerLike
 from .settings import SettingsStore
 from .history import HistoryStore
@@ -164,6 +165,20 @@ async def main() -> None:
         await speaker.start()
         cleanup_hooks.append(("speaker", speaker.stop))
 
+    apple_tv_airplay: AppleTvAirPlay | None = None
+
+    if (
+        cfg.speaker_backend == "audiopro"
+        and cfg.apple_tv_airplay_enabled
+        and cfg.apple_tv_ip
+    ):
+        apple_tv_airplay = AppleTvAirPlay(
+            apple_tv_ip=cfg.apple_tv_ip,
+            debounce_s=cfg.apple_tv_airplay_debounce_s,
+        )
+        await apple_tv_airplay.start()
+        cleanup_hooks.append(("apple_tv_airplay", apple_tv_airplay.stop))
+
     ble = BleDongleLink(
         serial_port=cfg.ble_serial_device,
         baud=cfg.ble_serial_baud,
@@ -189,11 +204,21 @@ async def main() -> None:
                 payload,
             )
 
-    if tv is not None:
+    tv_emits_watch_signal = cfg.speaker_backend == "samsung_soundbar"
+
+    if tv is not None and tv_emits_watch_signal:
         tv._state_change_callback = _on_domain_state_change
+    else:
+        logger.debug(
+            "tv state-change callback disabled for speaker_backend=%s",
+            cfg.speaker_backend,
+        )
 
     if speaker is not None:
         speaker._state_change_callback = _on_domain_state_change
+
+    if apple_tv_airplay is not None:
+        apple_tv_airplay.set_state_change_callback(_on_domain_state_change)
 
     dispatcher = Dispatcher(
         cfg=cfg,

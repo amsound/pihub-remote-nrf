@@ -171,13 +171,6 @@ class SequenceRunner:
                         "set_volume",
                         {"setting": "watch_volume_pct"},
                     ),
-                    SequenceStep(
-                        "speaker_watch_source",
-                        "speaker",
-                        "set_source",
-                        {"source": SPEAKER_WATCH_SOURCE},
-                        mode="await",
-                    ),
                 ),
             ),
 
@@ -206,18 +199,20 @@ class SequenceRunner:
                 name="watch_signal",
                 target_mode="watch",
                 steps=(
+                    *self._speaker_stop_steps(),
+
+                    SequenceStep(
+                        "tv_power_on",
+                        "tv",
+                        "power_on",
+                        when="tv_is_off",
+                        timeout_s=8.0,
+                    ),
                     SequenceStep(
                         "speaker_watch_volume",
                         "speaker",
                         "set_volume",
                         {"setting": "watch_volume_pct"},
-                    ),
-                    SequenceStep(
-                        "speaker_watch_source",
-                        "speaker",
-                        "set_source",
-                        {"source": SPEAKER_WATCH_SOURCE},
-                        mode="await",
                     ),
                 ),
             ),
