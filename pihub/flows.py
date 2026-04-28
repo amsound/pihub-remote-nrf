@@ -118,18 +118,20 @@ class SequenceRunner:
                 target_mode="listen",
                 steps=(
                     SequenceStep(
-                        "tv_power_off",
-                        "tv",
-                        "power_off",
-                        when="tv_is_on",
-                        timeout_s=8.0,
-                    ),
-                    SequenceStep(
                         "apple_tv_return_home",
                         "ble",
                         "return_home",
                         when="tv_is_on",
                     ),
+                    SequenceStep(
+                        "tv_power_off",
+                        "tv",
+                        "power_off",
+                        when="tv_is_on",
+                        timeout_s=8.0,
+                        mode="await",
+                    ),
+
                     SequenceStep(
                         "speaker_listen_volume",
                         "speaker",
@@ -151,19 +153,19 @@ class SequenceRunner:
                 target_mode="watch",
                 steps=(
                     *self._speaker_stop_steps(),
-
+                    SequenceStep(
+                        "apple_tv_power_on",
+                        "ble",
+                        "power_on",
+                        when="tv_is_off",
+                    ),
                     SequenceStep(
                         "tv_power_on",
                         "tv",
                         "power_on",
                         when="tv_is_off",
                         timeout_s=8.0,
-                    ),
-                    SequenceStep(
-                        "apple_tv_power_on",
-                        "ble",
-                        "power_on",
-                        when="tv_is_off",
+                        mode="await",
                     ),
                     SequenceStep(
                         "speaker_watch_volume",
@@ -207,6 +209,7 @@ class SequenceRunner:
                         "power_on",
                         when="tv_is_off",
                         timeout_s=8.0,
+                        mode="await",
                     ),
                     SequenceStep(
                         "speaker_watch_volume",
@@ -222,18 +225,20 @@ class SequenceRunner:
                 target_mode="power_off",
                 steps=(
                     SequenceStep(
-                        "tv_power_off",
-                        "tv",
-                        "power_off",
-                        when="tv_is_on",
-                        timeout_s=8.0,
-                    ),
-                    SequenceStep(
                         "apple_tv_return_home",
                         "ble",
                         "return_home",
                         when="tv_is_on",
                     ),
+                    SequenceStep(
+                        "tv_power_off",
+                        "tv",
+                        "power_off",
+                        when="tv_is_on",
+                        timeout_s=8.0,
+                        mode="await",
+                    ),
+
 
                     *self._speaker_stop_steps(),
                     *self._speaker_power_off_steps(),
