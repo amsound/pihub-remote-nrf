@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _COMMAND_RETRIES = 3
 _VERIFY_DELAY_S = 0.35
+_VERIFY_POLL_INTERVAL_S = 0.5
 
 
 @dataclass
@@ -334,6 +335,42 @@ class SamsungFrameTv:
             input_source=self._input_source,
         )
 
+    async def _wait_for_power_state(
+        self,
+        *,
+        target: str,
+        source: str,
+        deadline: float,
+    ) -> bool:
+        last_power: str | None = None
+        last_error = ""
+
+        await asyncio.sleep(_VERIFY_DELAY_S)
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                last_power = await self._get_power()
+                self._commit_power(last_power, source=source)
+                if last_power == target:
+                    self._last_error = ""
+                    return True
+            except Exception as exc:
+                last_error = repr(exc)
+                logger.debug(
+                    "frame tv power verification poll failed target=%s error=%r",
+                    target,
+                    exc,
+                    exc_info=True,
+                )
+
+            await asyncio.sleep(_VERIFY_POLL_INTERVAL_S)
+
+        self._last_error = (
+            f"power_verify_timeout:last_power={last_power!r} target={target!r}"
+            if not last_error
+            else f"power_verify_timeout:last_power={last_power!r} target={target!r} last_error={last_error}"
+        )
+        return False
+
     async def _verified_power_control(
         self,
         *,
@@ -341,22 +378,35 @@ class SamsungFrameTv:
         source: str,
         timeout_s: float,
     ) -> bool:
+        deadline = asyncio.get_running_loop().time() + max(1.0, timeout_s)
         last_error = ""
+
+        # Retry the command only until we get a valid ACK. Once the TV ACKs a
+        # power transition, do not resend the command simply because the status
+        # surface is still catching up; just poll for the final state.
         for attempt in range(1, _COMMAND_RETRIES + 1):
             try:
+                remaining = max(0.5, deadline - asyncio.get_running_loop().time())
                 data = await self._rpc(
                     "powerControl",
                     {"power": target},
-                    timeout_s=timeout_s,
+                    timeout_s=min(timeout_s, remaining),
                 )
                 ack_power = self._result(data).get("power")
                 if ack_power != target:
                     raise RuntimeError(f"power_ack_mismatch:{ack_power!r}!={target!r}")
 
-                await asyncio.sleep(_VERIFY_DELAY_S)
-                actual_power = await self._get_power()
-                self._commit_power(actual_power, source=source)
-                if actual_power == target:
+                logger.info(
+                    "frame tv power command acknowledged target=%s attempt=%d",
+                    target,
+                    attempt,
+                )
+
+                if await self._wait_for_power_state(
+                    target=target,
+                    source=source,
+                    deadline=deadline,
+                ):
                     logger.info(
                         "frame tv power command verified target=%s attempt=%d",
                         target,
@@ -364,7 +414,13 @@ class SamsungFrameTv:
                     )
                     return True
 
-                raise RuntimeError(f"power_verify_mismatch:{actual_power!r}!={target!r}")
+                logger.warning(
+                    "frame tv power command acknowledged but did not verify target=%s error=%s",
+                    target,
+                    self._last_error,
+                )
+                return False
+
             except Exception as exc:
                 last_error = repr(exc)
                 logger.debug(
