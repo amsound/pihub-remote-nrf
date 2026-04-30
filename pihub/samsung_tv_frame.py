@@ -18,6 +18,9 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+_COMMAND_RETRIES = 3
+_VERIFY_DELAY_S = 0.35
+
 
 @dataclass
 class TvFrameSnapshot:
@@ -36,10 +39,9 @@ class TvFrameSnapshot:
 class SamsungFrameTv:
     """Narrow Samsung Frame IP-control backend.
 
-    The 1516 control plane uses HTTPS JSON-RPC, not Samsung's regular
-    websocket.  If the access token file is missing, the backend can request
-    one with createAccessToken and persist it once the TV authorisation prompt
-    is accepted.
+    The 1516 control plane uses HTTPS JSON-RPC. If the access-token file is
+    missing, the backend requests one with createAccessToken and persists it
+    once the TV authorisation prompt is accepted.
     """
 
     def __init__(
@@ -97,6 +99,13 @@ class SamsungFrameTv:
         os.makedirs(os.path.dirname(self.token_file) or ".", exist_ok=True)
         with open(self.token_file, "w", encoding="utf-8") as f:
             f.write(token + "\n")
+
+    @staticmethod
+    def _result(data: dict[str, Any]) -> dict[str, Any]:
+        result = data.get("result") or {}
+        if not isinstance(result, dict):
+            raise RuntimeError("frame_tv_result_not_object")
+        return result
 
     def _commit_power(self, power: str | None, *, source: str) -> None:
         power = (power or "").strip() or None
@@ -227,8 +236,8 @@ class SamsungFrameTv:
 
     async def _request_access_token_unlocked(self) -> str:
         data = await self._rpc("createAccessToken", include_token=False)
-        result = data.get("result") or {}
-        token = result.get("AccessToken") if isinstance(result, dict) else None
+        result = self._result(data)
+        token = result.get("AccessToken")
         if not isinstance(token, str) or not token.strip():
             raise RuntimeError("frame_tv_access_token_missing")
         self._write_token(token)
@@ -246,14 +255,12 @@ class SamsungFrameTv:
 
     async def _get_power(self) -> str | None:
         data = await self._rpc("powerControl")
-        result = data.get("result") or {}
-        power = result.get("power") if isinstance(result, dict) else None
+        power = self._result(data).get("power")
         return power if isinstance(power, str) else None
 
     async def _get_input_source(self) -> str | None:
         data = await self._rpc("inputSourceControl")
-        result = data.get("result") or {}
-        source = result.get("inputSource") if isinstance(result, dict) else None
+        source = self._result(data).get("inputSource")
         return source if isinstance(source, str) else None
 
     async def reconcile_presence(self, *, bootstrap_timeout_s: float = 3.0) -> dict[str, Any]:
@@ -327,68 +334,117 @@ class SamsungFrameTv:
             input_source=self._input_source,
         )
 
-    async def power_on(self, *, timeout_s: float = 8.0) -> bool:
-        async with self._lock:
+    async def _verified_power_control(
+        self,
+        *,
+        target: str,
+        source: str,
+        timeout_s: float,
+    ) -> bool:
+        last_error = ""
+        for attempt in range(1, _COMMAND_RETRIES + 1):
             try:
-                if not await self._ensure_token():
-                    return False
                 data = await self._rpc(
                     "powerControl",
-                    {"power": "powerOn"},
+                    {"power": target},
                     timeout_s=timeout_s,
                 )
-                result = data.get("result") or {}
-                self._commit_power(
-                    result.get("power") if isinstance(result, dict) else "powerOn",
-                    source="ip_control_power_on",
+                ack_power = self._result(data).get("power")
+                if ack_power != target:
+                    raise RuntimeError(f"power_ack_mismatch:{ack_power!r}!={target!r}")
+
+                await asyncio.sleep(_VERIFY_DELAY_S)
+                actual_power = await self._get_power()
+                self._commit_power(actual_power, source=source)
+                if actual_power == target:
+                    logger.info(
+                        "frame tv power command verified target=%s attempt=%d",
+                        target,
+                        attempt,
+                    )
+                    return True
+
+                raise RuntimeError(f"power_verify_mismatch:{actual_power!r}!={target!r}")
+            except Exception as exc:
+                last_error = repr(exc)
+                logger.debug(
+                    "frame tv power command attempt failed target=%s attempt=%d/%d error=%r",
+                    target,
+                    attempt,
+                    _COMMAND_RETRIES,
+                    exc,
+                    exc_info=True,
                 )
-                return True
-            except Exception:
-                logger.debug("frame tv power_on failed", exc_info=True)
+                if attempt < _COMMAND_RETRIES:
+                    await asyncio.sleep(0.25 * attempt)
+
+        self._last_error = last_error or "power_command_failed"
+        logger.warning("frame tv power command failed target=%s error=%s", target, self._last_error)
+        return False
+
+    async def power_on(self, *, timeout_s: float = 8.0) -> bool:
+        async with self._lock:
+            if not await self._ensure_token():
                 return False
+            return await self._verified_power_control(
+                target="powerOn",
+                source="ip_control_power_on",
+                timeout_s=timeout_s,
+            )
 
     async def power_off(self, *, wait: bool = True, timeout_s: float = 8.0) -> bool:
         del wait
         async with self._lock:
-            try:
-                if not await self._ensure_token():
-                    return False
-                data = await self._rpc(
-                    "powerControl",
-                    {"power": "powerOff"},
-                    timeout_s=timeout_s,
-                )
-                result = data.get("result") or {}
-                self._commit_power(
-                    result.get("power") if isinstance(result, dict) else "powerOff",
-                    source="ip_control_power_off",
-                )
-                return True
-            except Exception:
-                logger.debug("frame tv power_off failed", exc_info=True)
+            if not await self._ensure_token():
                 return False
+            return await self._verified_power_control(
+                target="powerOff",
+                source="ip_control_power_off",
+                timeout_s=timeout_s,
+            )
 
     async def hdmi1(self) -> bool:
         return await self.set_hdmi1()
 
     async def set_hdmi1(self) -> bool:
         async with self._lock:
-            try:
-                if not await self._ensure_token():
-                    return False
-                data = await self._rpc(
-                    "inputSourceControl",
-                    {"inputSource": "HDMI1"},
-                )
-                result = data.get("result") or {}
-                if isinstance(result, dict):
-                    source = result.get("inputSource")
-                    if isinstance(source, str):
-                        self._input_source = source
-                return True
-            except Exception:
-                logger.debug("frame tv set HDMI1 failed", exc_info=True)
+            if not await self._ensure_token():
                 return False
+
+            last_error = ""
+            for attempt in range(1, _COMMAND_RETRIES + 1):
+                try:
+                    data = await self._rpc(
+                        "inputSourceControl",
+                        {"inputSource": "HDMI1"},
+                    )
+                    ack_source = self._result(data).get("inputSource")
+                    if ack_source != "HDMI1":
+                        raise RuntimeError(f"source_ack_mismatch:{ack_source!r}!='HDMI1'")
+
+                    await asyncio.sleep(_VERIFY_DELAY_S)
+                    actual_source = await self._get_input_source()
+                    self._input_source = actual_source
+                    if actual_source == "HDMI1":
+                        logger.info("frame tv source command verified target=HDMI1 attempt=%d", attempt)
+                        return True
+
+                    raise RuntimeError(f"source_verify_mismatch:{actual_source!r}!='HDMI1'")
+                except Exception as exc:
+                    last_error = repr(exc)
+                    logger.debug(
+                        "frame tv HDMI1 command attempt failed attempt=%d/%d error=%r",
+                        attempt,
+                        _COMMAND_RETRIES,
+                        exc,
+                        exc_info=True,
+                    )
+                    if attempt < _COMMAND_RETRIES:
+                        await asyncio.sleep(0.25 * attempt)
+
+            self._last_error = last_error or "source_command_failed"
+            logger.warning("frame tv HDMI1 command failed error=%s", self._last_error)
+            return False
 
     async def return_key(self) -> bool:
         return await self.press(key="return")
@@ -398,18 +454,35 @@ class SamsungFrameTv:
         if not key:
             return False
         async with self._lock:
-            try:
-                if not await self._ensure_token():
-                    return False
-                await self._rpc("remoteKeyControl", {"remoteKey": key})
-                return True
-            except Exception:
-                logger.debug("frame tv remote key failed key=%s", key, exc_info=True)
+            if not await self._ensure_token():
                 return False
+
+            last_error = ""
+            for attempt in range(1, _COMMAND_RETRIES + 1):
+                try:
+                    data = await self._rpc("remoteKeyControl", {"remoteKey": key})
+                    ack_key = self._result(data).get("remoteKey")
+                    if ack_key != key:
+                        raise RuntimeError(f"remote_key_ack_mismatch:{ack_key!r}!={key!r}")
+
+                    logger.info("frame tv remote key acknowledged key=%s attempt=%d", key, attempt)
+                    return True
+                except Exception as exc:
+                    last_error = repr(exc)
+                    logger.debug(
+                        "frame tv remote key attempt failed key=%s attempt=%d/%d error=%r",
+                        key,
+                        attempt,
+                        _COMMAND_RETRIES,
+                        exc,
+                        exc_info=True,
+                    )
+                    if attempt < _COMMAND_RETRIES:
+                        await asyncio.sleep(0.25 * attempt)
+
+            self._last_error = last_error or "remote_key_failed"
+            logger.warning("frame tv remote key failed key=%s error=%s", key, self._last_error)
+            return False
 
     async def send_key(self, *, key: str) -> None:
         await self.press(key=key)
-
-    async def ensure_ws_connected(self) -> None:
-        # Compatibility no-op: this backend does not use the Samsung websocket.
-        return None
