@@ -24,6 +24,7 @@ from .runtime import RuntimeEngine
 from .unifying_reader import UnifyingReader
 from .ble_dongle import BleDongleLink
 from .samsung_tv import TvController, ssdp_listener, start_discovery_tasks, stop_discovery_tasks
+from .samsung_tv_frame import SamsungFrameTv
 from .audiopro_speaker import AudioProSpeaker
 from .samsung_soundbar import SamsungSoundbar
 from .apple_tv_airplay import AppleTvAirPlay
@@ -59,10 +60,45 @@ async def main() -> None:
 
     cleanup_hooks = []
 
-    tv: TvController | None = None
+    tv: Any | None = None
     tv_discovery_tasks: list[asyncio.Task] = []
+    shutdown_event = asyncio.Event()
 
-    if cfg.tv_enabled and cfg.tv_ip and cfg.tv_mac:
+    if cfg.tv_enabled and cfg.tv_frame_ip:
+        tv = SamsungFrameTv(
+            tv_ip=cfg.tv_frame_ip,
+            token_file=cfg.tv_frame_token_file,
+        )
+        await tv.start()
+
+        tv_reconcile_task = asyncio.create_task(
+            tv.reconcile_presence(),
+            name="tv_frame:reconcile_startup",
+        )
+
+        def _monitor_tv_reconcile(task: asyncio.Task) -> None:
+            if shutdown_event.is_set():
+                return
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("tv_frame:reconcile_startup crashed")
+
+        tv_reconcile_task.add_done_callback(_monitor_tv_reconcile)
+
+        async def _stop_tv_reconcile() -> None:
+            if not tv_reconcile_task.done():
+                tv_reconcile_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await tv_reconcile_task
+
+        cleanup_hooks.append(("tv_reconcile", _stop_tv_reconcile))
+        cleanup_hooks.append(("tv", tv.stop))
+        logger.info("using samsung frame tv backend tv_ip=%s", cfg.tv_frame_ip)
+
+    elif cfg.tv_enabled and cfg.tv_ip and cfg.tv_mac:
         tv = TvController(
             tv_ip=cfg.tv_ip,
             tv_mac=cfg.tv_mac,
@@ -70,8 +106,6 @@ async def main() -> None:
             name=cfg.tv_name,
         )
         await tv.start()
-
-        shutdown_event = asyncio.Event()
 
         def _monitor_tv_task(task: asyncio.Task) -> None:
             if shutdown_event.is_set() or tv is None:
@@ -140,8 +174,7 @@ async def main() -> None:
         cleanup_hooks.append(("tv_reconcile", _stop_tv_reconcile))
         cleanup_hooks.append(("tv_discovery", _stop_tv_discovery))
         cleanup_hooks.append(("tv", tv.stop))
-    else:
-        shutdown_event = asyncio.Event()
+        logger.info("using samsung websocket/wol tv backend tv_ip=%s", cfg.tv_ip)
 
     speaker: SpeakerLike | None = None
 
