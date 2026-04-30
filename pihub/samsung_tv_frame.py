@@ -37,8 +37,9 @@ class SamsungFrameTv:
     """Narrow Samsung Frame IP-control backend.
 
     The 1516 control plane uses HTTPS JSON-RPC, not Samsung's regular
-    websocket.  The access token is created out-of-band with createAccessToken
-    and then stored in ``token_file``.
+    websocket.  If the access token file is missing, the backend can request
+    one with createAccessToken and persist it once the TV authorisation prompt
+    is accepted.
     """
 
     def __init__(
@@ -62,6 +63,7 @@ class SamsungFrameTv:
         self._input_source: str | None = None
         self._last_error = ""
         self._initial_status_logged = False
+        self._token_request_logged = False
 
         logger.info(
             "initialised frame tv tv_ip=%s token_present=%s",
@@ -197,21 +199,50 @@ class SamsungFrameTv:
         self._last_error = ""
         return data
 
+    async def _ensure_token(self) -> bool:
+        if self._read_token():
+            return True
+
+        if not self._token_request_logged:
+            self._token_request_logged = True
+            logger.info(
+                "frame tv token missing; requesting access token tv_ip=%s token_file=%s "
+                "accept the prompt on the TV if shown",
+                self.tv_ip,
+                self.token_file,
+            )
+
+        try:
+            await self._request_access_token_unlocked()
+            return True
+        except Exception as exc:
+            self._last_error = repr(exc)
+            logger.info(
+                "frame tv access token not available yet tv_ip=%s token_file=%s error=%r",
+                self.tv_ip,
+                self.token_file,
+                exc,
+            )
+            return False
+
+    async def _request_access_token_unlocked(self) -> str:
+        data = await self._rpc("createAccessToken", include_token=False)
+        result = data.get("result") or {}
+        token = result.get("AccessToken") if isinstance(result, dict) else None
+        if not isinstance(token, str) or not token.strip():
+            raise RuntimeError("frame_tv_access_token_missing")
+        self._write_token(token)
+        self._last_error = ""
+        logger.info("frame tv access token saved to %s", self.token_file)
+        return token.strip()
+
     async def request_access_token(self) -> str:
         """Request and persist a new access token.
 
-        This intentionally is not called automatically on boot because it can
-        display an on-screen authorization prompt.
+        This can display an on-screen authorization prompt on the TV.
         """
         async with self._lock:
-            data = await self._rpc("createAccessToken", include_token=False)
-            result = data.get("result") or {}
-            token = result.get("AccessToken") if isinstance(result, dict) else None
-            if not isinstance(token, str) or not token.strip():
-                raise RuntimeError("frame_tv_access_token_missing")
-            self._write_token(token)
-            logger.info("frame tv access token saved to %s", self.token_file)
-            return token.strip()
+            return await self._request_access_token_unlocked()
 
     async def _get_power(self) -> str | None:
         data = await self._rpc("powerControl")
@@ -231,24 +262,26 @@ class SamsungFrameTv:
             await self.start()
 
         errors: list[str] = []
-        changed = False
         before_presence = self._presence_cached
         before_source = self._input_source
 
         async with self._lock:
-            try:
-                power = await self._get_power()
-                self._commit_power(power, source="ip_control_power")
-            except Exception as exc:
-                logger.debug("frame tv power reconcile failed", exc_info=True)
-                errors.append(f"power:{exc!r}")
-
-            if self._presence_cached is True:
+            if not await self._ensure_token():
+                errors.append("token:frame_tv_token_missing")
+            else:
                 try:
-                    self._input_source = await self._get_input_source()
+                    power = await self._get_power()
+                    self._commit_power(power, source="ip_control_power")
                 except Exception as exc:
-                    logger.debug("frame tv source reconcile failed", exc_info=True)
-                    errors.append(f"source:{exc!r}")
+                    logger.debug("frame tv power reconcile failed", exc_info=True)
+                    errors.append(f"power:{exc!r}")
+
+                if self._presence_cached is True:
+                    try:
+                        self._input_source = await self._get_input_source()
+                    except Exception as exc:
+                        logger.debug("frame tv source reconcile failed", exc_info=True)
+                        errors.append(f"source:{exc!r}")
 
         changed = before_presence != self._presence_cached or before_source != self._input_source
         outcome = (
@@ -297,6 +330,8 @@ class SamsungFrameTv:
     async def power_on(self, *, timeout_s: float = 8.0) -> bool:
         async with self._lock:
             try:
+                if not await self._ensure_token():
+                    return False
                 data = await self._rpc(
                     "powerControl",
                     {"power": "powerOn"},
@@ -316,6 +351,8 @@ class SamsungFrameTv:
         del wait
         async with self._lock:
             try:
+                if not await self._ensure_token():
+                    return False
                 data = await self._rpc(
                     "powerControl",
                     {"power": "powerOff"},
@@ -337,6 +374,8 @@ class SamsungFrameTv:
     async def set_hdmi1(self) -> bool:
         async with self._lock:
             try:
+                if not await self._ensure_token():
+                    return False
                 data = await self._rpc(
                     "inputSourceControl",
                     {"inputSource": "HDMI1"},
@@ -360,6 +399,8 @@ class SamsungFrameTv:
             return False
         async with self._lock:
             try:
+                if not await self._ensure_token():
+                    return False
                 await self._rpc("remoteKeyControl", {"remoteKey": key})
                 return True
             except Exception:
