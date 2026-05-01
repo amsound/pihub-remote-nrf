@@ -587,7 +587,7 @@ class BleDongleLink:
         if label == "connected_not_ready":
             # Only log this when we transition into it
             if prev_label != "connected_not_ready":
-                logger.info("connected (%s)", port)
+                logger.info("connected serial_port=%s", port)
             return
 
         # Ready boundary
@@ -855,7 +855,7 @@ class BleDongleLink:
 
         ok = await self._handshake_once(timeout_s=1.2)
         if ok:
-            logger.info("connected %s", port)
+            logger.info("connected serial_port=%s", port)
             await self.status_cmd()
         else:
             await self._force_reconnect("handshake_timeout")
