@@ -147,7 +147,7 @@ class BleDongleLink:
         self._hid_cc: Dict[str, int] = {}
         self._load_hid_keymap()
 
-        logger.info("connecting serial_port_cfg=%s baud=%s", self._serial_port_cfg, self._baud)
+        logger.info("started serial_port_cfg=%s baud=%s", self._serial_port_cfg, self._baud)
 
     # ---------- lifecycle ----------
 
@@ -513,7 +513,7 @@ class BleDongleLink:
         # We want to log:
         # - advertising started / stopped
         # - connected to device
-        # - connection now ready (...)
+        # - link now ready (...)
         # - connected (interval/latency/timeout) (when params change while ready)
         # - disconnected
         #
@@ -587,7 +587,7 @@ class BleDongleLink:
         if label == "connected_not_ready":
             # Only log this when we transition into it
             if prev_label != "connected_not_ready":
-                logger.info("connected to device (%s)", port)
+                logger.info("connected (%s)", port)
             return
 
         # Ready boundary
@@ -597,11 +597,11 @@ class BleDongleLink:
                 has_notifies = bool(self.state.notify) and (kb_n or cc_n or batt_n)
                 if has_notifies:
                     logger.info(
-                        "connection ready (kb_notify=%d cc_notify=%d batt_notify=%d)",
+                        "link ready (kb_notify=%d cc_notify=%d batt_notify=%d)",
                         kb_n, cc_n, batt_n
                     )
                 else:
-                    logger.info("connection now ready")
+                    logger.info("link now ready")
                 return
 
             # Already ready: if connection params changed, log as an update (not a second "connected")
@@ -613,7 +613,7 @@ class BleDongleLink:
                 and timeout is not None
             ):
                 logger.info(
-                    "connection params updated (interval_ms=%d latency=%d timeout_ms=%d)",
+                    "ble params updated (interval_ms=%d latency=%d timeout_ms=%d)",
                     interval,
                     latency,
                     timeout,
@@ -855,7 +855,7 @@ class BleDongleLink:
 
         ok = await self._handshake_once(timeout_s=1.2)
         if ok:
-            logger.info("port ready on %s", port)
+            logger.info("connected %s", port)
             await self.status_cmd()
         else:
             await self._force_reconnect("handshake_timeout")
