@@ -184,7 +184,7 @@ class SamsungSoundbar:
 
         self._start_airplay_mdns()
 
-        logger.info("initialised local samsung soundbar backend speaker_ip=%s", self._speaker_ip)
+        logger.debug("started speaker_ip=%s", self._speaker_ip)
         self._task = asyncio.create_task(
             self._runner(),
             name=f"samsung_soundbar[{self._speaker_ip}]",
@@ -229,14 +229,14 @@ class SamsungSoundbar:
     def _note_refresh_success(self) -> None:
         if not self._cast_ready_logged:
             logger.info(
-                "speaker link ready speaker_ip=%s (initial status received)",
+                "link ready speaker_ip=%s (initial status received)",
                 self._speaker_ip,
             )
             self._cast_ready_logged = True
 
         if self._availability_logged_down:
             logger.info(
-                "speaker link restored speaker_ip=%s",
+                "link restored speaker_ip=%s",
                 self._speaker_ip,
             )
 
@@ -248,7 +248,7 @@ class SamsungSoundbar:
 
         if (not self._availability_logged_down) or (failure_key != self._last_failure_key):
             logger.warning(
-                "SamsungSoundbar unavailable speaker_ip=%s error=%s",
+                "unavailable speaker_ip=%s error=%s",
                 self._speaker_ip,
                 exc,
             )
@@ -326,7 +326,7 @@ class SamsungSoundbar:
             cast_info = getattr(cast, "cast_info", None)
             friendly_name = getattr(cast_info, "friendly_name", None) or getattr(cast, "name", None)
             logger.info(
-                "speaker connected speaker_ip=%s friendly_name=%s",
+                "connected speaker_ip=%s friendly_name=%s",
                 self._speaker_ip,
                 friendly_name or "unknown",
             )
@@ -549,8 +549,8 @@ class SamsungSoundbar:
         self._airplay_listener = listener
         self._airplay_browser = browser
 
-        logger.info(
-            "airplay mdns listener started speaker_ip=%s service_type=%s",
+        logger.debug(
+            "airplay listener started speaker_ip=%s service_type=%s",
             self._speaker_ip,
             AIRPLAY_SERVICE_TYPE,
         )
@@ -873,7 +873,7 @@ class SamsungSoundbar:
             )
         except Exception:
             logger.exception(
-                "SamsungSoundbar state change callback spawn failed name=%s",
+                "state change callback spawn failed name=%s",
                 name,
             )
             return
@@ -883,12 +883,12 @@ class SamsungSoundbar:
                 t.result()
             except asyncio.CancelledError:
                 logger.debug(
-                    "SamsungSoundbar state change callback cancelled name=%s",
+                    "state change callback cancelled name=%s",
                     name,
                 )
             except Exception:
                 logger.exception(
-                    "SamsungSoundbar state change callback failed name=%s",
+                    "state change callback failed name=%s",
                     name,
                 )
 

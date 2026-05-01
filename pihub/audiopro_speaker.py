@@ -345,7 +345,7 @@ class AudioProSpeaker:
             try:
                 attempt += 1
                 logger.debug(
-                    "speaker tcp connect attempt speaker_ip=%s attempt=%s reconnect_s=%s",
+                    "connect attempt speaker_ip=%s attempt=%s reconnect_s=%s",
                     self._speaker_ip,
                     attempt,
                     self._reconnect_s,
@@ -430,7 +430,7 @@ class AudioProSpeaker:
         self._state.last_update_ts = _now()
         self._link_down_logged = False
         self._wake_poll_loop()
-        logger.info("speaker tcp connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
+        logger.info("connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
 
     async def _disconnect(self) -> None:
         self._cancel_pending_pinfget()
@@ -1186,7 +1186,7 @@ class AudioProSpeaker:
 
         if not was_ready and self._state.ready:
             logger.info(
-                "speaker tcp link ready speaker_ip=%s (initial status received)",
+                "link ready speaker_ip=%s (initial status received)",
                 self._speaker_ip,
             )
 

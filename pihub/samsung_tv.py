@@ -197,7 +197,7 @@ class TvWsClient:
         if self._logged_token_present is None or token_present != self._logged_token_present:
             self._logged_token_present = token_present
             logger.debug(
-                "initialised tv websocket tv_ip=%s token_present=%s",
+                "started tv_ip=%s token_present=%s",
                 self._tv_ip,
                 "true" if token_present else "false",
             )
@@ -274,7 +274,7 @@ class TvWsClient:
 
                     if self._logged_connected is True:
                         self._logged_connected = False
-                        logger.info(
+                        logger.debug(
                             "websocket disconnected tv_ip=%s reason=%s",
                             self._tv_ip,
                             close_reason,
@@ -299,7 +299,7 @@ class TvWsClient:
 
                 if self._logged_connected is None or self._logged_connected is False:
                     self._logged_connected = True
-                    logger.info("websocket connected tv_ip=%s", self._tv_ip)
+                    logger.debug("websocket connected tv_ip=%s", self._tv_ip)
 
                 if self._rx_task and not self._rx_task.done():
                     self._rx_task.cancel()
@@ -312,7 +312,7 @@ class TvWsClient:
                 self.state.last_error = repr(exc)
                 if self._logged_connected is True:
                     self._logged_connected = False
-                    logger.info(
+                    logger.debug(
                         "websocket disconnected tv_ip=%s reason=connect_failed error=%r",
                         self._tv_ip,
                         exc,
@@ -332,7 +332,7 @@ class TvWsClient:
 
             if self._logged_connected is True:
                 self._logged_connected = False
-                logger.info("websocket disconnected tv_ip=%s reason=local_close", self._tv_ip)
+                logger.debug("websocket disconnected tv_ip=%s reason=local_close", self._tv_ip)
 
         if ws and not ws.closed:
             try:
@@ -414,7 +414,7 @@ class TvController:
         self.ws = TvWsClient(tv_ip=tv_ip, token_file=token_file, name=name)
 
         logger.info(
-            "initialised tv tv_ip=%s tv_mac=%s token_present=%s",
+            "started tv_ip=%s tv_mac=%s token_present=%s",
             tv_ip,
             tv_mac,
             "true" if self.ws.state.token_present else "false",

@@ -69,7 +69,7 @@ class SamsungFrameTv:
         self._token_request_logged = False
 
         logger.info(
-            "initialised frame tv tv_ip=%s token_present=%s",
+            "started tv_ip=%s token_present=%s",
             tv_ip,
             "true" if self._read_token() else "false",
         )
@@ -148,9 +148,9 @@ class SamsungFrameTv:
             try:
                 t.result()
             except asyncio.CancelledError:
-                logger.debug("frame tv state change callback cancelled name=%s", name)
+                logger.debug("state change callback cancelled name=%s", name)
             except Exception:
-                logger.exception("frame tv state change callback failed name=%s", name)
+                logger.exception("state change callback failed name=%s", name)
 
         task.add_done_callback(_done)
 
@@ -216,7 +216,7 @@ class SamsungFrameTv:
         if not self._token_request_logged:
             self._token_request_logged = True
             logger.info(
-                "frame tv token missing; requesting access token tv_ip=%s token_file=%s "
+                "token missing; requesting access token tv_ip=%s token_file=%s "
                 "accept the prompt on the TV if shown",
                 self.tv_ip,
                 self.token_file,
@@ -228,7 +228,7 @@ class SamsungFrameTv:
         except Exception as exc:
             self._last_error = repr(exc)
             logger.info(
-                "frame tv access token not available yet tv_ip=%s token_file=%s error=%r",
+                "token not available tv_ip=%s token_file=%s error=%r",
                 self.tv_ip,
                 self.token_file,
                 exc,
@@ -243,7 +243,7 @@ class SamsungFrameTv:
             raise RuntimeError("frame_tv_access_token_missing")
         self._write_token(token)
         self._last_error = ""
-        logger.info("frame tv access token saved to %s", self.token_file)
+        logger.info("token saved to %s", self.token_file)
         return token.strip()
 
     async def request_access_token(self) -> str:
@@ -281,14 +281,14 @@ class SamsungFrameTv:
                     power = await self._get_power()
                     self._commit_power(power, source="ip_control_power")
                 except Exception as exc:
-                    logger.debug("frame tv power reconcile failed", exc_info=True)
+                    logger.debug("power reconcile failed", exc_info=True)
                     errors.append(f"power:{exc!r}")
 
                 if self._presence_cached is True:
                     try:
                         self._input_source = await self._get_input_source()
                     except Exception as exc:
-                        logger.debug("frame tv source reconcile failed", exc_info=True)
+                        logger.debug("source reconcile failed", exc_info=True)
                         errors.append(f"source:{exc!r}")
 
         changed = before_presence != self._presence_cached or before_source != self._input_source
@@ -301,7 +301,7 @@ class SamsungFrameTv:
         if not self._initial_status_logged and not errors:
             self._initial_status_logged = True
             logger.info(
-                "frame tv initial status power=%s input_source=%s presence_on=%s",
+                "initial status received power=%s input_source=%s presence_on=%s",
                 self._power,
                 self._input_source,
                 "true" if self._presence_cached is True else "false" if self._presence_cached is False else "unknown",
@@ -356,7 +356,7 @@ class SamsungFrameTv:
             except Exception as exc:
                 last_error = repr(exc)
                 logger.debug(
-                    "frame tv power verification poll failed target=%s error=%r",
+                    "power verification poll failed target=%s error=%r",
                     target,
                     exc,
                     exc_info=True,
@@ -396,8 +396,8 @@ class SamsungFrameTv:
                 if ack_power != target:
                     raise RuntimeError(f"power_ack_mismatch:{ack_power!r}!={target!r}")
 
-                logger.info(
-                    "frame tv power command acknowledged target=%s attempt=%d",
+                logger.debug(
+                    "power command acknowledged target=%s attempt=%d",
                     target,
                     attempt,
                 )
@@ -407,15 +407,15 @@ class SamsungFrameTv:
                     source=source,
                     deadline=deadline,
                 ):
-                    logger.info(
-                        "frame tv power command verified target=%s attempt=%d",
+                    logger.debug(
+                        "power command verified target=%s attempt=%d",
                         target,
                         attempt,
                     )
                     return True
 
                 logger.warning(
-                    "frame tv power command acknowledged but did not verify target=%s error=%s",
+                    "power command acknowledged but did not verify target=%s error=%s",
                     target,
                     self._last_error,
                 )
@@ -424,7 +424,7 @@ class SamsungFrameTv:
             except Exception as exc:
                 last_error = repr(exc)
                 logger.debug(
-                    "frame tv power command attempt failed target=%s attempt=%d/%d error=%r",
+                    "power command attempt failed target=%s attempt=%d/%d error=%r",
                     target,
                     attempt,
                     _COMMAND_RETRIES,
@@ -435,7 +435,7 @@ class SamsungFrameTv:
                     await asyncio.sleep(0.25 * attempt)
 
         self._last_error = last_error or "power_command_failed"
-        logger.warning("frame tv power command failed target=%s error=%s", target, self._last_error)
+        logger.warning("power command failed target=%s error=%s", target, self._last_error)
         return False
 
     async def power_on(self, *, timeout_s: float = 8.0) -> bool:
@@ -482,14 +482,14 @@ class SamsungFrameTv:
                     actual_source = await self._get_input_source()
                     self._input_source = actual_source
                     if actual_source == "HDMI1":
-                        logger.info("frame tv source command verified target=HDMI1 attempt=%d", attempt)
+                        logger.info("source command verified target=HDMI1 attempt=%d", attempt)
                         return True
 
                     raise RuntimeError(f"source_verify_mismatch:{actual_source!r}!='HDMI1'")
                 except Exception as exc:
                     last_error = repr(exc)
                     logger.debug(
-                        "frame tv HDMI1 command attempt failed attempt=%d/%d error=%r",
+                        "source command attempt failed attempt=%d/%d error=%r",
                         attempt,
                         _COMMAND_RETRIES,
                         exc,
@@ -499,7 +499,7 @@ class SamsungFrameTv:
                         await asyncio.sleep(0.25 * attempt)
 
             self._last_error = last_error or "source_command_failed"
-            logger.warning("frame tv HDMI1 command failed error=%s", self._last_error)
+            logger.warning("source command failed error=%s", self._last_error)
             return False
 
     async def return_key(self) -> bool:
@@ -521,12 +521,12 @@ class SamsungFrameTv:
                     if ack_key != key:
                         raise RuntimeError(f"remote_key_ack_mismatch:{ack_key!r}!={key!r}")
 
-                    logger.info("frame tv remote key acknowledged key=%s attempt=%d", key, attempt)
+                    logger.info("remote key acknowledged key=%s attempt=%d", key, attempt)
                     return True
                 except Exception as exc:
                     last_error = repr(exc)
                     logger.debug(
-                        "frame tv remote key attempt failed key=%s attempt=%d/%d error=%r",
+                        "remote key attempt failed key=%s attempt=%d/%d error=%r",
                         key,
                         attempt,
                         _COMMAND_RETRIES,
@@ -537,7 +537,7 @@ class SamsungFrameTv:
                         await asyncio.sleep(0.25 * attempt)
 
             self._last_error = last_error or "remote_key_failed"
-            logger.warning("frame tv remote key failed key=%s error=%s", key, self._last_error)
+            logger.warning("remote key failed key=%s error=%s", key, self._last_error)
             return False
 
     async def send_key(self, *, key: str) -> None:

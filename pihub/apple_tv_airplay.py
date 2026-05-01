@@ -93,7 +93,7 @@ class AppleTvAirPlay:
     async def start(self) -> None:
         if not self.apple_tv_ip:
             self.state.last_error = "apple_tv_ip_missing"
-            logger.info("apple_tv_airplay disabled: APPLE_TV_IP is empty")
+            logger.info("disabled: docker compose field empty")
             return
 
         self._loop = asyncio.get_running_loop()
@@ -108,7 +108,7 @@ class AppleTvAirPlay:
 
         self.state.ready = True
         logger.info(
-            "apple_tv_airplay started ip=%s debounce_s=%s service=%s",
+            "started ip=%s debounce_s=%s service=%s",
             self.apple_tv_ip,
             self.debounce_s,
             AIRPLAY_SERVICE_TYPE,
@@ -143,7 +143,7 @@ class AppleTvAirPlay:
             self._aiozc = None
 
         self.state.ready = False
-        logger.info("apple_tv_airplay stopped")
+        logger.info("service stopped")
 
     def set_state_change_callback(self, callback: StateChangeCallback | None) -> None:
         self._state_change_callback = callback
@@ -209,7 +209,7 @@ class AppleTvAirPlay:
                 return
             except Exception as exc:
                 self.state.last_error = str(exc)
-                logger.exception("apple_tv_airplay task failed name=%s", name)
+                logger.exception("task failed name=%s", name)
 
         task.add_done_callback(_done)
 
@@ -228,7 +228,7 @@ class AppleTvAirPlay:
         flags = self._extract_flags(info.properties)
         if flags is None:
             self.state.last_error = "airplay_flags_missing"
-            logger.debug("apple_tv_airplay matched ip but no flags service=%s", name)
+            logger.debug("matched ip but no flags service=%s", name)
             return
 
         connected_session = bool(flags & APPLE_TV_CONNECTED_SESSION_BIT)
@@ -241,7 +241,7 @@ class AppleTvAirPlay:
         self.state.last_error = None
 
         logger.debug(
-            "apple_tv_airplay update service=%s ip=%s flags=0x%x connected_session=%s",
+            "update service=%s ip=%s flags=0x%x connected_session=%s",
             name,
             self.apple_tv_ip,
             flags,
@@ -264,7 +264,7 @@ class AppleTvAirPlay:
         self.state.last_update_ts = self._now
         self._cancel_pending_watch_signal()
 
-        logger.debug("apple_tv_airplay service removed service=%s", name)
+        logger.debug("service removed service=%s", name)
 
     def _service_matches_target_ip(self, info: AsyncServiceInfo) -> bool:
         if self._target_ip is None:
@@ -296,7 +296,7 @@ class AppleTvAirPlay:
         try:
             return int(text, 0)
         except ValueError:
-            logger.debug("apple_tv_airplay invalid flags value=%r", text)
+            logger.debug("invalid flags value=%r", text)
             return None
 
     def _schedule_watch_signal(self, *, flags: int, service_name: str) -> None:
@@ -345,7 +345,7 @@ class AppleTvAirPlay:
 
             self.state.last_emit_ts = self._now
             logger.info(
-                "apple_tv_airplay emitting watch signal ip=%s flags=0x%x",
+                "airplay detected at ip=%s flags=0x%x",
                 self.apple_tv_ip,
                 latest_flags,
             )

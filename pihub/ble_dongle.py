@@ -147,7 +147,7 @@ class BleDongleLink:
         self._hid_cc: Dict[str, int] = {}
         self._load_hid_keymap()
 
-        logger.info("initialised serial_port_cfg=%s baud=%s", self._serial_port_cfg, self._baud)
+        logger.info("connecting serial_port_cfg=%s baud=%s", self._serial_port_cfg, self._baud)
 
     # ---------- lifecycle ----------
 

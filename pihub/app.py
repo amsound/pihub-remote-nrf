@@ -96,7 +96,7 @@ async def main() -> None:
 
         cleanup_hooks.append(("tv_reconcile", _stop_tv_reconcile))
         cleanup_hooks.append(("tv", tv.stop))
-        logger.info("using samsung frame tv backend tv_ip=%s", cfg.tv_frame_ip)
+        logger.debug("using samsung frame tv backend tv_ip=%s", cfg.tv_frame_ip)
 
     elif cfg.tv_enabled and cfg.tv_ip and cfg.tv_mac:
         tv = TvController(
@@ -174,7 +174,6 @@ async def main() -> None:
         cleanup_hooks.append(("tv_reconcile", _stop_tv_reconcile))
         cleanup_hooks.append(("tv_discovery", _stop_tv_discovery))
         cleanup_hooks.append(("tv", tv.stop))
-        logger.info("using samsung websocket/wol tv backend tv_ip=%s", cfg.tv_ip)
 
     speaker: SpeakerLike | None = None
 
