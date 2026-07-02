@@ -173,6 +173,13 @@ class SequenceRunner:
                         "set_volume",
                         {"setting": "watch_volume_pct"},
                     ),
+                    SequenceStep(
+                        "speaker_hdmi_source",
+                        "speaker",
+                        "set_source",
+                        {"source": "hdmi"},
+                        mode="await",
+                    ),
                 ),
             ),
 
@@ -216,6 +223,13 @@ class SequenceRunner:
                         "speaker",
                         "set_volume",
                         {"setting": "watch_volume_pct"},
+                    ),
+                    SequenceStep(
+                        "speaker_hdmi_source",
+                        "speaker",
+                        "set_source",
+                        {"source": "hdmi"},
+                        mode="await",
                     ),
                 ),
             ),
