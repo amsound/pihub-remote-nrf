@@ -18,11 +18,23 @@ from .unifying_reader import UnifyingReader
 from .speaker import SpeakerLike
 from .samsung_tv import TvController
 from .history import HistoryStore
-from .tunein import HLS_CONTENT_TYPE, TuneInError, TuneInResolver, parse_station_id
+import logging
+
+from .tunein import (
+    HLS_CONTENT_TYPE,
+    SEGMENT_CONTENT_TYPE,
+    SegmentRegistry,
+    TuneInError,
+    TuneInResolver,
+    parse_station_id,
+)
 
 def _norm_error(value: object) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+logger = logging.getLogger(__name__)
+
 
 class HttpServer:
     """Expose a small HTTP control plane."""
@@ -54,7 +66,11 @@ class HttpServer:
         self._history = history
         self._speaker_backend = str(speaker_backend or "").strip().lower()
         self._dispatcher = dispatcher
+        # A shared resolver keeps one cache and one HTTP session across the
+        # speaker backend and this server; only close what we created.
+        self._owns_tunein = tunein is None
         self._tunein = tunein or TuneInResolver()
+        self._segments = SegmentRegistry()
 
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -70,6 +86,7 @@ class HttpServer:
             [
                 web.get("/health", self._handle_health),
                 web.get("/tunein/{station_id}.m3u8", self._handle_tunein_playlist),
+                web.get("/tunein/seg/{token}", self._handle_tunein_segment),
                 web.get("/dashboard", self._handle_dashboard),
                 web.get("/tools", self._handle_tools),
                 web.get("/settings", self._handle_settings),
@@ -103,8 +120,9 @@ class HttpServer:
     async def stop(self) -> None:
         runner, self._runner = self._runner, None
         self._site = None
-        with contextlib.suppress(Exception):
-            await self._tunein.close()
+        if self._owns_tunein:
+            with contextlib.suppress(Exception):
+                await self._tunein.close()
         if runner is None:
             return
         with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -127,14 +145,72 @@ class HttpServer:
         except TuneInError:
             raise web.HTTPBadRequest(text=f"bad station id: {raw}")
 
+        peer = request.remote or "?"
+
+        def to_path(url: str) -> str:
+            return f"/tunein/seg/{self._segments.token_for(url)}"
+
         try:
-            body = await self._tunein.media_playlist(station_id)
+            body = await self._tunein.media_playlist(station_id, to_path)
         except TuneInError as exc:
+            # Log loudly: a receiver that stops mid-stream usually shows up here
+            # first, and aiohttp's access log is disabled for this server.
+            logger.warning(
+                "tunein playlist request failed station_id=%s peer=%s: %s",
+                station_id,
+                peer,
+                exc,
+            )
             raise web.HTTPBadGateway(text=str(exc))
+
+        seq = ""
+        for line in body.splitlines():
+            if line.startswith("#EXT-X-MEDIA-SEQUENCE:"):
+                seq = line.split(":", 1)[1].strip()
+                break
+
+        logger.debug(
+            "tunein playlist served station_id=%s peer=%s media_sequence=%s bytes=%d",
+            station_id,
+            peer,
+            seq or "?",
+            len(body),
+        )
 
         return web.Response(
             text=body,
             content_type=HLS_CONTENT_TYPE,
+            headers={"Cache-Control": "no-cache, no-store"},
+        )
+
+    async def _handle_tunein_segment(self, request: web.Request) -> web.Response:
+        """Serve one media segment, with Cast-hostile metadata boxes removed.
+
+        Apple's CMAF segments carry emsg boxes that make the Samsung soundbar's
+        Cast receiver quit a few seconds in; stripping them leaves the audio
+        bytes untouched.
+        """
+        token = request.match_info.get("token", "")
+        url = self._segments.url_for(token)
+        if not url:
+            raise web.HTTPNotFound(text="unknown segment")
+
+        try:
+            body, removed = await self._tunein.fetch_segment(url)
+        except TuneInError as exc:
+            logger.warning("tunein segment fetch failed token=%s: %s", token, exc)
+            raise web.HTTPBadGateway(text=str(exc))
+
+        logger.debug(
+            "tunein segment served token=%s bytes=%d boxes_removed=%d",
+            token,
+            len(body),
+            removed,
+        )
+
+        return web.Response(
+            body=body,
+            content_type=SEGMENT_CONTENT_TYPE,
             headers={"Cache-Control": "no-cache, no-store"},
         )
 

@@ -30,6 +30,7 @@ from .samsung_soundbar import SamsungSoundbar
 from .apple_tv_airplay import AppleTvAirPlay
 from .speaker import SpeakerLike
 from .settings import SettingsStore
+from .tunein import TuneInResolver
 from .history import HistoryStore
 
 
@@ -175,6 +176,11 @@ async def main() -> None:
         cleanup_hooks.append(("tv_discovery", _stop_tv_discovery))
         cleanup_hooks.append(("tv", tv.stop))
 
+    # One resolver shared by the speaker backend and the HTTP proxy, so they
+    # share a cache and a single HTTP session.
+    tunein = TuneInResolver()
+    cleanup_hooks.append(("tunein", tunein.close))
+
     speaker: SpeakerLike | None = None
 
     if cfg.speaker_enabled:
@@ -192,6 +198,7 @@ async def main() -> None:
                     # Lets the soundbar cast TuneIn via pihub's own HLS proxy
                     # instead of TuneIn's expiring signed URL.
                     http_server_port=cfg.http_server_port,
+                    tunein=tunein,
                 )
         else:
             raise ValueError(f"unsupported SPEAKER_BACKEND={cfg.speaker_backend!r}")
@@ -277,6 +284,7 @@ async def main() -> None:
     http_server = HttpServer(
         host=cfg.http_server_host,
         port=cfg.http_server_port,
+        tunein=tunein,
         ble=ble,
         reader=reader,
         tv=tv,

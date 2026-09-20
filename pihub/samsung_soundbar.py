@@ -14,7 +14,13 @@ from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 import aiohttp
 import pychromecast
 
-from .tunein import HLS_CONTENT_TYPE, TuneInError, local_ip_for, parse_station_id
+from .tunein import (
+    HLS_CONTENT_TYPE,
+    TuneInError,
+    TuneInResolver,
+    local_ip_for,
+    parse_station_id,
+)
 
 logger = logging.getLogger(__name__)
 logging.getLogger("pychromecast.discovery").setLevel(logging.ERROR)
@@ -117,9 +123,12 @@ class SamsungSoundbar:
         tv: Any = None,
         state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         http_server_port: int | None = None,
+        tunein: TuneInResolver | None = None,
     ) -> None:
         self._speaker_ip = (speaker_ip or "").strip()
         self._http_server_port = int(http_server_port) if http_server_port else None
+        # Shared with the HTTP server so both sides use one cache/session.
+        self._tunein = tunein or TuneInResolver()
         self._command_interval_s = max(0.05, float(command_interval_s))
 
         self._enabled = False
@@ -1041,18 +1050,10 @@ class SamsungSoundbar:
         logger.debug("cast play_url content_type=%s url=%s", content_type, url)
 
         def _cmd(cast) -> None:
-            media_info: dict[str, Any] = {}
-            if content_type == HLS_CONTENT_TYPE:
-                # Audio-only CMAF/fMP4 HLS: the Default Media Receiver has to be
-                # told the segment format explicitly. Left to guess, it can start
-                # playback and then fail partway in.
-                media_info["hlsSegmentFormat"] = "fmp4"
-
             cast.media_controller.play_media(
                 url,
                 content_type,
                 stream_type="LIVE",
-                media_info=media_info or None,
             )
             cast.media_controller.block_until_active(timeout=5)
 
@@ -1077,12 +1078,10 @@ class SamsungSoundbar:
     async def play_tunein(self, station_id: str) -> None:
         """Play a TuneIn station on the soundbar via Cast.
 
-        Stations like Apple Music Hits are HLS-only and are published as a
-        master playlist mixing AAC-LC and HE-AAC variants behind expiring
-        signed URLs. Casting that master directly makes the receiver switch
-        codecs mid-stream (audible dropouts) and lose the stream once the
-        signature expires, so we prefer pihub's own proxy, which pins one
-        variant and keeps the URL stable. Direct casting is only a fallback.
+        HLS stations go through pihub's proxy, which pins one variant and
+        strips the metadata boxes that make this receiver quit mid-stream.
+        Stations that publish a plain MP3/AAC stream need none of that and are
+        cast directly.
 
         station_id: a bare TuneIn station ID ("s345724") or a tunein.com URL.
         """
@@ -1091,30 +1090,22 @@ class SamsungSoundbar:
 
         try:
             station_id = parse_station_id(station_id)
+            is_hls, stream_url = await self._tunein.is_hls(station_id)
         except TuneInError as exc:
             raise RuntimeError(str(exc)) from exc
 
-        proxy_url = self._tunein_proxy_url(station_id)
-        if proxy_url:
-            logger.info("tunein station_id=%s via proxy %s", station_id, proxy_url)
-            await self.play_url(proxy_url, content_type=HLS_CONTENT_TYPE)
-            return
+        if is_hls:
+            proxy_url = self._tunein_proxy_url(station_id)
+            if proxy_url:
+                logger.info("tunein station_id=%s via proxy %s", station_id, proxy_url)
+                await self.play_url(proxy_url, content_type=HLS_CONTENT_TYPE)
+                return
 
-        logger.warning(
-            "tunein station_id=%s: no local proxy URL available, casting TuneIn's "
-            "signed URL directly (expect dropouts and eventual expiry)",
-            station_id,
-        )
+            logger.warning(
+                "tunein station_id=%s: no local proxy URL available, casting the "
+                "upstream HLS URL directly (this receiver is likely to drop it)",
+                station_id,
+            )
 
-        from .tunein import TuneInResolver
-
-        resolver = TuneInResolver()
-        try:
-            stream_url, media_type = await resolver.resolve_stream_url(station_id)
-        except TuneInError as exc:
-            raise RuntimeError(str(exc)) from exc
-        finally:
-            await resolver.close()
-
-        content_type = HLS_CONTENT_TYPE if media_type == "hls" else None
-        await self.play_url(stream_url, content_type=content_type)
+        logger.info("tunein station_id=%s direct url=%s", station_id, stream_url)
+        await self.play_url(stream_url)
