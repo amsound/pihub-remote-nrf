@@ -1041,10 +1041,18 @@ class SamsungSoundbar:
         logger.debug("cast play_url content_type=%s url=%s", content_type, url)
 
         def _cmd(cast) -> None:
+            media_info: dict[str, Any] = {}
+            if content_type == HLS_CONTENT_TYPE:
+                # Audio-only CMAF/fMP4 HLS: the Default Media Receiver has to be
+                # told the segment format explicitly. Left to guess, it can start
+                # playback and then fail partway in.
+                media_info["hlsSegmentFormat"] = "fmp4"
+
             cast.media_controller.play_media(
                 url,
                 content_type,
                 stream_type="LIVE",
+                media_info=media_info or None,
             )
             cast.media_controller.block_until_active(timeout=5)
 
