@@ -22,6 +22,7 @@ class SettingsData:
     stream_url_2: str = ""
     stream_url_3: str = ""
     stream_url_4: str = ""
+    tunein_station_id: str = ""
 
 
 class SettingsStore:
@@ -72,6 +73,10 @@ class SettingsStore:
         with self._lock:
             return str(getattr(self._data, f"stream_url_{slot}", "") or "").strip()
 
+    def get_tunein_station_id(self) -> str:
+        with self._lock:
+            return str(self._data.tunein_station_id or "").strip()
+
     def save_from_payload(self, payload: dict, *, speaker_backend: str | None = None) -> dict:
         with self._lock:
             base = asdict(self._data)
@@ -119,8 +124,8 @@ class SettingsStore:
         backend = str(speaker_backend or "").strip().lower()
 
         listen_target_type = _str("listen_target_type", defaults.listen_target_type).lower()
-        if listen_target_type not in {"preset", "stream"}:
-            raise ValueError("listen_target_type must be 'preset' or 'stream'")
+        if listen_target_type not in {"preset", "stream", "tunein"}:
+            raise ValueError("listen_target_type must be 'preset', 'stream', or 'tunein'")
 
         out = {
             "watch_volume_pct": _int_in_range(
@@ -140,12 +145,18 @@ class SettingsStore:
             "stream_url_2": _str("stream_url_2", defaults.stream_url_2),
             "stream_url_3": _str("stream_url_3", defaults.stream_url_3),
             "stream_url_4": _str("stream_url_4", defaults.stream_url_4),
+            "tunein_station_id": _str("tunein_station_id", defaults.tunein_station_id),
         }
 
         for key in ("stream_url_1", "stream_url_2", "stream_url_3", "stream_url_4"):
             value = out[key]
             if value and not (value.startswith("http://") or value.startswith("https://")):
                 raise ValueError(f"{key} must start with http:// or https://")
+
+        # Validate tunein_station_id is a bare TuneIn station ID (e.g. "s305548")
+        tunein_id = out["tunein_station_id"]
+        if tunein_id and not tunein_id.replace("-", "").replace("_", "").isalnum():
+            raise ValueError("tunein_station_id must be a plain TuneIn station ID (e.g. s305548)")
 
         # Listen target / stream URL validation only matters for speaker backends
         # that actually use the local listen-target settings.
@@ -156,5 +167,12 @@ class SettingsStore:
                     raise ValueError(
                         f"listen_target_stream points to empty {stream_key}; set a URL or choose preset"
                     )
+
+        # For samsung_soundbar, validate tunein target has a station ID configured
+        if backend == "samsung_soundbar":
+            if out["listen_target_type"] == "tunein" and not out["tunein_station_id"]:
+                raise ValueError(
+                    "listen_target_type is 'tunein' but tunein_station_id is empty; set a station ID"
+                )
 
         return out
