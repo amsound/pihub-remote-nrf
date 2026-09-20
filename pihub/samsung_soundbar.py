@@ -969,10 +969,24 @@ class SamsungSoundbar:
         if not url:
             raise RuntimeError("play_url_missing")
 
+        url_lower = url.lower().split("?")[0]
+        if url_lower.endswith(".m3u8"):
+            content_type = "application/x-mpegurl"
+        elif url_lower.endswith(".mp3"):
+            content_type = "audio/mpeg"
+        elif url_lower.endswith(".aac") or url_lower.endswith(".aacp"):
+            content_type = "audio/aac"
+        elif url_lower.endswith(".ogg"):
+            content_type = "audio/ogg"
+        else:
+            content_type = "audio/aac"  # reasonable default for live radio
+
+        logger.debug("cast play_url content_type=%s url=%s", content_type, url)
+
         def _cmd(cast) -> None:
             cast.media_controller.play_media(
                 url,
-                "audio/aac",
+                content_type,
                 stream_type="LIVE",
             )
             cast.media_controller.block_until_active(timeout=5)
@@ -995,8 +1009,14 @@ class SamsungSoundbar:
         import aiohttp
 
         resolve_url = (
-            "http://opml.radiotime.com/Tune.ashx"
-            f"?id={station_id}&formats=aac,mp3&render=json"
+            "https://opml.radiotime.com/Tune.ashx"
+            f"?id={station_id}"
+            "&partnerId=RadioTime"
+            "&version=5.38"
+            "&listenId=1"
+            "&formats=mp3,aac,ogg,hls"
+            "&type=station"
+            "&render=json"
         )
 
         logger.debug("tunein resolve station_id=%s url=%s", station_id, resolve_url)
