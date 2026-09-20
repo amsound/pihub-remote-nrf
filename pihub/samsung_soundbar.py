@@ -966,4 +966,63 @@ class SamsungSoundbar:
         raise RuntimeError("unsupported_on_backend:previous_preset")
 
     async def play_url(self, url: str) -> None:
-        raise RuntimeError("unsupported_on_backend:play_url")
+        if not url:
+            raise RuntimeError("play_url_missing")
+
+        def _cmd(cast) -> None:
+            cast.media_controller.play_media(
+                url,
+                "audio/aac",
+                stream_type="LIVE",
+            )
+            cast.media_controller.block_until_active(timeout=5)
+
+        await self._cast_command(_cmd)
+        logger.info("cast play_url url=%s", url)
+
+    async def play_tunein(self, station_id: str) -> None:
+        """Resolve a TuneIn station ID to a live stream URL and play via Cast.
+
+        The TuneIn OPML API returns a fresh signed URL on each call, which is
+        necessary for stations like Apple Music Hits that use session keys and
+        have no stable direct stream URL.
+
+        station_id: bare TuneIn station ID, e.g. "s305548" for Apple Music Hits.
+        """
+        if not station_id:
+            raise RuntimeError("play_tunein_missing_station_id")
+
+        import aiohttp
+
+        resolve_url = (
+            "http://opml.radiotime.com/Tune.ashx"
+            f"?id={station_id}&formats=aac,mp3&render=json"
+        )
+
+        logger.debug("tunein resolve station_id=%s url=%s", station_id, resolve_url)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    resolve_url,
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json(content_type=None)
+        except Exception as exc:
+            raise RuntimeError(f"tunein_resolve_failed station_id={station_id}: {exc}") from exc
+
+        body = data.get("body") or []
+        if not body:
+            raise RuntimeError(f"tunein_resolve_empty station_id={station_id}")
+
+        stream_url = (body[0] or {}).get("url", "").strip()
+        if not stream_url:
+            raise RuntimeError(f"tunein_resolve_no_url station_id={station_id}")
+
+        logger.info(
+            "tunein resolved station_id=%s stream_url=%s",
+            station_id,
+            stream_url,
+        )
+        await self.play_url(stream_url)
