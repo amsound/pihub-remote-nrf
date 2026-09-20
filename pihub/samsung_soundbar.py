@@ -14,6 +14,8 @@ from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 import aiohttp
 import pychromecast
 
+from .tunein import HLS_CONTENT_TYPE, TuneInError, local_ip_for, parse_station_id
+
 logger = logging.getLogger(__name__)
 logging.getLogger("pychromecast.discovery").setLevel(logging.ERROR)
 
@@ -27,6 +29,20 @@ AIRPLAY_MDNS_RESOLVE_TIMEOUT_MS = 2000
 VOLUME_STEP = 0.01
 CAST_DISCOVERY_TIMEOUT_S = 5
 CAST_WATCHDOG_INTERVAL_S = 60.0
+
+
+def _guess_content_type(url: str) -> str:
+    """Guess a Cast content type from a media URL's extension."""
+    path = url.lower().split("?")[0]
+    if path.endswith(".m3u8"):
+        return HLS_CONTENT_TYPE
+    if path.endswith(".mp3"):
+        return "audio/mpeg"
+    if path.endswith((".aac", ".aacp")):
+        return "audio/aac"
+    if path.endswith(".ogg"):
+        return "audio/ogg"
+    return "audio/aac"  # reasonable default for live radio
 
 
 def _now() -> float:
@@ -100,8 +116,10 @@ class SamsungSoundbar:
         command_interval_s: float = 0.10,
         tv: Any = None,
         state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        http_server_port: int | None = None,
     ) -> None:
         self._speaker_ip = (speaker_ip or "").strip()
+        self._http_server_port = int(http_server_port) if http_server_port else None
         self._command_interval_s = max(0.05, float(command_interval_s))
 
         self._enabled = False
@@ -935,11 +953,60 @@ class SamsungSoundbar:
         cur = bool(self._state.muted) if self._state.muted is not None else False
         await self.set_muted(not cur)
 
+    @staticmethod
+    def _media_status(cast) -> Any:
+        """Current media status for the running receiver app, or None."""
+        mc = cast.media_controller
+        with contextlib.suppress(Exception):
+            mc.update_status()
+        return getattr(mc, "status", None)
+
     async def play(self) -> None:
-        raise RuntimeError("unsupported_on_backend:play")
+        def _cmd(cast) -> None:
+            cast.media_controller.play()
+
+        await self._cast_command(_cmd)
 
     async def pause(self) -> None:
-        raise RuntimeError("unsupported_on_backend:pause")
+        def _cmd(cast) -> None:
+            status = self._media_status(cast)
+            # Live radio is not always pausable; the receiver advertises this.
+            if status is not None and not status.supports_pause:
+                raise RuntimeError("unsupported_on_backend:pause")
+            cast.media_controller.pause()
+
+        await self._cast_command(_cmd)
+
+    async def play_pause(self) -> None:
+        """Toggle transport state on whatever the soundbar is casting.
+
+        Note that live radio only has the short DVR window the stream
+        publishes, so resuming after a long pause drops back to the live edge
+        rather than continuing where it left off.
+        """
+        def _cmd(cast) -> None:
+            mc = cast.media_controller
+            status = self._media_status(cast)
+
+            if status is None or status.player_is_idle:
+                raise RuntimeError("unsupported_on_backend:play_pause_no_media")
+
+            if status.player_is_playing:
+                if not status.supports_pause:
+                    raise RuntimeError("unsupported_on_backend:play_pause_not_pausable")
+                mc.pause()
+            else:
+                mc.play()
+
+        await self._cast_command(_cmd)
+
+    async def next_track(self) -> None:
+        # Live radio has no track list; declared so the remote's transport keys
+        # degrade quietly instead of raising a speaker fault.
+        raise RuntimeError("unsupported_on_backend:next_track")
+
+    async def previous_track(self) -> None:
+        raise RuntimeError("unsupported_on_backend:previous_track")
 
     async def stop_playback(self) -> None:
         def _cmd(cast) -> None:
@@ -965,21 +1032,11 @@ class SamsungSoundbar:
     async def previous_preset(self) -> None:
         raise RuntimeError("unsupported_on_backend:previous_preset")
 
-    async def play_url(self, url: str) -> None:
+    async def play_url(self, url: str, content_type: str | None = None) -> None:
         if not url:
             raise RuntimeError("play_url_missing")
 
-        url_lower = url.lower().split("?")[0]
-        if url_lower.endswith(".m3u8"):
-            content_type = "application/x-mpegurl"
-        elif url_lower.endswith(".mp3"):
-            content_type = "audio/mpeg"
-        elif url_lower.endswith(".aac") or url_lower.endswith(".aacp"):
-            content_type = "audio/aac"
-        elif url_lower.endswith(".ogg"):
-            content_type = "audio/ogg"
-        else:
-            content_type = "audio/aac"  # reasonable default for live radio
+        content_type = content_type or _guess_content_type(url)
 
         logger.debug("cast play_url content_type=%s url=%s", content_type, url)
 
@@ -994,55 +1051,62 @@ class SamsungSoundbar:
         await self._cast_command(_cmd)
         logger.info("cast play_url url=%s", url)
 
+    def _tunein_proxy_url(self, station_id: str) -> str | None:
+        """Build a LAN URL for this pihub's TuneIn HLS proxy, if reachable.
+
+        Returns None when we cannot work out an address the soundbar could
+        fetch, so the caller can fall back to casting TuneIn's own URL.
+        """
+        if not self._http_server_port:
+            return None
+
+        host_ip = local_ip_for(self._speaker_ip)
+        if not host_ip:
+            return None
+
+        return f"http://{host_ip}:{self._http_server_port}/tunein/{station_id}.m3u8"
+
     async def play_tunein(self, station_id: str) -> None:
-        """Resolve a TuneIn station ID to a live stream URL and play via Cast.
+        """Play a TuneIn station on the soundbar via Cast.
 
-        The TuneIn OPML API returns a fresh signed URL on each call, which is
-        necessary for stations like Apple Music Hits that use session keys and
-        have no stable direct stream URL.
+        Stations like Apple Music Hits are HLS-only and are published as a
+        master playlist mixing AAC-LC and HE-AAC variants behind expiring
+        signed URLs. Casting that master directly makes the receiver switch
+        codecs mid-stream (audible dropouts) and lose the stream once the
+        signature expires, so we prefer pihub's own proxy, which pins one
+        variant and keeps the URL stable. Direct casting is only a fallback.
 
-        station_id: bare TuneIn station ID, e.g. "s305548" for Apple Music Hits.
+        station_id: a bare TuneIn station ID ("s345724") or a tunein.com URL.
         """
         if not station_id:
             raise RuntimeError("play_tunein_missing_station_id")
 
-        import aiohttp
-
-        resolve_url = (
-            "https://opml.radiotime.com/Tune.ashx"
-            f"?id={station_id}"
-            "&partnerId=RadioTime"
-            "&version=5.38"
-            "&listenId=1"
-            "&formats=mp3,aac,ogg,hls"
-            "&type=station"
-            "&render=json"
-        )
-
-        logger.debug("tunein resolve station_id=%s url=%s", station_id, resolve_url)
-
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    resolve_url,
-                    timeout=aiohttp.ClientTimeout(total=8),
-                ) as resp:
-                    resp.raise_for_status()
-                    data = await resp.json(content_type=None)
-        except Exception as exc:
-            raise RuntimeError(f"tunein_resolve_failed station_id={station_id}: {exc}") from exc
+            station_id = parse_station_id(station_id)
+        except TuneInError as exc:
+            raise RuntimeError(str(exc)) from exc
 
-        body = data.get("body") or []
-        if not body:
-            raise RuntimeError(f"tunein_resolve_empty station_id={station_id}")
+        proxy_url = self._tunein_proxy_url(station_id)
+        if proxy_url:
+            logger.info("tunein station_id=%s via proxy %s", station_id, proxy_url)
+            await self.play_url(proxy_url, content_type=HLS_CONTENT_TYPE)
+            return
 
-        stream_url = (body[0] or {}).get("url", "").strip()
-        if not stream_url:
-            raise RuntimeError(f"tunein_resolve_no_url station_id={station_id}")
-
-        logger.info(
-            "tunein resolved station_id=%s stream_url=%s",
+        logger.warning(
+            "tunein station_id=%s: no local proxy URL available, casting TuneIn's "
+            "signed URL directly (expect dropouts and eventual expiry)",
             station_id,
-            stream_url,
         )
-        await self.play_url(stream_url)
+
+        from .tunein import TuneInResolver
+
+        resolver = TuneInResolver()
+        try:
+            stream_url, media_type = await resolver.resolve_stream_url(station_id)
+        except TuneInError as exc:
+            raise RuntimeError(str(exc)) from exc
+        finally:
+            await resolver.close()
+
+        content_type = HLS_CONTENT_TYPE if media_type == "hls" else None
+        await self.play_url(stream_url, content_type=content_type)

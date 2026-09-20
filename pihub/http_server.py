@@ -18,6 +18,7 @@ from .unifying_reader import UnifyingReader
 from .speaker import SpeakerLike
 from .samsung_tv import TvController
 from .history import HistoryStore
+from .tunein import HLS_CONTENT_TYPE, TuneInError, TuneInResolver, parse_station_id
 
 def _norm_error(value: object) -> str | None:
     text = str(value or "").strip()
@@ -40,6 +41,7 @@ class HttpServer:
         history: HistoryStore | None = None,
         speaker_backend: str | None = None,
         dispatcher: Any = None,
+        tunein: TuneInResolver | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -52,6 +54,7 @@ class HttpServer:
         self._history = history
         self._speaker_backend = str(speaker_backend or "").strip().lower()
         self._dispatcher = dispatcher
+        self._tunein = tunein or TuneInResolver()
 
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -66,6 +69,7 @@ class HttpServer:
         app.add_routes(
             [
                 web.get("/health", self._handle_health),
+                web.get("/tunein/{station_id}.m3u8", self._handle_tunein_playlist),
                 web.get("/dashboard", self._handle_dashboard),
                 web.get("/tools", self._handle_tools),
                 web.get("/settings", self._handle_settings),
@@ -99,6 +103,8 @@ class HttpServer:
     async def stop(self) -> None:
         runner, self._runner = self._runner, None
         self._site = None
+        with contextlib.suppress(Exception):
+            await self._tunein.close()
         if runner is None:
             return
         with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -107,6 +113,30 @@ class HttpServer:
     async def _handle_health(self, _: web.Request) -> web.Response:
         snapshot = self.snapshot()
         return web.json_response(snapshot, status=200)
+
+    async def _handle_tunein_playlist(self, request: web.Request) -> web.Response:
+        """Serve a TuneIn station's pinned HLS media playlist.
+
+        Cast devices get a stable local URL here instead of TuneIn's expiring
+        signed one, and the playlist advertises a single codec so the receiver
+        never switches variants mid-stream.
+        """
+        raw = request.match_info.get("station_id", "")
+        try:
+            station_id = parse_station_id(raw)
+        except TuneInError:
+            raise web.HTTPBadRequest(text=f"bad station id: {raw}")
+
+        try:
+            body = await self._tunein.media_playlist(station_id)
+        except TuneInError as exc:
+            raise web.HTTPBadGateway(text=str(exc))
+
+        return web.Response(
+            text=body,
+            content_type=HLS_CONTENT_TYPE,
+            headers={"Cache-Control": "no-cache, no-store"},
+        )
 
     async def _handle_flow_run(self, request: web.Request) -> web.Response:
         if self._runtime is None:
@@ -1395,9 +1425,10 @@ pre.json {{
           <div class="field" id="listen-target-tunein-field">
             <label for="tunein_station_id">TuneIn station ID</label>
             <input id="tunein_station_id" name="tunein_station_id" type="text"
-              placeholder="e.g. s305548" value="{field('tunein_station_id')}">
+              placeholder="e.g. s345724" value="{field('tunein_station_id')}">
             <p class="muted" style="margin-top:0.4rem;font-size:0.8rem;">
-              Find the station ID in your TuneIn URL, e.g. tuneIn.com/radio/.../<strong>s305548</strong>/
+              Paste the station URL (e.g. tunein.com/radio/Apple-Music-Hits-<strong>s345724</strong>/)
+              or just the station ID &mdash; either is accepted.
             </p>
           </div>
         </div>

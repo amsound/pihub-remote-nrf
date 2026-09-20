@@ -189,6 +189,9 @@ async def main() -> None:
                 speaker = SamsungSoundbar(
                     speaker_ip=cfg.speaker_ip,
                     tv=tv,
+                    # Lets the soundbar cast TuneIn via pihub's own HLS proxy
+                    # instead of TuneIn's expiring signed URL.
+                    http_server_port=cfg.http_server_port,
                 )
         else:
             raise ValueError(f"unsupported SPEAKER_BACKEND={cfg.speaker_backend!r}")

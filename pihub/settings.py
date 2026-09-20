@@ -7,6 +7,8 @@ import os
 from dataclasses import asdict, dataclass
 from threading import RLock
 
+from .tunein import TuneInError, parse_station_id
+
 
 DEFAULT_SETTINGS_PATH = "/data/settings.json"
 
@@ -153,10 +155,17 @@ class SettingsStore:
             if value and not (value.startswith("http://") or value.startswith("https://")):
                 raise ValueError(f"{key} must start with http:// or https://")
 
-        # Validate tunein_station_id is a bare TuneIn station ID (e.g. "s305548")
+        # Accept either a bare station ID ("s345724") or a pasted tunein.com
+        # station URL, and store the normalised ID.
         tunein_id = out["tunein_station_id"]
-        if tunein_id and not tunein_id.replace("-", "").replace("_", "").isalnum():
-            raise ValueError("tunein_station_id must be a plain TuneIn station ID (e.g. s305548)")
+        if tunein_id:
+            try:
+                out["tunein_station_id"] = parse_station_id(tunein_id)
+            except TuneInError:
+                raise ValueError(
+                    "tunein_station_id must be a TuneIn station ID (e.g. s345724) or a "
+                    "tunein.com station URL"
+                )
 
         # Listen target / stream URL validation only matters for speaker backends
         # that actually use the local listen-target settings.
