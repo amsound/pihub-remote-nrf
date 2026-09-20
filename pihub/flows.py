@@ -278,6 +278,11 @@ class SequenceRunner:
                         "set_volume",
                         {"setting": "listen_volume_pct"},
                     ),
+                    SequenceStep(
+                        "speaker_play_listen_target",
+                        "speaker",
+                        "play_listen_target",
+                    ),
                 ),
             ),
 
@@ -891,6 +896,13 @@ class SequenceRunner:
                 if not url:
                     raise ValueError(f"listen target stream_url_{int(target['stream'])} is empty")
                 await self._speaker.play_url(url)
+            elif target["type"] == "tunein":
+                if self._settings is None:
+                    raise ValueError("tunein listen target configured but settings unavailable")
+                station_id = self._settings.get_tunein_station_id()
+                if not station_id:
+                    raise ValueError("listen_target_type is 'tunein' but tunein_station_id is empty")
+                await self._speaker.play_tunein(station_id)
             else:
                 raise ValueError(f"unsupported listen target type: {target['type']}")
             return
