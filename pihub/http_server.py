@@ -1380,8 +1380,27 @@ pre.json {{
             backend_note_html = """
     <section class="section">
       <div class="chip">Samsung Soundbar backend detected</div>
-      <p class="muted" style="margin-top:0.75rem;">Listen target preset and stream URL settings are hidden with the Soundbar backend.</p>
     </section>
+"""
+            listen_target_html = f"""
+        <h2 style="margin-top:1.25rem;">Listen Flow</h2>
+        <div class="form-grid">
+          <div class="field">
+            <label for="listen_target_type">Listen action</label>
+            <select id="listen_target_type" name="listen_target_type">
+              <option value="preset"{selected('listen_target_type', 'preset')}>None (volume only)</option>
+              <option value="tunein"{selected('listen_target_type', 'tunein')}>Play TuneIn station via Cast</option>
+            </select>
+          </div>
+          <div class="field" id="listen-target-tunein-field">
+            <label for="tunein_station_id">TuneIn station ID</label>
+            <input id="tunein_station_id" name="tunein_station_id" type="text"
+              placeholder="e.g. s305548" value="{field('tunein_station_id')}">
+            <p class="muted" style="margin-top:0.4rem;font-size:0.8rem;">
+              Find the station ID in your TuneIn URL, e.g. tuneIn.com/radio/.../<strong>s305548</strong>/
+            </p>
+          </div>
+        </div>
 """
         else:
             listen_target_html = f"""
@@ -1523,13 +1542,29 @@ button:hover {{
   <script>
     (function () {{
       const typeSelect = document.getElementById("listen_target_type");
+
+      // AudioPro / LinkPlay backend fields
       const presetField = document.getElementById("listen-target-preset-field");
       const streamField = document.getElementById("listen-target-stream-field");
 
+      // Samsung Soundbar backend fields
+      const tuneinField = document.getElementById("listen-target-tunein-field");
+
       function updateListenTargetFields() {{
         const mode = typeSelect ? typeSelect.value : "";
-        if (!presetField || !streamField) return;
 
+        // Soundbar path: show/hide TuneIn station ID field
+        if (tuneinField) {{
+          if (mode === "tunein") {{
+            tuneinField.classList.remove("hidden");
+          }} else {{
+            tuneinField.classList.add("hidden");
+          }}
+          return;
+        }}
+
+        // AudioPro path: show/hide preset and stream slot fields
+        if (!presetField || !streamField) return;
         if (mode === "preset") {{
           presetField.classList.remove("hidden");
           streamField.classList.add("hidden");
