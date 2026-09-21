@@ -81,6 +81,10 @@ DROP_BOXES = ("emsg",)
 # hours for several stations at once.
 SEGMENT_REGISTRY_MAX = 4096
 
+# emsg boxes sit ahead of the media data, so only the head of a segment is
+# checked; scanning the audio payload would risk false matches.
+EMSG_SCAN_BYTES = 65536
+
 
 def strip_boxes(data: bytes, drop: tuple[str, ...] = DROP_BOXES) -> tuple[bytes, int]:
     """Remove top-level MP4 boxes of the given types.
@@ -512,4 +516,14 @@ class TuneInResolver:
         except Exception as exc:
             raise TuneInError(f"tunein_segment_fetch_failed: {exc}") from exc
 
-        return strip_boxes(raw)
+        body, removed = strip_boxes(raw)
+        if removed == 0 and b"emsg" in raw[:EMSG_SCAN_BYTES]:
+            # strip_boxes passes data through untouched when it cannot parse
+            # it. If that happens to a segment carrying emsg, the Samsung
+            # receiver will quit, so make it visible.
+            logger.warning(
+                "tunein segment still contains emsg after stripping bytes=%d url=%s",
+                len(raw),
+                url.split("?", 1)[0],
+            )
+        return body, removed

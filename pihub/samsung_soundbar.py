@@ -855,6 +855,18 @@ class SamsungSoundbar:
         # A different (or no) app means any media state we held is stale.
         player_state = self._state.cast_player_state if app_id == self._state.cast_app_id else None
 
+        if (
+            self._state.cast_player_state in CAST_PLAYING_STATES
+            and app_id != self._state.cast_app_id
+        ):
+            # The receiver app went away mid-stream without a media status
+            # saying so; this is what a receiver crash looks like.
+            logger.info(
+                "cast app changed while playing old_app=%s new_app=%s",
+                self._state.cast_app_id,
+                app_id,
+            )
+
         if friendly_name:
             self._cast_friendly_name = friendly_name
 
@@ -898,6 +910,16 @@ class SamsungSoundbar:
         player_state = self._norm_str(getattr(status, "player_state", None))
         if player_state == "UNKNOWN":
             player_state = None
+
+        was_playing = self._state.cast_player_state in CAST_PLAYING_STATES
+        if was_playing and player_state not in CAST_PLAYING_STATES:
+            # idle_reason says why: CANCELLED is a normal stop, ERROR is the
+            # receiver failing, FINISHED means it thought the stream ended.
+            logger.info(
+                "cast playback ended state=%s idle_reason=%s",
+                player_state,
+                getattr(status, "idle_reason", None),
+            )
 
         old_listen = bool(self._state.listen_active)
         changed = self._apply_state_updates(
@@ -1093,13 +1115,28 @@ class SamsungSoundbar:
     async def stop_playback(self) -> None:
         """Stop whatever the soundbar is playing over the network.
 
-        Launching the Default Media Receiver takes audio focus, which is what
-        stops AirPlay. force_launch matters for our own radio: it already runs
-        in that app, and a plain launch of the current app is a no-op in
-        pychromecast, so the stream would keep playing.
+        Our own radio runs inside the Default Media Receiver, so it is stopped
+        through its media session and the app is then closed, which leaves the
+        soundbar looking switched off. Relaunching the app does not work here:
+        the receiver just keeps the running session.
+
+        For anything else (AirPlay), launching the Default Media Receiver takes
+        audio focus, which is what stops it.
         """
         def _cmd(cast) -> None:
-            cast.start_app(DEFAULT_MEDIA_RECEIVER_APP_ID, force_launch=True)
+            status = self._media_status(cast)
+            cast_media_active = (
+                cast.app_id == DEFAULT_MEDIA_RECEIVER_APP_ID
+                and status is not None
+                and status.player_state not in (None, "UNKNOWN", "IDLE")
+            )
+
+            if cast_media_active:
+                cast.media_controller.stop()
+                cast.quit_app()
+                return
+
+            cast.start_app(DEFAULT_MEDIA_RECEIVER_APP_ID)
 
         await self._cast_command(_cmd)
 
