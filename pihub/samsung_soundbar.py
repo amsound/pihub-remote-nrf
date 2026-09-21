@@ -28,6 +28,10 @@ logging.getLogger("pychromecast.discovery").setLevel(logging.ERROR)
 DEFAULT_MEDIA_RECEIVER_APP_ID = "CC1AD845"
 AIRPLAY_ACTIVE_BIT = 0x800
 
+# Buffering is part of playing a live stream; reporting it separately would make
+# automations flap every time the receiver tops up its buffer.
+CAST_PLAYING_STATES = ("PLAYING", "BUFFERING")
+
 HTTP_TIMEOUT_S = 3.0
 AIRPLAY_SERVICE_TYPE = "_airplay._tcp.local."
 AIRPLAY_MDNS_RESOLVE_TIMEOUT_MS = 2000
@@ -87,6 +91,25 @@ class _CastStatusListener:
         self._owner._cast_status_event_from_thread(status)
 
 
+class _CastMediaListener:
+    """Receives pychromecast media status updates (playing / paused / idle).
+
+    Bound to the cast it was registered on: this pychromecast version cannot
+    unregister media listeners, so events from a replaced connection are
+    ignored rather than applied.
+    """
+
+    def __init__(self, owner: "SamsungSoundbar", cast: Any) -> None:
+        self._owner = owner
+        self._cast = cast
+
+    def new_media_status(self, status: Any) -> None:
+        self._owner._cast_media_event_from_thread(self._cast, status)
+
+    def load_media_failed(self, queue_item_id: int, error_code: int) -> None:
+        logger.warning("cast load_media_failed item=%s error_code=%s", queue_item_id, error_code)
+
+
 @dataclass
 class SamsungSoundbarState:
     reachable: bool = False
@@ -107,6 +130,8 @@ class SamsungSoundbarState:
     friendly_name: str | None = None
     cast_app_id: str | None = None
     cast_app_name: str | None = None
+    # Receiver media state: PLAYING / BUFFERING / PAUSED / IDLE, or None.
+    cast_player_state: str | None = None
 
     airplay_flags: int | None = None
     airplay_device: str | None = None
@@ -348,6 +373,9 @@ class SamsungSoundbar:
 
         with contextlib.suppress(Exception):
             cast.register_status_listener(self._cast_status_listener)
+
+        with contextlib.suppress(Exception):
+            cast.media_controller.register_status_listener(_CastMediaListener(self, cast))
 
         if not self._cast_connected_logged:
             cast_info = getattr(cast, "cast_info", None)
@@ -755,6 +783,38 @@ class SamsungSoundbar:
 
         return changed
 
+    def _derived_state(
+        self,
+        *,
+        airplay_flags: int | None,
+        cast_app_id: str | None,
+        cast_player_state: str | None,
+    ) -> dict[str, Any]:
+        """Fields that follow from AirPlay flags plus the Cast receiver state."""
+        airplay_active = bool(isinstance(airplay_flags, int) and (airplay_flags & AIRPLAY_ACTIVE_BIT))
+        cast_playing = bool(cast_app_id) and cast_player_state in CAST_PLAYING_STATES
+
+        if airplay_active:
+            sound_from = "airplay"
+        elif cast_app_id:
+            sound_from = "google_cast"
+        else:
+            sound_from = None
+
+        listen_active = airplay_active or cast_playing
+        return {
+            "listen_active": listen_active,
+            "source": self._derive_source(airplay_active=airplay_active, cast_app_id=cast_app_id),
+            "playback_status": self._derive_playback_status(
+                airplay_active=airplay_active,
+                cast_app_id=cast_app_id,
+                cast_player_state=cast_player_state,
+            ),
+            "power_on": True if (listen_active or cast_app_id) else None,
+            "raw_input_source": cast_app_id,
+            "sound_from": sound_from,
+        }
+
     def _apply_airplay_snapshot(
         self,
         *,
@@ -763,28 +823,14 @@ class SamsungSoundbar:
     ) -> None:
         old_listen = bool(self._state.listen_active)
 
-        listen_active = bool(
-            isinstance(airplay_flags, int) and (airplay_flags & AIRPLAY_ACTIVE_BIT)
-        )
-
-        source = self._derive_source(
-            listen_active=listen_active,
-            cast_app_id=self._state.cast_app_id,
-        )
-        playback_status = self._derive_playback_status(
-            listen_active=listen_active,
-            cast_app_id=self._state.cast_app_id,
-        )
-
         changed = self._apply_state_updates(
             airplay_flags=airplay_flags,
             airplay_device=airplay_device,
-            listen_active=listen_active,
-            source=source,
-            playback_status=playback_status,
-            power_on=True if (listen_active or self._state.cast_app_id) else None,
-            raw_input_source=self._state.cast_app_id,
-            sound_from="airplay" if listen_active else ("google_cast" if self._state.cast_app_id else None),
+            **self._derived_state(
+                airplay_flags=airplay_flags,
+                cast_app_id=self._state.cast_app_id,
+                cast_player_state=self._state.cast_player_state,
+            ),
         )
 
         if changed:
@@ -806,19 +852,8 @@ class SamsungSoundbar:
         muted = cast_status.get("muted")
         muted_norm = bool(muted) if isinstance(muted, bool) else None
 
-        listen_active = bool(
-            isinstance(self._state.airplay_flags, int)
-            and (self._state.airplay_flags & AIRPLAY_ACTIVE_BIT)
-        )
-
-        source = self._derive_source(
-            listen_active=listen_active,
-            cast_app_id=app_id,
-        )
-        playback_status = self._derive_playback_status(
-            listen_active=listen_active,
-            cast_app_id=app_id,
-        )
+        # A different (or no) app means any media state we held is stale.
+        player_state = self._state.cast_player_state if app_id == self._state.cast_app_id else None
 
         if friendly_name:
             self._cast_friendly_name = friendly_name
@@ -836,17 +871,46 @@ class SamsungSoundbar:
             friendly_name=friendly_name,
             cast_app_id=app_id,
             cast_app_name=app_name,
+            cast_player_state=player_state,
             volume=volume_norm,
             muted=muted_norm,
-            listen_active=listen_active,
-            source=source,
-            playback_status=playback_status,
-            power_on=True if (listen_active or app_id) else None,
-            raw_input_source=app_id,
-            sound_from="airplay" if listen_active else ("google_cast" if app_id else None),
+            **self._derived_state(
+                airplay_flags=self._state.airplay_flags,
+                cast_app_id=app_id,
+                cast_player_state=player_state,
+            ),
         )
 
         if changed:
+            self._maybe_emit_listen_edge(old_listen)
+
+    def _cast_media_event_from_thread(self, cast: Any, status: Any) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+
+        loop.call_soon_threadsafe(self._handle_cast_media_event, cast, status)
+
+    def _handle_cast_media_event(self, cast: Any, status: Any) -> None:
+        if not self._enabled or cast is not self._cast:
+            return
+
+        player_state = self._norm_str(getattr(status, "player_state", None))
+        if player_state == "UNKNOWN":
+            player_state = None
+
+        old_listen = bool(self._state.listen_active)
+        changed = self._apply_state_updates(
+            cast_player_state=player_state,
+            **self._derived_state(
+                airplay_flags=self._state.airplay_flags,
+                cast_app_id=self._state.cast_app_id,
+                cast_player_state=player_state,
+            ),
+        )
+
+        if changed:
+            logger.debug("cast media state=%s playback_status=%s", player_state, self._state.playback_status)
             self._maybe_emit_listen_edge(old_listen)
 
     def _maybe_emit_listen_edge(self, old_listen: bool) -> None:
@@ -867,8 +931,8 @@ class SamsungSoundbar:
         text = str(value).strip()
         return text or None
 
-    def _derive_source(self, *, listen_active: bool, cast_app_id: str | None) -> str | None:
-        if listen_active:
+    def _derive_source(self, *, airplay_active: bool, cast_app_id: str | None) -> str | None:
+        if airplay_active:
             return "airplay"
 
         if cast_app_id:
@@ -881,10 +945,19 @@ class SamsungSoundbar:
         return None
 
     @staticmethod
-    def _derive_playback_status(*, listen_active: bool, cast_app_id: str | None) -> str | None:
-        if listen_active:
+    def _derive_playback_status(
+        *,
+        airplay_active: bool,
+        cast_app_id: str | None,
+        cast_player_state: str | None,
+    ) -> str | None:
+        if airplay_active:
             return "playing"
         if cast_app_id:
+            if cast_player_state in CAST_PLAYING_STATES:
+                return "playing"
+            if cast_player_state == "PAUSED":
+                return "paused"
             return "idle"
         return None
 
@@ -1018,8 +1091,15 @@ class SamsungSoundbar:
         raise RuntimeError("unsupported_on_backend:previous_track")
 
     async def stop_playback(self) -> None:
+        """Stop whatever the soundbar is playing over the network.
+
+        Launching the Default Media Receiver takes audio focus, which is what
+        stops AirPlay. force_launch matters for our own radio: it already runs
+        in that app, and a plain launch of the current app is a no-op in
+        pychromecast, so the stream would keep playing.
+        """
         def _cmd(cast) -> None:
-            cast.start_app(DEFAULT_MEDIA_RECEIVER_APP_ID)
+            cast.start_app(DEFAULT_MEDIA_RECEIVER_APP_ID, force_launch=True)
 
         await self._cast_command(_cmd)
 
