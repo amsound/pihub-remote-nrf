@@ -855,17 +855,10 @@ class SamsungSoundbar:
         # A different (or no) app means any media state we held is stale.
         player_state = self._state.cast_player_state if app_id == self._state.cast_app_id else None
 
-        if (
-            self._state.cast_player_state in CAST_PLAYING_STATES
-            and app_id != self._state.cast_app_id
-        ):
-            # The receiver app went away mid-stream without a media status
-            # saying so; this is what a receiver crash looks like.
-            logger.info(
-                "cast app changed while playing old_app=%s new_app=%s",
-                self._state.cast_app_id,
-                app_id,
-            )
+        if app_id != self._state.cast_app_id and self._state.ready:
+            # Rare (play, stop, crash), and the timing is what matters when
+            # matching a stop against other events.
+            logger.info("cast app changed old_app=%s new_app=%s", self._state.cast_app_id, app_id)
 
         if friendly_name:
             self._cast_friendly_name = friendly_name
@@ -913,13 +906,21 @@ class SamsungSoundbar:
 
         was_playing = self._state.cast_player_state in CAST_PLAYING_STATES
         if was_playing and player_state not in CAST_PLAYING_STATES:
-            # idle_reason says why: CANCELLED is a normal stop, ERROR is the
-            # receiver failing, FINISHED means it thought the stream ended.
-            logger.info(
-                "cast playback ended state=%s idle_reason=%s",
-                player_state,
-                getattr(status, "idle_reason", None),
-            )
+            idle_reason = getattr(status, "idle_reason", None)
+            if idle_reason == "INTERRUPTED":
+                # A new load replaced the session (e.g. Listen pressed again).
+                logger.info("cast playback replaced by a new load")
+            elif player_state is None:
+                # The session vanished without a reason: the receiver app quit.
+                logger.info("cast playback lost: media session disappeared (receiver quit?)")
+            else:
+                # CANCELLED is a normal stop, ERROR is the receiver failing,
+                # FINISHED means it thought the stream ended.
+                logger.info(
+                    "cast playback ended state=%s idle_reason=%s",
+                    player_state,
+                    idle_reason,
+                )
 
         old_listen = bool(self._state.listen_active)
         changed = self._apply_state_updates(

@@ -19,6 +19,7 @@ upstream when a signature expires.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import re
@@ -323,6 +324,8 @@ class TuneInResolver:
         self._session_factory = session_factory
         self._cache: dict[str, _CachedStation] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        # Discontinuities already reported, per station (by media sequence).
+        self._seen_discontinuities: dict[str, set[int]] = {}
 
     async def close(self) -> None:
         session, self._session = self._session, None
@@ -465,6 +468,7 @@ class TuneInResolver:
                 ) as resp:
                     resp.raise_for_status()
                     body = await resp.text()
+                self._note_discontinuities(station_id, body)
                 return self._maybe_rewrite(body, cached.variant_url, to_path)
             except Exception as exc:
                 logger.info(
@@ -484,12 +488,53 @@ class TuneInResolver:
                 ) as resp:
                     resp.raise_for_status()
                     body = await resp.text()
+                self._note_discontinuities(station_id, body)
                 return self._maybe_rewrite(body, cached.variant_url, to_path)
             except Exception as exc:
                 self._cache.pop(station_id, None)
                 raise TuneInError(
                     f"tunein_playlist_fetch_failed station_id={station_id}: {exc}"
                 ) from exc
+
+    def _note_discontinuities(self, station_id: str, body: str) -> None:
+        """Log each upstream discontinuity once, with the time it occurs.
+
+        A discontinuity is where the upstream encoder switched (for example to
+        a standby input). Logged so an unexplained receiver stop can be matched
+        against one.
+        """
+        seen = self._seen_discontinuities.setdefault(station_id, set())
+        seq: int | None = None
+        pending = False
+        pdt: str | None = None
+
+        for line in body.splitlines():
+            line = line.strip()
+            if line.startswith("#EXT-X-MEDIA-SEQUENCE:"):
+                with contextlib.suppress(ValueError):
+                    seq = int(line.split(":", 1)[1])
+            elif line == "#EXT-X-DISCONTINUITY":
+                pending = True
+            elif line.startswith("#EXT-X-PROGRAM-DATE-TIME:"):
+                pdt = line.split(":", 1)[1]
+            elif line and not line.startswith("#"):
+                if pending and seq is not None and seq not in seen:
+                    seen.add(seq)
+                    logger.info(
+                        "tunein upstream discontinuity station_id=%s media_sequence=%d at=%s",
+                        station_id,
+                        seq,
+                        pdt or "?",
+                    )
+                pending = False
+                pdt = None
+                if seq is not None:
+                    seq += 1
+
+        # Keep only recent entries; the live window is a handful of segments.
+        if len(seen) > 64:
+            for old in sorted(seen)[:-32]:
+                seen.discard(old)
 
     @staticmethod
     def _maybe_rewrite(
