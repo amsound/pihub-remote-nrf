@@ -1185,6 +1185,24 @@ class SamsungSoundbar:
 
         await self._cast_command(_cmd)
 
+    async def leave_cast(self) -> None:
+        """Stop Cast playback and close the Cast app, so the TV can take the soundbar.
+
+        While a Cast app is open the soundbar stays on its network input and
+        ignores HDMI-CEC, so the radio keeps playing over the TV. Unlike
+        stop_playback this never launches an app: launching one takes audio
+        focus, which is the opposite of what the TV needs.
+        """
+        def _cmd(cast) -> None:
+            if not cast.app_id:
+                return
+            status = self._media_status(cast)
+            if status is not None and status.player_state not in (None, "UNKNOWN", "IDLE"):
+                cast.media_controller.stop()
+            cast.quit_app()
+
+        await self._cast_command(_cmd)
+
     async def fast_forward(self) -> None:
         raise RuntimeError("unsupported_on_backend:fast_forward")
 

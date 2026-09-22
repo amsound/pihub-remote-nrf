@@ -19,6 +19,11 @@ LISTEN_SOURCES = {"wifi", "airplay", "multiroom-secondary"}
 DISPATCH_SETTLE_TIMEOUT_S = 10.0
 _FLOW_DEFAULTS = SettingsData()
 
+# Samsung soundbar: after the TV comes on, HDMI-CEC/ARC takes a few seconds to
+# hand the soundbar over; a volume set before then is overridden by the TV.
+SOUNDBAR_TV_WAKE_TIMEOUT_S = 30.0
+SOUNDBAR_ARC_SETTLE_S = 5.0
+
 
 class FlowDispatchError(RuntimeError):
     def __init__(self, *, sequence_name: str, failures: list[tuple[str, str]]) -> None:
@@ -291,10 +296,35 @@ class SequenceRunner:
                 name="watch",
                 target_mode="watch",
                 steps=(
+                    # Stop the radio first: while Cast holds the soundbar, HDMI-CEC
+                    # cannot switch it to the TV, and the volume change below would
+                    # land on the music.
+                    SequenceStep(
+                        "speaker_leave_cast",
+                        "speaker",
+                        "leave_cast",
+                        mode="await",
+                    ),
                     SequenceStep(
                         "apple_tv_power_on",
                         "ble",
                         "power_on",
+                        when="tv_is_off",
+                        mode="await",
+                    ),
+                    SequenceStep(
+                        "wait_tv_on",
+                        "wait",
+                        "tv_on",
+                        {"timeout_s": SOUNDBAR_TV_WAKE_TIMEOUT_S},
+                        when="tv_is_off",
+                        mode="await",
+                    ),
+                    SequenceStep(
+                        "arc_settle",
+                        "system",
+                        "sleep",
+                        {"seconds": SOUNDBAR_ARC_SETTLE_S},
                         when="tv_is_off",
                         mode="await",
                     ),
@@ -325,6 +355,20 @@ class SequenceRunner:
                 name="watch_signal",
                 target_mode="watch",
                 steps=(
+                    # The TV came on by other means: hand it the soundbar too.
+                    SequenceStep(
+                        "speaker_leave_cast",
+                        "speaker",
+                        "leave_cast",
+                        mode="await",
+                    ),
+                    SequenceStep(
+                        "arc_settle",
+                        "system",
+                        "sleep",
+                        {"seconds": SOUNDBAR_ARC_SETTLE_S},
+                        mode="await",
+                    ),
                     SequenceStep(
                         "speaker_watch_volume",
                         "speaker",
@@ -896,6 +940,11 @@ class SequenceRunner:
         if step.domain == "speaker" and step.action == "stop_playback":
             self._require_speaker_ready(step=step)
             await self._speaker.stop_playback()
+            return
+
+        if step.domain == "speaker" and step.action == "leave_cast":
+            self._require_speaker_ready(step=step)
+            await self._speaker.leave_cast()
             return
 
         if step.domain == "speaker" and step.action == "power_off":

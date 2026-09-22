@@ -11,14 +11,28 @@ things the same way.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
-
-from .tunein import is_tunein_source
 
 SLOT_COUNT = 10
 AUDIOPRO_PRESET_SLOTS = 6
 SOUNDBAR_BACKEND = "samsung_soundbar"
+
+
+_TUNEIN_ID_RE = re.compile(r"[sgpt]\d+", re.IGNORECASE)
+_TUNEIN_URL_RE = re.compile(r"tunein\.com/.*?\b[sgpt]\d+\b", re.IGNORECASE)
+
+
+def is_tunein_source(value: str) -> bool:
+    """True for a TuneIn station ("s345724", "tunein:s345724" or a tunein.com URL).
+
+    pihub doesn't resolve these itself; the restreamer does, on every connect.
+    """
+    raw = (value or "").strip()
+    if raw.lower().startswith("tunein:"):
+        raw = raw[len("tunein:"):].strip()
+    return bool(_TUNEIN_ID_RE.fullmatch(raw) or _TUNEIN_URL_RE.search(raw))
 
 
 class SlotEmptyError(ValueError):

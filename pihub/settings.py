@@ -7,8 +7,7 @@ import os
 from dataclasses import asdict, dataclass
 from threading import RLock
 
-from .slots import SLOT_COUNT
-from .tunein import is_tunein_source
+from .slots import SLOT_COUNT, is_tunein_source
 
 
 DEFAULT_SETTINGS_PATH = "/data/settings.json"
