@@ -128,16 +128,16 @@
       "rem_ch_up":        [ { "domain": "speaker", "action": "next_preset" } ],
       "rem_ch_down":      [ { "domain": "speaker", "action": "previous_preset" } ],
 
-      "rem_1":            [ { "domain": "speaker", "action": "preset", "n": 1 } ],
-      "rem_2":            [ { "domain": "speaker", "action": "preset", "n": 2 } ],
-      "rem_3":            [ { "domain": "speaker", "action": "preset", "n": 3 } ],
-      "rem_4":            [ { "domain": "speaker", "action": "preset", "n": 4 } ],
-      "rem_5":            [ { "domain": "speaker", "action": "preset", "n": 5 } ],
-      "rem_6":            [ { "domain": "speaker", "action": "preset", "n": 6 } ],
-      "rem_7":            [ { "domain": "speaker", "action": "play_stream_url", "slot": 1 } ],
-      "rem_8":            [ { "domain": "speaker", "action": "play_stream_url", "slot": 2 } ],
-      "rem_9":            [ { "domain": "speaker", "action": "play_stream_url", "slot": 3 } ],
-      "rem_0":            [ { "domain": "speaker", "action": "play_stream_url", "slot": 4 } ]
+      "rem_1":            [ { "domain": "speaker", "action": "play_slot", "slot": 1 } ],
+      "rem_2":            [ { "domain": "speaker", "action": "play_slot", "slot": 2 } ],
+      "rem_3":            [ { "domain": "speaker", "action": "play_slot", "slot": 3 } ],
+      "rem_4":            [ { "domain": "speaker", "action": "play_slot", "slot": 4 } ],
+      "rem_5":            [ { "domain": "speaker", "action": "play_slot", "slot": 5 } ],
+      "rem_6":            [ { "domain": "speaker", "action": "play_slot", "slot": 6 } ],
+      "rem_7":            [ { "domain": "speaker", "action": "play_slot", "slot": 7 } ],
+      "rem_8":            [ { "domain": "speaker", "action": "play_slot", "slot": 8 } ],
+      "rem_9":            [ { "domain": "speaker", "action": "play_slot", "slot": 9 } ],
+      "rem_0":            [ { "domain": "speaker", "action": "play_slot", "slot": 10 } ]
     }
   }
 }

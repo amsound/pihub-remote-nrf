@@ -12,6 +12,7 @@ from contextlib import suppress
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .ble_dongle import CompiledBleFrames
+from .slots import SlotEmptyError, play_slot, resolve_slot
 from .validation import parse_ms
 
 try:
@@ -549,7 +550,7 @@ class Dispatcher:
         if not isinstance(action, str) or not action:
             return
 
-        if action == "play_stream_url":
+        if action == "play_slot":
             if self._settings is None:
                 self._set_speaker_direct_fault("direct_action_settings_missing")
                 self._log_direct_failure(
@@ -560,7 +561,8 @@ class Dispatcher:
                 )
                 return
             try:
-                slot = int(a.get("slot"))
+                backend = str(getattr(self._cfg, "speaker_backend", "") or "").strip().lower()
+                target = resolve_slot(self._settings, backend, int(a.get("slot")))
             except Exception:
                 self._set_speaker_direct_fault("direct_action_invalid_stream_slot")
                 self._log_direct_failure(
@@ -570,8 +572,11 @@ class Dispatcher:
                     rem_key=rem_key,
                 )
                 return
-            url = self._settings.get_stream_url(slot)
-            if not url:
+            try:
+                await play_slot(sp, target)
+                self._clear_speaker_direct_fault()
+                self._clear_direct_failure_latch()
+            except SlotEmptyError:
                 self._set_speaker_direct_fault("direct_action_stream_slot_empty")
                 self._log_direct_failure(
                     domain="speaker",
@@ -579,16 +584,12 @@ class Dispatcher:
                     action=action,
                     rem_key=rem_key,
                 )
-                return
-            try:
-                await sp.play_url(url)
-                self._clear_speaker_direct_fault()
-                self._clear_direct_failure_latch()
             except Exception:
-                self._set_speaker_direct_fault("direct_action_play_url_failed")
+                reason = "play_url_failed" if target.url else "speaker_action_failed"
+                self._set_speaker_direct_fault(f"direct_action_{reason}")
                 self._log_direct_failure(
                     domain="speaker",
-                    reason="play_url_failed",
+                    reason=reason,
                     action=action,
                     rem_key=rem_key,
                 )

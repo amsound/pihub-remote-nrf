@@ -13,8 +13,6 @@ from typing import Any, Awaitable, Callable
 
 import aiohttp
 
-from .tunein import TuneInError, TuneInResolver
-
 logger = logging.getLogger(__name__)
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
@@ -1497,26 +1495,6 @@ class AudioProSpeaker:
 
         cmd = f"setPlayerCmd:play:{url}"
         await self._http_command(cmd, action="play_url", refresh=True)
-
-    async def play_tunein(self, station_id: str) -> None:
-        """Resolve a TuneIn station and hand the stream URL to the speaker.
-
-        The LinkPlay firmware handles the HLS stream itself, so unlike the
-        Samsung soundbar there is nothing to pin or proxy here; it just needs a
-        freshly signed URL, since TuneIn's expire.
-        """
-        if not station_id:
-            raise RuntimeError("play_tunein_missing_station_id")
-
-        resolver = TuneInResolver()
-        try:
-            stream_url, _media_type = await resolver.resolve_stream_url(station_id)
-        except TuneInError as exc:
-            raise RuntimeError(str(exc)) from exc
-        finally:
-            await resolver.close()
-
-        await self.play_url(stream_url)
 
     async def set_source(self, source: str) -> None:
         src = (source or "").strip().lower()

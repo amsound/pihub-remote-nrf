@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from .history import FlowRunReport, FlowStepReport
 from .settings import SettingsData
+from .slots import listen_slot, play_slot, resolve_slot
 
 logger = logging.getLogger(__name__)
 
@@ -886,25 +887,10 @@ class SequenceRunner:
 
         if step.domain == "speaker" and step.action == "play_listen_target":
             self._require_speaker_ready(step=step)
-            target = self._listen_target()
-            if target["type"] == "preset":
-                await self._speaker.preset(int(target["preset"]))
-            elif target["type"] == "stream":
-                if self._settings is None:
-                    raise ValueError("stream listen target configured but settings unavailable")
-                url = self._settings.get_stream_url(int(target["stream"]))
-                if not url:
-                    raise ValueError(f"listen target stream_url_{int(target['stream'])} is empty")
-                await self._speaker.play_url(url)
-            elif target["type"] == "tunein":
-                if self._settings is None:
-                    raise ValueError("tunein listen target configured but settings unavailable")
-                station_id = self._settings.get_tunein_station_id()
-                if not station_id:
-                    raise ValueError("listen_target_type is 'tunein' but tunein_station_id is empty")
-                await self._speaker.play_tunein(station_id)
-            else:
-                raise ValueError(f"unsupported listen target type: {target['type']}")
+            if self._settings is None:
+                raise ValueError("listen target configured but settings unavailable")
+            slot = listen_slot(self._settings, self._speaker_backend)
+            await play_slot(self._speaker, resolve_slot(self._settings, self._speaker_backend, slot))
             return
 
         if step.domain == "speaker" and step.action == "stop_playback":
@@ -1020,27 +1006,6 @@ class SequenceRunner:
         except Exception:
             return int(_FLOW_DEFAULTS.listen_volume_pct)
 
-
-    def _listen_target(self) -> dict[str, int | str]:
-        if self._settings is None:
-            return {
-                "type": str(_FLOW_DEFAULTS.listen_target_type),
-                "preset": int(_FLOW_DEFAULTS.listen_target_preset),
-                "stream": int(_FLOW_DEFAULTS.listen_target_stream),
-            }
-        try:
-            target = self._settings.get_listen_target()
-            return {
-                "type": str(target.get("type") or _FLOW_DEFAULTS.listen_target_type),
-                "preset": int(target.get("preset") or _FLOW_DEFAULTS.listen_target_preset),
-                "stream": int(target.get("stream") or _FLOW_DEFAULTS.listen_target_stream),
-            }
-        except Exception:
-            return {
-                "type": str(_FLOW_DEFAULTS.listen_target_type),
-                "preset": int(_FLOW_DEFAULTS.listen_target_preset),
-                "stream": int(_FLOW_DEFAULTS.listen_target_stream),
-            }
 
     async def _wait_for_tv_on(self, *, timeout_s: float) -> None:
         if self._tv is None:

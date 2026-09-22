@@ -11,21 +11,49 @@ from typing import Any, Awaitable, Callable
 
 from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 
+import socket
+from urllib.parse import quote
+
 import aiohttp
 import pychromecast
-
-from .tunein import (
-    HLS_CONTENT_TYPE,
-    TuneInError,
-    TuneInResolver,
-    local_ip_for,
-    parse_station_id,
-)
 
 logger = logging.getLogger(__name__)
 logging.getLogger("pychromecast.discovery").setLevel(logging.ERROR)
 
 DEFAULT_MEDIA_RECEIVER_APP_ID = "CC1AD845"
+
+HLS_CONTENT_TYPE = "application/vnd.apple.mpegurl"
+
+# The restreamer (github.com/amsound/restreamer) runs on the same host as
+# pihub. The soundbar fetches from it directly, so it is addressed by this
+# host's LAN IP. Restreamed slots are passed through as AAC.
+RESTREAMER_PORT = 8000
+RESTREAMER_FMT = "adts"
+RESTREAMER_CONTENT_TYPE = "audio/aac"
+
+# Server Content-Type → what to tell the Cast receiver.
+_CAST_CONTENT_TYPES = {
+    "audio/mpeg": "audio/mpeg",
+    "audio/mp3": "audio/mpeg",
+    "audio/aac": "audio/aac",
+    "audio/aacp": "audio/aac",
+    "audio/x-aac": "audio/aac",
+    "audio/mp4": "audio/mp4",
+    "audio/ogg": "audio/ogg",
+    "application/ogg": "audio/ogg",
+    "audio/flac": "audio/flac",
+    "audio/x-flac": "audio/flac",
+    "audio/wav": "audio/wav",
+    "audio/x-wav": "audio/wav",
+}
+# Playlists the receiver cannot play itself; those slots need restreaming.
+_PLAYLIST_CONTENT_TYPES = {
+    "application/vnd.apple.mpegurl",
+    "application/x-mpegurl",
+    "audio/x-mpegurl",
+    "audio/mpegurl",
+    "audio/x-scpls",
+}
 AIRPLAY_ACTIVE_BIT = 0x800
 
 # Buffering is part of playing a live stream; reporting it separately would make
@@ -39,6 +67,25 @@ AIRPLAY_MDNS_RESOLVE_TIMEOUT_MS = 2000
 VOLUME_STEP = 0.01
 CAST_DISCOVERY_TIMEOUT_S = 5
 CAST_WATCHDOG_INTERVAL_S = 60.0
+
+
+def _local_ip_for(host: str) -> str | None:
+    """Best-effort source IP this machine would use to reach `host`."""
+    for target in (host, "8.8.8.8"):
+        if not target:
+            continue
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect((target, 80))
+                ip = str(s.getsockname()[0])
+            finally:
+                s.close()
+            if ip and not ip.startswith("127."):
+                return ip
+        except Exception:
+            continue
+    return None
 
 
 def _guess_content_type(url: str) -> str:
@@ -147,13 +194,8 @@ class SamsungSoundbar:
         command_interval_s: float = 0.10,
         tv: Any = None,
         state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
-        http_server_port: int | None = None,
-        tunein: TuneInResolver | None = None,
     ) -> None:
         self._speaker_ip = (speaker_ip or "").strip()
-        self._http_server_port = int(http_server_port) if http_server_port else None
-        # Shared with the HTTP server so both sides use one cache/session.
-        self._tunein = tunein or TuneInResolver()
         self._command_interval_s = max(0.05, float(command_interval_s))
 
         self._enabled = False
@@ -907,7 +949,9 @@ class SamsungSoundbar:
         was_playing = self._state.cast_player_state in CAST_PLAYING_STATES
         if was_playing and player_state not in CAST_PLAYING_STATES:
             idle_reason = getattr(status, "idle_reason", None)
-            if idle_reason == "INTERRUPTED":
+            if player_state == "PAUSED":
+                logger.info("cast playback paused")
+            elif idle_reason == "INTERRUPTED":
                 # A new load replaced the session (e.g. Listen pressed again).
                 logger.info("cast playback replaced by a new load")
             elif player_state is None:
@@ -1159,71 +1203,77 @@ class SamsungSoundbar:
     async def previous_preset(self) -> None:
         raise RuntimeError("unsupported_on_backend:previous_preset")
 
-    async def play_url(self, url: str, content_type: str | None = None) -> None:
+    async def play_url(
+        self,
+        url: str,
+        content_type: str | None = None,
+        restream: bool = False,
+    ) -> None:
+        """Cast a stream to the soundbar.
+
+        restream sends it via the local restreamer, which turns HLS, playlists
+        and TuneIn stations into one steady AAC stream this receiver can hold
+        onto. Otherwise the URL is cast as-is, typed from the server's own
+        Content-Type because plenty of radio URLs have no file extension.
+        """
         if not url:
             raise RuntimeError("play_url_missing")
 
-        content_type = content_type or _guess_content_type(url)
+        if restream:
+            cast_url = self._restreamer_url(url)
+            content_type = RESTREAMER_CONTENT_TYPE
+        else:
+            cast_url = url
+            if not content_type:
+                content_type = await self._probe_content_type(url) or _guess_content_type(url)
 
-        logger.debug("cast play_url content_type=%s url=%s", content_type, url)
+        logger.debug("cast play_url content_type=%s url=%s", content_type, cast_url)
 
         def _cmd(cast) -> None:
             cast.media_controller.play_media(
-                url,
+                cast_url,
                 content_type,
                 stream_type="LIVE",
             )
             cast.media_controller.block_until_active(timeout=5)
 
         await self._cast_command(_cmd)
-        logger.info("cast play_url url=%s", url)
+        if restream:
+            logger.info("cast play_url url=%s via restreamer", url)
+        else:
+            logger.info("cast play_url url=%s content_type=%s", url, content_type)
 
-    def _tunein_proxy_url(self, station_id: str) -> str | None:
-        """Build a LAN URL for this pihub's TuneIn HLS proxy, if reachable.
-
-        Returns None when we cannot work out an address the soundbar could
-        fetch, so the caller can fall back to casting TuneIn's own URL.
-        """
-        if not self._http_server_port:
-            return None
-
-        host_ip = local_ip_for(self._speaker_ip)
+    def _restreamer_url(self, src: str) -> str:
+        host_ip = _local_ip_for(self._speaker_ip)
         if not host_ip:
-            return None
+            raise RuntimeError("restreamer_host_ip_unknown")
+        return (
+            f"http://{host_ip}:{RESTREAMER_PORT}/play"
+            f"?src={quote(src, safe='')}&fmt={RESTREAMER_FMT}"
+        )
 
-        return f"http://{host_ip}:{self._http_server_port}/tunein/{station_id}.m3u8"
-
-    async def play_tunein(self, station_id: str) -> None:
-        """Play a TuneIn station on the soundbar via Cast.
-
-        HLS stations go through pihub's proxy, which pins one variant and
-        strips the metadata boxes that make this receiver quit mid-stream.
-        Stations that publish a plain MP3/AAC stream need none of that and are
-        cast directly.
-
-        station_id: a bare TuneIn station ID ("s345724") or a tunein.com URL.
-        """
-        if not station_id:
-            raise RuntimeError("play_tunein_missing_station_id")
-
+    async def _probe_content_type(self, url: str) -> str | None:
+        """Read the stream's Content-Type without downloading it."""
+        session = self._session
+        owned = session is None or session.closed
+        if owned:
+            session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT_S))
         try:
-            station_id = parse_station_id(station_id)
-            is_hls, stream_url = await self._tunein.is_hls(station_id)
-        except TuneInError as exc:
-            raise RuntimeError(str(exc)) from exc
+            async with session.get(url, headers={"Icy-MetaData": "0"}) as resp:
+                raw = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        except Exception as exc:
+            logger.debug("content-type probe failed url=%s: %s", url, exc)
+            return None
+        finally:
+            if owned:
+                await session.close()
 
-        if is_hls:
-            proxy_url = self._tunein_proxy_url(station_id)
-            if proxy_url:
-                logger.info("tunein station_id=%s via proxy %s", station_id, proxy_url)
-                await self.play_url(proxy_url, content_type=HLS_CONTENT_TYPE)
-                return
-
+        if raw in _PLAYLIST_CONTENT_TYPES:
             logger.warning(
-                "tunein station_id=%s: no local proxy URL available, casting the "
-                "upstream HLS URL directly (this receiver is likely to drop it)",
-                station_id,
+                "url=%s is a playlist (%s); the soundbar cannot play it directly, "
+                "tick Restream for this slot",
+                url,
+                raw,
             )
-
-        logger.info("tunein station_id=%s direct url=%s", station_id, stream_url)
-        await self.play_url(stream_url)
+            return HLS_CONTENT_TYPE if "mpegurl" in raw else None
+        return _CAST_CONTENT_TYPES.get(raw)

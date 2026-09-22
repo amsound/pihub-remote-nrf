@@ -7,7 +7,8 @@ import os
 from dataclasses import asdict, dataclass
 from threading import RLock
 
-from .tunein import TuneInError, parse_station_id
+from .slots import SLOT_COUNT
+from .tunein import is_tunein_source
 
 
 DEFAULT_SETTINGS_PATH = "/data/settings.json"
@@ -24,7 +25,29 @@ class SettingsData:
     stream_url_2: str = ""
     stream_url_3: str = ""
     stream_url_4: str = ""
-    tunein_station_id: str = ""
+
+    # Samsung soundbar: one stream per number key (slot 10 is key 0). Ticking
+    # restream sends it via the local restreamer (needed for HLS and playlists).
+    soundbar_stream_url_1: str = ""
+    soundbar_stream_url_2: str = ""
+    soundbar_stream_url_3: str = ""
+    soundbar_stream_url_4: str = ""
+    soundbar_stream_url_5: str = ""
+    soundbar_stream_url_6: str = ""
+    soundbar_stream_url_7: str = ""
+    soundbar_stream_url_8: str = ""
+    soundbar_stream_url_9: str = ""
+    soundbar_stream_url_10: str = ""
+    soundbar_restream_1: bool = False
+    soundbar_restream_2: bool = False
+    soundbar_restream_3: bool = False
+    soundbar_restream_4: bool = False
+    soundbar_restream_5: bool = False
+    soundbar_restream_6: bool = False
+    soundbar_restream_7: bool = False
+    soundbar_restream_8: bool = False
+    soundbar_restream_9: bool = False
+    soundbar_restream_10: bool = False
 
 
 class SettingsStore:
@@ -75,9 +98,13 @@ class SettingsStore:
         with self._lock:
             return str(getattr(self._data, f"stream_url_{slot}", "") or "").strip()
 
-    def get_tunein_station_id(self) -> str:
+    def get_soundbar_stream_url(self, slot: int) -> str:
         with self._lock:
-            return str(self._data.tunein_station_id or "").strip()
+            return str(getattr(self._data, f"soundbar_stream_url_{slot}", "") or "").strip()
+
+    def get_soundbar_restream(self, slot: int) -> bool:
+        with self._lock:
+            return bool(getattr(self._data, f"soundbar_restream_{slot}", False))
 
     def save_from_payload(self, payload: dict, *, speaker_backend: str | None = None) -> dict:
         with self._lock:
@@ -123,11 +150,28 @@ class SettingsStore:
             value = str(raw.get(name, default) or "").strip()
             return value
 
+        def _bool(name: str, default: bool = False) -> bool:
+            value = raw.get(name, default)
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(value)
+
         backend = str(speaker_backend or "").strip().lower()
 
         listen_target_type = _str("listen_target_type", defaults.listen_target_type).lower()
-        if listen_target_type not in {"preset", "stream", "tunein"}:
-            raise ValueError("listen_target_type must be 'preset', 'stream', or 'tunein'")
+        if listen_target_type == "tunein":
+            # Retired soundbar option; its stations now live in the stream slots.
+            listen_target_type = "stream"
+        if listen_target_type not in {"preset", "stream"}:
+            raise ValueError("listen_target_type must be 'preset' or 'stream'")
+
+        is_soundbar = backend == "samsung_soundbar"
+        # Audio Pro has 4 stream URLs, the soundbar 10. Settings loaded from
+        # disk (backend unknown) accept either.
+        max_stream_slot = SLOT_COUNT if (is_soundbar or not backend) else 4
+        if is_soundbar:
+            # Every soundbar slot is a stream.
+            listen_target_type = "stream"
 
         out = {
             "watch_volume_pct": _int_in_range(
@@ -141,35 +185,36 @@ class SettingsStore:
                 "listen_target_preset", 1, 6, defaults.listen_target_preset
             ),
             "listen_target_stream": _int_in_range(
-                "listen_target_stream", 1, 4, defaults.listen_target_stream
+                "listen_target_stream", 1, max_stream_slot, defaults.listen_target_stream
             ),
             "stream_url_1": _str("stream_url_1", defaults.stream_url_1),
             "stream_url_2": _str("stream_url_2", defaults.stream_url_2),
             "stream_url_3": _str("stream_url_3", defaults.stream_url_3),
             "stream_url_4": _str("stream_url_4", defaults.stream_url_4),
-            "tunein_station_id": _str("tunein_station_id", defaults.tunein_station_id),
         }
+        for n in range(1, SLOT_COUNT + 1):
+            out[f"soundbar_stream_url_{n}"] = _str(f"soundbar_stream_url_{n}")
+            out[f"soundbar_restream_{n}"] = _bool(f"soundbar_restream_{n}")
 
         for key in ("stream_url_1", "stream_url_2", "stream_url_3", "stream_url_4"):
             value = out[key]
             if value and not (value.startswith("http://") or value.startswith("https://")):
                 raise ValueError(f"{key} must start with http:// or https://")
 
-        # Accept either a bare station ID ("s345724") or a pasted tunein.com
-        # station URL, and store the normalised ID.
-        tunein_id = out["tunein_station_id"]
-        if tunein_id:
-            try:
-                out["tunein_station_id"] = parse_station_id(tunein_id)
-            except TuneInError:
+        for n in range(1, SLOT_COUNT + 1):
+            value = out[f"soundbar_stream_url_{n}"]
+            if value and not (
+                value.startswith(("http://", "https://")) or is_tunein_source(value)
+            ):
                 raise ValueError(
-                    "tunein_station_id must be a TuneIn station ID (e.g. s345724) or a "
-                    "tunein.com station URL"
+                    f"Key {n % SLOT_COUNT} stream URL must start with http:// or https://, "
+                    "or be a TuneIn station ID or tunein.com URL"
                 )
 
         # Listen target / stream URL validation only matters for speaker backends
-        # that actually use the local listen-target settings.
-        if backend not in {"samsung_soundbar"}:
+        # that actually use the local listen-target settings. Only checked on
+        # save (backend known): a file on disk may belong to either backend.
+        if backend and not is_soundbar:
             if out["listen_target_type"] == "stream":
                 stream_key = f"stream_url_{out['listen_target_stream']}"
                 if not out[stream_key]:
@@ -177,11 +222,12 @@ class SettingsStore:
                         f"listen_target_stream points to empty {stream_key}; set a URL or choose preset"
                     )
 
-        # For samsung_soundbar, validate tunein target has a station ID configured
-        if backend == "samsung_soundbar":
-            if out["listen_target_type"] == "tunein" and not out["tunein_station_id"]:
+        if is_soundbar:
+            slot = out["listen_target_stream"]
+            if not out[f"soundbar_stream_url_{slot}"]:
                 raise ValueError(
-                    "listen_target_type is 'tunein' but tunein_station_id is empty; set a station ID"
+                    f"Listen flow plays stream slot {slot}, but Key {slot % SLOT_COUNT} "
+                    "stream URL is empty"
                 )
 
         return out

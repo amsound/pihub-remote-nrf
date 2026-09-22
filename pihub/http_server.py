@@ -18,23 +18,10 @@ from .unifying_reader import UnifyingReader
 from .speaker import SpeakerLike
 from .samsung_tv import TvController
 from .history import HistoryStore
-import logging
-
-from .tunein import (
-    HLS_CONTENT_TYPE,
-    SEGMENT_CONTENT_TYPE,
-    SegmentRegistry,
-    TuneInError,
-    TuneInResolver,
-    parse_station_id,
-)
 
 def _norm_error(value: object) -> str | None:
     text = str(value or "").strip()
     return text or None
-
-logger = logging.getLogger(__name__)
-
 
 class HttpServer:
     """Expose a small HTTP control plane."""
@@ -53,7 +40,6 @@ class HttpServer:
         history: HistoryStore | None = None,
         speaker_backend: str | None = None,
         dispatcher: Any = None,
-        tunein: TuneInResolver | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -66,11 +52,6 @@ class HttpServer:
         self._history = history
         self._speaker_backend = str(speaker_backend or "").strip().lower()
         self._dispatcher = dispatcher
-        # A shared resolver keeps one cache and one HTTP session across the
-        # speaker backend and this server; only close what we created.
-        self._owns_tunein = tunein is None
-        self._tunein = tunein or TuneInResolver()
-        self._segments = SegmentRegistry()
 
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -85,8 +66,6 @@ class HttpServer:
         app.add_routes(
             [
                 web.get("/health", self._handle_health),
-                web.get("/tunein/{station_id}.m3u8", self._handle_tunein_playlist),
-                web.get("/tunein/seg/{token}", self._handle_tunein_segment),
                 web.get("/dashboard", self._handle_dashboard),
                 web.get("/tools", self._handle_tools),
                 web.get("/settings", self._handle_settings),
@@ -120,9 +99,6 @@ class HttpServer:
     async def stop(self) -> None:
         runner, self._runner = self._runner, None
         self._site = None
-        if self._owns_tunein:
-            with contextlib.suppress(Exception):
-                await self._tunein.close()
         if runner is None:
             return
         with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -131,88 +107,6 @@ class HttpServer:
     async def _handle_health(self, _: web.Request) -> web.Response:
         snapshot = self.snapshot()
         return web.json_response(snapshot, status=200)
-
-    async def _handle_tunein_playlist(self, request: web.Request) -> web.Response:
-        """Serve a TuneIn station's pinned HLS media playlist.
-
-        Cast devices get a stable local URL here instead of TuneIn's expiring
-        signed one, and the playlist advertises a single codec so the receiver
-        never switches variants mid-stream.
-        """
-        raw = request.match_info.get("station_id", "")
-        try:
-            station_id = parse_station_id(raw)
-        except TuneInError:
-            raise web.HTTPBadRequest(text=f"bad station id: {raw}")
-
-        peer = request.remote or "?"
-
-        def to_path(url: str) -> str:
-            return f"/tunein/seg/{self._segments.token_for(url)}"
-
-        try:
-            body = await self._tunein.media_playlist(station_id, to_path)
-        except TuneInError as exc:
-            # Log loudly: a receiver that stops mid-stream usually shows up here
-            # first, and aiohttp's access log is disabled for this server.
-            logger.warning(
-                "tunein playlist request failed station_id=%s peer=%s: %s",
-                station_id,
-                peer,
-                exc,
-            )
-            raise web.HTTPBadGateway(text=str(exc))
-
-        seq = ""
-        for line in body.splitlines():
-            if line.startswith("#EXT-X-MEDIA-SEQUENCE:"):
-                seq = line.split(":", 1)[1].strip()
-                break
-
-        logger.debug(
-            "tunein playlist served station_id=%s peer=%s media_sequence=%s bytes=%d",
-            station_id,
-            peer,
-            seq or "?",
-            len(body),
-        )
-
-        return web.Response(
-            text=body,
-            content_type=HLS_CONTENT_TYPE,
-            headers={"Cache-Control": "no-cache, no-store"},
-        )
-
-    async def _handle_tunein_segment(self, request: web.Request) -> web.Response:
-        """Serve one media segment, with Cast-hostile metadata boxes removed.
-
-        Apple's CMAF segments carry emsg boxes that make the Samsung soundbar's
-        Cast receiver quit a few seconds in; stripping them leaves the audio
-        bytes untouched.
-        """
-        token = request.match_info.get("token", "")
-        url = self._segments.url_for(token)
-        if not url:
-            raise web.HTTPNotFound(text="unknown segment")
-
-        try:
-            body, removed = await self._tunein.fetch_segment(url)
-        except TuneInError as exc:
-            logger.warning("tunein segment fetch failed token=%s: %s", token, exc)
-            raise web.HTTPBadGateway(text=str(exc))
-
-        logger.debug(
-            "tunein segment served token=%s bytes=%d boxes_removed=%d",
-            token,
-            len(body),
-            removed,
-        )
-
-        return web.Response(
-            body=body,
-            content_type=SEGMENT_CONTENT_TYPE,
-            headers={"Cache-Control": "no-cache, no-store"},
-        )
 
     async def _handle_flow_run(self, request: web.Request) -> web.Response:
         if self._runtime is None:
@@ -1489,24 +1383,43 @@ pre.json {{
     </section>
 """
             listen_target_html = f"""
-        <h2 style="margin-top:1.25rem;">Listen Flow</h2>
+        <h2 style="margin-top:1.25rem;">Listen Flow Preset</h2>
         <div class="form-grid">
           <div class="field">
-            <label for="listen_target_type">Listen action</label>
+            <label for="listen_target_type">Type</label>
             <select id="listen_target_type" name="listen_target_type">
-              <option value="preset"{selected('listen_target_type', 'preset')}>None (volume only)</option>
-              <option value="tunein"{selected('listen_target_type', 'tunein')}>Play TuneIn station via Cast</option>
+              <option value="stream" selected="selected">Stream URL</option>
             </select>
           </div>
-          <div class="field" id="listen-target-tunein-field">
-            <label for="tunein_station_id">TuneIn station ID</label>
-            <input id="tunein_station_id" name="tunein_station_id" type="text"
-              placeholder="e.g. s345724" value="{field('tunein_station_id')}">
-            <p class="muted" style="margin-top:0.4rem;font-size:0.8rem;">
-              Paste the station URL (e.g. tunein.com/radio/Apple-Music-Hits-<strong>s345724</strong>/)
-              or just the station ID &mdash; either is accepted.
-            </p>
+          <div class="field">
+            <label for="listen_target_stream">Stream URL slot (1–10)</label>
+            <input id="listen_target_stream" name="listen_target_stream" type="number" min="1" max="10" value="{field('listen_target_stream')}">
           </div>
+        </div>
+"""
+
+            def soundbar_slot_html(slot: int) -> str:
+                key = slot % 10
+                checked = ' checked="checked"' if settings.get(f"soundbar_restream_{slot}") else ""
+                return f"""
+          <div class="field">
+            <label for="soundbar_stream_url_{slot}">Key {key} stream URL</label>
+            <input id="soundbar_stream_url_{slot}" name="soundbar_stream_url_{slot}" type="text"
+              placeholder="Stream URL or TuneIn ID" value="{field(f'soundbar_stream_url_{slot}')}">
+            <label class="restream-toggle">
+              <input type="checkbox" name="soundbar_restream_{slot}" value="1"{checked}>
+              Restream (HLS or playlist)
+            </label>
+          </div>"""
+
+            stream_urls_html = f"""
+        <h2 style="margin-top:1.25rem;">Stream URLs</h2>
+        <p class="muted" style="margin-top:0;font-size:0.85rem;">
+          Tick Restream for HLS streams and playlists (.m3u8, .pls, .m3u) so they go
+          through the restreamer. TuneIn stations (an ID like <strong>s345724</strong> or a
+          tunein.com URL) always do. Plain MP3/AAC streams play directly.
+        </p>
+        <div class="form-grid">{"".join(soundbar_slot_html(slot) for slot in range(1, 11))}
         </div>
 """
         else:
@@ -1609,6 +1522,20 @@ button:hover {{
 .hidden {{
   display: none !important;
 }}
+.restream-toggle {{
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  font-size: 0.85rem;
+  cursor: pointer;
+}}
+.restream-toggle input[type="checkbox"] {{
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+}}
   </style>
 </head>
 <body>
@@ -1654,21 +1581,8 @@ button:hover {{
       const presetField = document.getElementById("listen-target-preset-field");
       const streamField = document.getElementById("listen-target-stream-field");
 
-      // Samsung Soundbar backend fields
-      const tuneinField = document.getElementById("listen-target-tunein-field");
-
       function updateListenTargetFields() {{
         const mode = typeSelect ? typeSelect.value : "";
-
-        // Soundbar path: show/hide TuneIn station ID field
-        if (tuneinField) {{
-          if (mode === "tunein") {{
-            tuneinField.classList.remove("hidden");
-          }} else {{
-            tuneinField.classList.add("hidden");
-          }}
-          return;
-        }}
 
         // AudioPro path: show/hide preset and stream slot fields
         if (!presetField || !streamField) return;
@@ -1701,6 +1615,11 @@ button:hover {{
 
         data = await request.post()
         payload = dict(data)
+
+        if self._speaker_backend == "samsung_soundbar":
+            for slot in range(1, 11):
+                name = f"soundbar_restream_{slot}"
+                payload[name] = name in data
 
         try:
             self._settings.save_from_payload(payload, speaker_backend=self._speaker_backend)
