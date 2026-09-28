@@ -74,14 +74,10 @@ const THEME_ICONS = {
 };
 const THEME_LABELS = { "": "Follow system", light: "Light", dark: "Dark" };
 
-// Top bar shared by Status, Settings and History: room name with a health dot
-// (hover it for any problems), the room strip, and the menu.
+// Top bar shared by Status, Settings and History: room name, room strip, menu.
 export function renderTopBar(el, current, d) {
   const tab = (href, label) => `<a href="${href}" class="${current === href ? "on" : ""}">${label}</a>`;
-  const h1 = el.querySelector("h1");
-  const problems = [...(d.problems || []), ...(d.system?.throttled ? ["Undervoltage"] : [])];
-  const health = d.system?.throttled ? "bad" : dotClass(d.status);
-  h1.innerHTML = `${esc(d.name || "PiHub")}<span class="dot ${health}" title="${esc(problems.join("\n") || "OK")}"></span>`;
+  el.querySelector("h1").textContent = d.name || "PiHub";
   const nav = el.querySelector("nav.tabs");
   if (!nav.children.length) {
     nav.innerHTML = tab("/status", "Status") + tab("/remote", "Remote") + tab("/settings", "Settings") + tab("/history", "History");
@@ -134,7 +130,10 @@ export function roomStrip(el) {
       const here = new URL(room.url).host === location.host;
       const rd = here ? current : others.get(room.url);
       const mode = rd ? MODE[rd.mode] || title(rd.mode) : "Offline";
-      return `<a class="room ${here ? "here" : ""}" href="${esc(room.url)}${location.pathname}"><span class="dot ${rd ? dotClass(rd.status) : ""}"></span>${esc(room.name)}<span class="m">${esc(mode)}</span></a>`;
+      // Dot: green OK, amber needs attention, red undervoltage; hover lists any problems.
+      const problems = rd ? [...(rd.problems || []), ...(rd.system?.throttled ? ["Undervoltage"] : [])] : [];
+      const health = !rd ? "" : rd.system?.throttled ? "bad" : dotClass(rd.status);
+      return `<a class="room ${here ? "here" : ""}" href="${esc(room.url)}${location.pathname}" title="${esc(problems.join("\n"))}"><span class="dot ${health}"></span>${esc(room.name)}<span class="m">${esc(mode)}</span></a>`;
     }).join("");
   };
 
