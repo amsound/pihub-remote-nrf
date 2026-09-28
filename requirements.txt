@@ -3,3 +3,4 @@ uvloop==0.21.0
 aiohttp>=3.9,<4
 pyserial>=3.5,<4
 pychromecast>=14,<15
+zeroconf>=0.148,<1

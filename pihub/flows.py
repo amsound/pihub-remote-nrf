@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 SPEAKER_WATCH_SOURCE = "hdmi"
 LISTEN_SOURCES = {"wifi", "airplay", "multiroom-secondary"}
 DISPATCH_SETTLE_TIMEOUT_S = 10.0
+# Upper bound on the TV state check at the start of a flow (normally milliseconds).
+TV_REFRESH_TIMEOUT_S = 3.5
 _FLOW_DEFAULTS = SettingsData()
 
 # Samsung soundbar: after the TV comes on, HDMI-CEC/ARC takes a few seconds to
@@ -459,6 +461,7 @@ class SequenceRunner:
             logger.warning("unknown flow name=%s trigger=%s source=%s", name, trigger, source)
             return False
 
+        await self._refresh_tv_presence()
         snapshot = self._build_snapshot()
         logger.debug(
             "sequence started name=%s trigger=%s source=%s snapshot=%s",
@@ -575,6 +578,16 @@ class SequenceRunner:
 
         logger.debug("sequence completed name=%s trigger=%s source=%s", seq.name, trigger, source)
         return True
+
+    async def _refresh_tv_presence(self) -> None:
+        """Make "is the TV on?" current before the flow decides anything on it."""
+        refresh = getattr(self._tv, "refresh_presence", None)
+        if refresh is None:
+            return
+        try:
+            await asyncio.wait_for(refresh(), timeout=TV_REFRESH_TIMEOUT_S)
+        except Exception:
+            logger.debug("tv presence refresh failed; using cached state", exc_info=True)
 
     def _build_snapshot(self) -> dict[str, Any]:
         speaker_snapshot = {}
@@ -959,9 +972,7 @@ class SequenceRunner:
 
         if step.domain == "speaker" and step.action == "leave_native_multiroom_if_needed":
             self._require_speaker_ready(step=step)
-            await self._speaker.leave_native_multiroom_if_needed(
-                ["192.168.70.43", "192.168.70.45", "192.168.70.46"]
-            )
+            await self._speaker.leave_native_multiroom_if_needed()
             return
 
         if step.domain == "ble" and step.action == "return_home":

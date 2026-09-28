@@ -28,6 +28,9 @@ REPEAT_RATE_MS = 300
 
 _REPEAT_KEYS = {"rem_vol_up", "rem_vol_down"}
 
+# Pending device actions per domain before new presses are dropped.
+DOMAIN_QUEUE_MAX = 4
+
 _METHOD_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
 _DENY_CALLS = {
     # lifecycle / internal methods that should never be callable from keymap
@@ -105,6 +108,12 @@ class Dispatcher:
 
         # Delayed hold triggers: (rem_key, action_index) -> task
         self._hold_tasks: Dict[Tuple[str, int], asyncio.Task] = {}
+
+        # Speaker/TV actions run on one background worker per domain, so a slow
+        # or unreachable device never holds up the next key press (BLE frames
+        # stay inline). One worker per domain keeps that domain's actions in order.
+        self._domain_queues: Dict[str, asyncio.Queue] = {}
+        self._domain_workers: Dict[str, asyncio.Task] = {}
 
         # Precompiled BLE frames per mode (hot path)
         self._ble_frames_by_mode: Dict[str, CompiledBleFrames] = {}
@@ -326,6 +335,49 @@ class Dispatcher:
 
         return False
 
+    # ---- Domain workers (speaker / tv) ----
+    def _submit(self, domain: str, job: Callable[[], Awaitable[None]]) -> None:
+        """Queue a device action without waiting for it.
+
+        The queue is short on purpose: if the device is slow, extra presses
+        (a held volume key, say) are dropped instead of piling up and playing
+        out long after the key was released.
+        """
+        queue = self._domain_queues.get(domain)
+        if queue is None:
+            queue = asyncio.Queue(maxsize=DOMAIN_QUEUE_MAX)
+            self._domain_queues[domain] = queue
+            self._domain_workers[domain] = asyncio.create_task(
+                self._domain_worker(domain, queue), name=f"dispatch:{domain}"
+            )
+        try:
+            queue.put_nowait(job)
+        except asyncio.QueueFull:
+            logger.debug("%s busy; dropped a queued action", domain)
+
+    async def _domain_worker(self, domain: str, queue: asyncio.Queue) -> None:
+        while True:
+            job = await queue.get()
+            try:
+                await job()
+            except Exception:
+                logger.exception("%s action failed", domain)
+            finally:
+                queue.task_done()
+
+    async def stop(self) -> None:
+        """Cancel background work (domain workers, repeats, holds)."""
+        await self._cancel_all_repeat_tasks()
+        await self._cancel_all_hold_tasks()
+        workers = list(self._domain_workers.values())
+        self._domain_workers.clear()
+        self._domain_queues.clear()
+        for t in workers:
+            t.cancel()
+        for t in workers:
+            with suppress(asyncio.CancelledError):
+                await t
+
     async def on_usb_disconnect(self) -> None:
         """Handle USB disconnects to prevent stuck repeats."""
         await self._cancel_all_repeat_tasks()
@@ -449,12 +501,13 @@ class Dispatcher:
             await self._handle_flow_action(a, edge, rem_key=rem_key, action_index=action_index)
             return
 
-        if domain == "tv":
-            await self._handle_tv_action(a, edge, rem_key=rem_key, action_index=action_index)
+        # Device actions fire on key-down only and never block the input path.
+        if domain == "tv" and edge == "down":
+            self._submit("tv", lambda: self._handle_tv_action(a, edge, rem_key=rem_key, action_index=action_index))
             return
 
-        if domain == "speaker":
-            await self._handle_speaker_action(a, edge, rem_key=rem_key, action_index=action_index)
+        if domain == "speaker" and edge == "down":
+            self._submit("speaker", lambda: self._handle_speaker_action(a, edge, rem_key=rem_key, action_index=action_index))
             return
 
     async def _handle_ble_action(self, a: dict, edge: str) -> None:

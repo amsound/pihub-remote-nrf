@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass
 from threading import RLock
 
 from .slots import SLOT_COUNT, is_tunein_source
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_SETTINGS_PATH = "/data/settings.json"
@@ -67,7 +70,8 @@ class SettingsStore:
             except FileNotFoundError:
                 self._data = SettingsData()
                 return
-            except Exception:
+            except Exception as exc:
+                logger.warning("settings: %s unreadable (%s); using defaults", self._path, exc)
                 self._data = SettingsData()
                 return
 
@@ -127,9 +131,24 @@ class SettingsStore:
     @staticmethod
     def _from_dict(raw: dict) -> SettingsData:
         base = asdict(SettingsData())
-        base.update({k: v for k, v in raw.items() if k in base})
-        validated = SettingsStore._validate_payload(base)
-        return SettingsData(**validated)
+        known = {k: v for k, v in raw.items() if k in base}
+        try:
+            return SettingsData(**SettingsStore._validate_payload({**base, **known}))
+        except ValueError:
+            pass
+
+        # Something on disk is invalid. Keep every value that validates and
+        # drop only the bad ones, so one bad field can't stop pihub starting
+        # or wipe the rest (stream URLs etc.).
+        good = dict(base)
+        for key, value in known.items():
+            try:
+                SettingsStore._validate_payload({**good, key: value})
+            except ValueError as exc:
+                logger.warning("settings: ignoring invalid %s=%r (%s)", key, value, exc)
+                continue
+            good[key] = value
+        return SettingsData(**SettingsStore._validate_payload(good))
 
     @staticmethod
     def _validate_payload(raw: dict, *, speaker_backend: str | None = None) -> dict:

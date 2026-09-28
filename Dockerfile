@@ -37,4 +37,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY pihub ./pihub
 
+# Logged at startup, to tell which build is running. After the code COPY so a
+# code change always stamps a new date.
+RUN date -u +"%Y-%m-%d %H:%M UTC" > /app/BUILD_DATE
+
 CMD ["/opt/venv/bin/python", "-m", "pihub.app"]

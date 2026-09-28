@@ -176,7 +176,7 @@ class RuntimeEngine:
         current_task = asyncio.current_task()
         if self._flow_running and current_task is not self._active_sequence_task:
             logger.info("mode ignored name=%s trigger=%s reason=sequence_running", name, trigger)
-            self._set_runtime_error("sequence_running", result="busy")
+            self._last_result = "busy"  # a skip, not an error
             return {
                 "ok": False,
                 "domain": "mode",
@@ -259,7 +259,7 @@ class RuntimeEngine:
             else:
                 logger.info("flow %s ignored (flow running)", name)
 
-            self._set_runtime_error("runner_busy", result="busy")
+            self._last_result = "busy"  # a skip, not an error
             return {
                 "ok": False,
                 "domain": "flow",
@@ -587,7 +587,7 @@ class RuntimeEngine:
 
         if self._lock.locked():
             logger.info("device-state %s ignored (flow running)", name)
-            self._set_runtime_error("runner_busy", result="busy")
+            self._last_result = "busy"  # a skip, not an error
             return {
                 "ok": False,
                 "name": name,

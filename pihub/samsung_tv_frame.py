@@ -254,6 +254,23 @@ class SamsungFrameTv:
         async with self._lock:
             return await self._request_access_token_unlocked()
 
+    async def refresh_presence(self, *, timeout_s: float = 2.0) -> None:
+        """Read the TV's real power state (it answers even when off).
+
+        Power is otherwise only read at startup and after pihub's own
+        commands, so a change made with the TV's own remote would go unseen.
+        """
+        async with self._lock:
+            if not self._read_token():
+                return
+            try:
+                data = await self._rpc("powerControl", timeout_s=timeout_s)
+            except Exception:
+                logger.debug("power refresh failed", exc_info=True)
+                return
+            power = self._result(data).get("power")
+            self._commit_power(power if isinstance(power, str) else None, source="ip_control_power")
+
     async def _get_power(self) -> str | None:
         data = await self._rpc("powerControl")
         power = self._result(data).get("power")

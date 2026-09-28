@@ -780,9 +780,26 @@ class TvController:
 
         return self._presence_cached is True
 
+    async def refresh_presence(self) -> None:
+        """Confirm a cached "on" before acting on it.
+
+        Presence comes from SSDP, so a missed byebye leaves the TV looking on
+        when it is off. Only "on" is re-checked: that is the state that makes a
+        flow skip power-on or send the KEY_POWER toggle to a TV that is off.
+        The probe answers in milliseconds when the TV really is on.
+        """
+        if not self._session or self._presence_cached is not True:
+            return
+        if not await presence_probe_up(self._session, self.tv_ip):
+            logger.info("tv presence was stale (cached on, probe down); now off")
+            self._commit_presence(False, source="probe_http_down")
+
     async def power_off(self, *, wait: bool = True, timeout_s: float = 25.0) -> bool:
         if not self._session:
             return False
+
+        # KEY_POWER toggles: sending it to a TV that is actually off turns it on.
+        await self.refresh_presence()
         if self._presence_cached is False:
             return True
 
@@ -1027,57 +1044,73 @@ _MSEARCH_BURST_COUNT = 3
 _MSEARCH_BURST_GAP_S = 0.4
 
 
+class _SsdpNotifyProtocol(asyncio.DatagramProtocol):
+    """Forwards SSDP NOTIFY packets from the configured TV to the controller."""
+
+    def __init__(self, tv: TvController, closed: asyncio.Future) -> None:
+        self._tv = tv
+        self._closed = closed
+
+    def datagram_received(self, data: bytes, addr: tuple) -> None:
+        if addr[0] != self._tv.tv_ip:
+            return
+
+        txt = data.decode("utf-8", errors="ignore")
+        if "NOTIFY * HTTP/1.1" not in txt:
+            return
+
+        hdr = _parse_headers(txt)
+        acted = self._tv.notify_ssdp(
+            nts=hdr.get("NTS", ""),
+            nt=hdr.get("NT", ""),
+            usn=hdr.get("USN", ""),
+            location=hdr.get("LOCATION"),
+            source="ssdp",
+        )
+        if acted and hdr.get("NTS", "") == "ssdp:alive":
+            asyncio.create_task(self._connect_ws(), name="tv:ssdp_ws_connect")
+
+    async def _connect_ws(self) -> None:
+        try:
+            await self._tv.ensure_ws_connected()
+        except Exception:
+            logger.debug("tv:ssdp ws connect failed after alive", exc_info=True)
+
+    def error_received(self, exc: Exception) -> None:
+        logger.debug("tv:ssdp socket error: %r", exc)
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        if not self._closed.done():
+            self._closed.set_result(exc)
+
+
 async def ssdp_listener(tv: TvController) -> None:
-    """Listen for SSDP NOTIFY from the configured TV IP and forward to controller."""
+    """Listen for SSDP NOTIFY from the configured TV IP and forward to controller.
+
+    Runs on the event loop (no reader thread), so cancelling it stops it at once.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("", _MCAST_PORT))
         mreq = socket.inet_aton(_MCAST_GRP) + socket.inet_aton("0.0.0.0")
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-        sock.setblocking(True)
+        sock.setblocking(False)
+    except Exception:
+        sock.close()
+        raise
 
-        while True:
-            try:
-                data, addr = await asyncio.to_thread(sock.recvfrom, 65535)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("tv:ssdp listener error")
-                await asyncio.sleep(1)
-                continue
-
-            src_ip = addr[0]
-            if src_ip != tv.tv_ip:
-                continue
-
-            txt = data.decode("utf-8", errors="ignore")
-            if "NOTIFY * HTTP/1.1" not in txt:
-                continue
-
-            hdr: dict[str, str] = {}
-            for line in txt.split("\r\n"):
-                if ":" in line:
-                    k, v = line.split(":", 1)
-                    hdr[k.strip().upper()] = v.strip()
-
-            acted = tv.notify_ssdp(
-                nts=hdr.get("NTS", ""),
-                nt=hdr.get("NT", ""),
-                usn=hdr.get("USN", ""),
-                location=hdr.get("LOCATION"),
-                source="ssdp",
-            )
-            if acted and hdr.get("NTS", "") == "ssdp:alive":
-                try:
-                    await tv.ensure_ws_connected()
-                except Exception:
-                    logger.debug("tv:ssdp ws connect failed after alive", exc_info=True)
+    loop = asyncio.get_running_loop()
+    closed: asyncio.Future = loop.create_future()
+    transport, _ = await loop.create_datagram_endpoint(
+        lambda: _SsdpNotifyProtocol(tv, closed), sock=sock
+    )
+    try:
+        exc = await closed
+        if exc is not None:
+            raise exc
     finally:
-        try:
-            sock.close()
-        except Exception:
-            pass
+        transport.close()
 
 
 def _parse_headers(packet: str) -> dict[str, str]:

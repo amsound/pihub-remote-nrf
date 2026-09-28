@@ -1429,15 +1429,20 @@ class AudioProSpeaker:
             self._state.last_update_ts = _now()
         return host_ip
 
-    async def leave_native_multiroom_if_needed(self, speaker_ips: list[str]) -> str:
+    async def leave_native_multiroom_if_needed(self, speaker_ips: list[str] | None = None) -> str:
         """
         Cleanly leave native Linkplay multiroom if this speaker is involved.
+
+        speaker_ips defaults to the configured KNOWN_SPEAKER_IPS.
 
         Returns:
         - "guest_kicked"    : this speaker was an active guest and was removed from host
         - "host_ungrouped"  : this speaker was hosting guests and ungrouped them
         - "noop"            : no native multiroom action was needed
         """
+        if speaker_ips is None:
+            speaker_ips = self._known_speaker_ips
+
         if self._state.multiroom_guest_active:
             host_ip = self._state.multiroom_host_ip
 

@@ -48,8 +48,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _build_date() -> str:
+    """When this image was built (written by the Dockerfile), or 'unknown'."""
+    try:
+        with open("/app/BUILD_DATE") as f:
+            return f.read().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
 async def main() -> None:
     """Run the PiHub control loop until interrupted."""
+    logger.info("pihub starting (built %s)", _build_date())
     cfg = Config.load()
 
     settings = SettingsStore()
@@ -262,6 +272,7 @@ async def main() -> None:
     )
 
     runtime.attach_dispatcher(dispatcher)
+    cleanup_hooks.append(("dispatcher", dispatcher.stop))
 
     await runtime.start()
 
