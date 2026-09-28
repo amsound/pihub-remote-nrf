@@ -265,7 +265,6 @@ async def main() -> None:
     dispatcher = Dispatcher(
         cfg=cfg,
         ble=ble,
-        tv=tv,
         speaker=speaker,
         settings=settings,
         run_flow=runtime.run_flow,

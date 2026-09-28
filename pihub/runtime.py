@@ -7,7 +7,7 @@ import contextlib
 import logging
 from typing import Any
 
-from .flows import FlowDispatchError, FlowRunner, FlowStepFailures, FlowWaitTimeout
+from .flows import FlowStepFailures, SequenceRunner
 from .history import FlowRunReport, HistoryStore
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ class RuntimeEngine:
         self._startup_reconciled = False
         self._lock = asyncio.Lock()
         self._active_sequence_task: asyncio.Task | None = None
-        self._flows = FlowRunner(
+        self._flows = SequenceRunner(
             runtime=self,
             tv=tv,
             speaker=speaker,
@@ -75,10 +75,6 @@ class RuntimeEngine:
             "last_error": self._last_error,
             "last_result": self._last_result,
         }
-
-    def flush_history(self) -> None:
-        if self._history is not None:
-            self._history.flush()
 
     def note_dispatch_outcome(
         self,
@@ -319,148 +315,58 @@ class RuntimeEngine:
 
                     ok = await asyncio.shield(seq_task)
 
-                if ok:
-                    if target_mode:
-                        try:
-                            await self._commit_mode_internal(
-                                target_mode,
-                                trigger=f"flow.{name}",
-                            )
-                        except Exception as exc:
-                            error = f"mode_commit_failed:{exc}"
-                            self._set_runtime_error(error, result="failed")
-                            report.finish(result="failed", error=error)
+                if not ok:
+                    return self._flow_failed(report, name=name, trigger=trigger, source=source, error="flow_failed")
 
-                            if self._history is not None:
-                                self._history.emit(
-                                    kind="flow_failed",
-                                    message=f"flow {name} failed",
-                                    level="error",
-                                    flow_name=name,
-                                    trigger=trigger,
-                                    metadata={
-                                        "source": source,
-                                        "report_id": report.id,
-                                        "error": error,
-                                        "phase": "mode_commit",
-                                        "target_mode": target_mode,
-                                    },
-                                )
-
-                            return {
-                                "ok": False,
-                                "domain": "flow",
-                                "action": "run",
-                                "name": name,
-                                "trigger": trigger,
-                                "source": source,
-                                "error": error,
-                                "report_id": report.id,
-                            }
-
-                    logical_name = {
-                        "listen_signal": "listen",
-                        "watch_signal": "watch",
-                    }.get(name, name)
-                    self._last_flow = logical_name
-
-                    result_name = "ok_with_warnings" if report.warnings else "ok"
-                    self._set_runtime_ok(result_name)
-                    report.finish(result=result_name)
-
-                    if self._history is not None:
-                        self._history.emit(
-                            kind="flow_finished",
-                            message=f"flow {name} completed",
-                            flow_name=name,
+                if target_mode:
+                    try:
+                        await self._commit_mode_internal(target_mode, trigger=f"flow.{name}")
+                    except Exception as exc:
+                        return self._flow_failed(
+                            report,
+                            name=name,
                             trigger=trigger,
-                            metadata={
-                                "source": source,
-                                "report_id": report.id,
-                                "result": result_name,
-                                "warning_count": len(report.warnings),
-                                "duration_ms": report.to_dict().get("duration_ms"),
-                                "mode": self._mode,
-                                "last_flow": self._last_flow,
-                            },
+                            source=source,
+                            error=f"mode_commit_failed:{exc}",
+                            metadata={"phase": "mode_commit", "target_mode": target_mode},
                         )
 
-                    logger.info("flow %s completed", name)
-                    return {
-                        "ok": True,
-                        "domain": "flow",
-                        "action": "run",
-                        "name": name,
-                        "mode": self._mode,
-                        "last_flow": self._last_flow,
-                        "trigger": trigger,
-                        "source": source,
-                        "report_id": report.id,
-                        "result": result_name,
-                    }
+                self._last_flow = {
+                    "listen_signal": "listen",
+                    "watch_signal": "watch",
+                }.get(name, name)
 
-                self._set_runtime_error("flow_failed", result="failed")
-                report.finish(result="failed", error="flow_failed")
+                self._set_runtime_ok("ok")
+                report.finish(result="ok")
 
                 if self._history is not None:
                     self._history.emit(
-                        kind="flow_failed",
-                        message=f"flow {name} failed",
-                        level="error",
+                        kind="flow_finished",
+                        message=f"flow {name} completed",
                         flow_name=name,
                         trigger=trigger,
                         metadata={
                             "source": source,
                             "report_id": report.id,
-                            "error": "flow_failed",
+                            "result": "ok",
+                            "duration_ms": report.to_dict().get("duration_ms"),
+                            "mode": self._mode,
+                            "last_flow": self._last_flow,
                         },
                     )
 
+                logger.info("flow %s completed", name)
                 return {
-                    "ok": False,
+                    "ok": True,
                     "domain": "flow",
                     "action": "run",
                     "name": name,
+                    "mode": self._mode,
+                    "last_flow": self._last_flow,
                     "trigger": trigger,
                     "source": source,
-                    "error": "flow_failed",
                     "report_id": report.id,
-                }
-
-            except FlowWaitTimeout as exc:
-                logger.warning(
-                    "sequence wait timeout name=%s trigger=%s source=%s error=%s",
-                    name,
-                    trigger,
-                    source,
-                    str(exc),
-                )
-                self._set_runtime_error(str(exc), result="failed")
-                report.finish(result="failed", error=str(exc))
-
-                if self._history is not None:
-                    self._history.emit(
-                        kind="flow_failed",
-                        message=f"flow {name} failed",
-                        level="error",
-                        flow_name=name,
-                        trigger=trigger,
-                        metadata={
-                            "source": source,
-                            "report_id": report.id,
-                            "error": str(exc),
-                        },
-                    )
-
-                return {
-                    "ok": False,
-                    "domain": "flow",
-                    "action": "run",
-                    "name": name,
-                    "trigger": trigger,
-                    "source": source,
-                    "error": str(exc),
-                    "report_id": report.id,
+                    "result": "ok",
                 }
 
             except FlowStepFailures as exc:
@@ -471,111 +377,60 @@ class RuntimeEngine:
                     source,
                     str(exc),
                 )
-                self._set_runtime_error(str(exc), result="failed")
-                report.finish(result="failed", error=str(exc))
-
-                if self._history is not None:
-                    self._history.emit(
-                        kind="flow_failed",
-                        message=f"flow {name} failed",
-                        level="error",
-                        flow_name=name,
-                        trigger=trigger,
-                        metadata={
-                            "source": source,
-                            "report_id": report.id,
-                            "error": str(exc),
-                            "phase": "step_failures",
-                            "failures": exc.failures,
-                        },
-                    )
-
-                return {
-                    "ok": False,
-                    "domain": "flow",
-                    "action": "run",
-                    "name": name,
-                    "trigger": trigger,
-                    "source": source,
-                    "error": str(exc),
-                    "report_id": report.id,
-                    "failures": exc.failures,
-                }
-            
-            except FlowDispatchError as exc:
-                logger.warning(
-                    "sequence dispatch settle failed name=%s trigger=%s source=%s error=%s",
-                    name,
-                    trigger,
-                    source,
-                    str(exc),
+                return self._flow_failed(
+                    report,
+                    name=name,
+                    trigger=trigger,
+                    source=source,
+                    error=str(exc),
+                    metadata={"phase": "step_failures", "failures": exc.failures},
+                    extra={"failures": exc.failures},
                 )
-                self._set_runtime_error(str(exc), result="failed")
-                report.finish(result="failed", error=str(exc))
-
-                if self._history is not None:
-                    self._history.emit(
-                        kind="flow_failed",
-                        message=f"flow {name} failed",
-                        level="error",
-                        flow_name=name,
-                        trigger=trigger,
-                        metadata={
-                            "source": source,
-                            "report_id": report.id,
-                            "error": str(exc),
-                            "phase": "dispatch_settle",
-                            "failures": [
-                                {"step_id": step_id, "error": error}
-                                for step_id, error in exc.failures
-                            ],
-                        },
-                    )
-
-                return {
-                    "ok": False,
-                    "domain": "flow",
-                    "action": "run",
-                    "name": name,
-                    "trigger": trigger,
-                    "source": source,
-                    "error": str(exc),
-                    "report_id": report.id,
-                }
 
             except Exception as exc:
                 logger.exception("sequence failed name=%s trigger=%s source=%s", name, trigger, source)
-                self._set_runtime_error(str(exc), result="failed")
-                report.finish(result="failed", error=str(exc))
-
-                if self._history is not None:
-                    self._history.emit(
-                        kind="flow_failed",
-                        message=f"flow {name} failed",
-                        level="error",
-                        flow_name=name,
-                        trigger=trigger,
-                        metadata={
-                            "source": source,
-                            "report_id": report.id,
-                            "error": str(exc),
-                        },
-                    )
-
-                return {
-                    "ok": False,
-                    "domain": "flow",
-                    "action": "run",
-                    "name": name,
-                    "trigger": trigger,
-                    "source": source,
-                    "error": str(exc),
-                    "report_id": report.id,
-                }
+                return self._flow_failed(report, name=name, trigger=trigger, source=source, error=str(exc))
 
             finally:
                 self._active_sequence_task = None
                 self._flow_running = False
+
+    def _flow_failed(
+        self,
+        report: FlowRunReport,
+        *,
+        name: str,
+        trigger: str,
+        source: str,
+        error: str,
+        metadata: dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record a failed flow (runtime status, report, history) and build its result."""
+        self._set_runtime_error(error, result="failed")
+        report.finish(result="failed", error=error)
+
+        if self._history is not None:
+            self._history.emit(
+                kind="flow_failed",
+                message=f"flow {name} failed",
+                level="error",
+                flow_name=name,
+                trigger=trigger,
+                metadata={"source": source, "report_id": report.id, "error": error, **(metadata or {})},
+            )
+
+        return {
+            "ok": False,
+            "domain": "flow",
+            "action": "run",
+            "name": name,
+            "trigger": trigger,
+            "source": source,
+            "error": error,
+            "report_id": report.id,
+            **(extra or {}),
+        }
 
     async def on_device_state_change(self, name: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         name = (name or "").strip()

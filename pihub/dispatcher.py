@@ -1,4 +1,4 @@
-"""Route remote key events to BLE, TV or Speaker methods"""
+"""Route remote key events to BLE, speaker or flow actions."""
 
 from __future__ import annotations
 
@@ -58,26 +58,27 @@ class Dispatcher:
     - BLE HID edge-accurate action:
         { "domain": "ble", "usage": "keyboard"|"consumer", "code": "<hid-name>" }
 
+    - Speaker action (runs in the background, never blocks input):
+        { "domain": "speaker", "action": "<method>", ...kwargs }
+
     - No-op:
         { "domain": "noop" }
 
     Notes:
     - Key-repeat is *not* part of keymap schema. It is forced for rem_vol_up/rem_vol_down only.
-    - Repeat applies to TV/Speaker volume only.
+    - Repeat applies to speaker volume only.
     """
 
     def __init__(
         self,
         cfg: Any,
         ble: Any,
-        tv: Any = None,
         speaker: Any = None,
         settings: Any = None,
         run_flow: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self._cfg = cfg
         self._ble = ble
-        self._tv = tv
         self._speaker = speaker
         self._settings = settings
         self._run_flow = run_flow
@@ -109,7 +110,7 @@ class Dispatcher:
         # Delayed hold triggers: (rem_key, action_index) -> task
         self._hold_tasks: Dict[Tuple[str, int], asyncio.Task] = {}
 
-        # Speaker/TV actions run on one background worker per domain, so a slow
+        # Speaker actions run on one background worker per domain, so a slow
         # or unreachable device never holds up the next key press (BLE frames
         # stay inline). One worker per domain keeps that domain's actions in order.
         self._domain_queues: Dict[str, asyncio.Queue] = {}
@@ -174,34 +175,6 @@ class Dispatcher:
 
     def _clear_direct_failure_latch(self) -> None:
         self._last_cmd_fail_log = 0.0
-
-    def _set_tv_direct_fault(self, reason: str) -> None:
-        tv = getattr(self, "_tv", None)
-        if tv is None:
-            return
-        try:
-            ws = getattr(tv, "ws", None)
-            state = getattr(ws, "state", None)
-            if state is not None:
-                state.last_error = reason
-        except Exception:
-            logger.debug("failed to set tv direct fault reason=%s", reason, exc_info=True)
-
-
-    def _clear_tv_direct_fault(self) -> None:
-        tv = getattr(self, "_tv", None)
-        if tv is None:
-            return
-        try:
-            ws = getattr(tv, "ws", None)
-            state = getattr(ws, "state", None)
-            if state is not None:
-                current = str(getattr(state, "last_error", "") or "")
-                if current.startswith("direct_action_"):
-                    state.last_error = ""
-        except Exception:
-            logger.debug("failed to clear tv direct fault", exc_info=True)
-
 
     def _set_speaker_direct_fault(self, reason: str) -> None:
         sp = getattr(self, "_speaker", None)
@@ -335,7 +308,7 @@ class Dispatcher:
 
         return False
 
-    # ---- Domain workers (speaker / tv) ----
+    # ---- Domain workers ----
     def _submit(self, domain: str, job: Callable[[], Awaitable[None]]) -> None:
         """Queue a device action without waiting for it.
 
@@ -501,11 +474,7 @@ class Dispatcher:
             await self._handle_flow_action(a, edge, rem_key=rem_key, action_index=action_index)
             return
 
-        # Device actions fire on key-down only and never block the input path.
-        if domain == "tv" and edge == "down":
-            self._submit("tv", lambda: self._handle_tv_action(a, edge, rem_key=rem_key, action_index=action_index))
-            return
-
+        # Speaker actions fire on key-down only and never block the input path.
         if domain == "speaker" and edge == "down":
             self._submit("speaker", lambda: self._handle_speaker_action(a, edge, rem_key=rem_key, action_index=action_index))
             return
@@ -677,79 +646,6 @@ class Dispatcher:
                 rem_key=rem_key,
             )
 
-    async def _handle_tv_action(
-        self,
-        a: dict,
-        edge: str,
-        *,
-        rem_key: str | None,
-        action_index: int = 0,
-    ) -> None:
-        """Handle TV actions (generic method dispatch + raw-key fallback)."""
-        if edge != "down":
-            return
-        if self._tv is None:
-            self._log_direct_failure(
-                domain="tv",
-                reason="tv_missing",
-                action=str(a.get("action") or ""),
-                rem_key=rem_key,
-            )
-            return
-
-        action = a.get("action")
-        if not isinstance(action, str) or not action:
-            return
-
-        kwargs = self._action_kwargs(a)
-        fn = getattr(self._tv, action, None)
-        if fn is not None and callable(fn) and inspect.iscoroutinefunction(fn):
-            try:
-                result = await fn(**kwargs)
-                if result is False:
-                    self._set_tv_direct_fault("direct_action_tv_not_connected")
-                    self._log_direct_failure(
-                        domain="tv",
-                        reason="tv_not_connected",
-                        action=action,
-                        rem_key=rem_key,
-                    )
-                    return
-                self._clear_tv_direct_fault()
-                self._clear_direct_failure_latch()
-            except Exception:
-                self._set_tv_direct_fault("direct_action_tv_action_failed")
-                self._log_direct_failure(
-                    domain="tv",
-                    reason="tv_action_failed",
-                    action=action,
-                    rem_key=rem_key,
-                )
-            return
-
-        try:
-            ok = await self._tv.ws.send_key(action)
-            if ok is False:
-                self._set_tv_direct_fault("direct_action_tv_not_connected")
-                self._log_direct_failure(
-                    domain="tv",
-                    reason="tv_send_failed",
-                    action=action,
-                    rem_key=rem_key,
-                )
-                return
-            self._clear_tv_direct_fault()
-            self._clear_direct_failure_latch()
-        except Exception:
-            self._set_tv_direct_fault("direct_action_tv_send_exception")
-            self._log_direct_failure(
-                domain="tv",
-                reason="tv_send_exception",
-                action=action,
-                rem_key=rem_key,
-            )
-            return
-
     async def _handle_flow_action(
         self,
         a: dict,
@@ -874,7 +770,7 @@ class Dispatcher:
                     if not isinstance(action, dict):
                         raise ValueError(f"action {mode}.{rem_key}[{idx}] must be a dict")
                     domain = action.get("domain")
-                    if domain not in {"ble", "noop", "tv", "speaker", "flow"}:
+                    if domain not in {"ble", "noop", "speaker", "flow"}:
                         raise ValueError(f"action {mode}.{rem_key}[{idx}] has unknown domain={domain!r}")
                     elif domain == "flow":
                         if action.get("action") != "run":

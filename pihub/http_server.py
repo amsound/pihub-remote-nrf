@@ -983,23 +983,6 @@ pre.json {{
                 f'</div>'
             )
 
-        def fmt_volume(value: object) -> str:
-            try:
-                n = int(value)
-            except Exception:
-                return "—"
-            return f"{n}%"
-
-        def pretty_source(value: object) -> str:
-            text = str(value or "").strip()
-            if not text:
-                return "—"
-            return text.replace("_", " ")
-
-        def pretty_text(value: object) -> str:
-            text = str(value or "").strip()
-            return text if text else "—"
-
         def ble_conn_params_text(details: dict) -> str:
             cp = details.get("conn_params") or {}
             interval_ms = cp.get("interval_ms")

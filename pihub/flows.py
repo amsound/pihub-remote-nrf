@@ -1,4 +1,4 @@
-"""Named PiHub sequences and the shared SequenceRunner."""
+"""Named PiHub flows (per speaker backend) and the SequenceRunner that runs them."""
 
 from __future__ import annotations
 
@@ -26,13 +26,6 @@ _FLOW_DEFAULTS = SettingsData()
 SOUNDBAR_TV_WAKE_TIMEOUT_S = 30.0
 SOUNDBAR_ARC_SETTLE_S = 5.0
 
-
-class FlowDispatchError(RuntimeError):
-    def __init__(self, *, sequence_name: str, failures: list[tuple[str, str]]) -> None:
-        self.sequence_name = sequence_name
-        self.failures = list(failures)
-        detail = ", ".join(f"{step_id}: {error}" for step_id, error in self.failures)
-        super().__init__(f"dispatch_failed: {detail}")
 
 class FlowStepFailures(RuntimeError):
     def __init__(self, *, sequence_name: str, failures: list[dict[str, str]]) -> None:
@@ -113,7 +106,7 @@ class SequenceRunner:
             ),
         }
 
-        self._speaker_backend = (speaker_backend or self._speaker_backend_name()).strip().lower()
+        self._speaker_backend = (speaker_backend or "").strip().lower()
         if self._speaker_backend == "samsung_soundbar":
             self._defs = self._build_samsung_soundbar_flows()
         else:
@@ -736,7 +729,7 @@ class SequenceRunner:
                 if self._is_skippable_samsung_speaker_gap(step=record.step, exc=exc):
                     if record.report is not None:
                         record.report.status = "skipped"
-                        record.report.reason = "smartthings_api_limitation"
+                        record.report.reason = "unsupported_on_samsung_soundbar"
                         record.report.error = None
 
                         record.report.outcome_status = None
@@ -836,17 +829,8 @@ class SequenceRunner:
             )
             raise
 
-    def _speaker_backend_name(self) -> str:
-        if self._speaker is None:
-            return ""
-        try:
-            snap = self._speaker.snapshot() or {}
-            return str(snap.get("backend") or "").strip().lower()
-        except Exception:
-            return ""
-
     def _is_skippable_samsung_speaker_gap(self, *, step: SequenceStep, exc: Exception) -> bool:
-        if self._speaker_backend_name() not in {"samsung_soundbar"}:
+        if self._speaker_backend != "samsung_soundbar":
             return False
 
         text = str(exc or "").strip()
@@ -1040,15 +1024,6 @@ class SequenceRunner:
         except Exception:
             return False
 
-    def _speaker_source(self) -> str:
-        if self._speaker is None:
-            return ""
-        try:
-            snap = self._speaker.snapshot()
-            return str((snap.get("source") or "")).strip().lower()
-        except Exception:
-            return ""
-
     def _watch_volume_pct(self) -> int:
         if self._settings is None:
             return int(_FLOW_DEFAULTS.watch_volume_pct)
@@ -1104,44 +1079,3 @@ class SequenceRunner:
             await asyncio.sleep(0.2)
 
         raise FlowWaitTimeout(kind="tv_off", timeout_s=timeout_s)
-
-
-class FlowRunner:
-    def __init__(
-        self,
-        *,
-        runtime: Any,
-        tv: Any = None,
-        speaker: Any = None,
-        ble: Any = None,
-        settings: Any = None,
-        speaker_backend: str | None = None,
-    ) -> None:
-        self._sequences = SequenceRunner(
-            runtime=runtime,
-            tv=tv,
-            speaker=speaker,
-            ble=ble,
-            settings=settings,
-            speaker_backend=speaker_backend,
-        )
-
-    def target_mode(self, name: str) -> str | None:
-        return self._sequences.target_mode(name)
-
-    async def run(
-        self,
-        *,
-        name: str,
-        trigger: str,
-        args: dict[str, Any] | None = None,
-        source: str = "intent",
-        report: FlowRunReport | None = None,
-    ) -> bool:
-        return await self._sequences.run(
-            name=name,
-            trigger=trigger,
-            args=args,
-            source=source,
-            report=report,
-        )

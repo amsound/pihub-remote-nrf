@@ -83,10 +83,10 @@ class BleDongleLink:
     """
     Serial dongle link.
 
-    Public API mirrors the previous controller usage:
+    Public API:
       - start/stop
-      - key_down/key_up
-      - send_key/run_macro
+      - key_down/key_up (edge-level, fire and forget)
+      - run_macro and the Apple TV macros (power_on/power_off/return_home)
       - ping/status_cmd/unpair
       - compile_ble_frames + compiled_key_down/up
       - status property
@@ -122,8 +122,7 @@ class BleDongleLink:
         self._resync_task: Optional[asyncio.Task] = None
         self._resync_delay_s: float = 0.15
 
-        self._tx_epoch: int = 0
-        self._tx_q: asyncio.Queue[tuple[int, bytes]] = asyncio.Queue(maxsize=int(tx_queue))
+        self._tx_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=int(tx_queue))
         self._tx_lock = asyncio.Lock()
 
         self._rx_buf = bytearray()
@@ -155,10 +154,6 @@ class BleDongleLink:
     def is_open(self) -> bool:
         return self._ser is not None and bool(getattr(self._ser, "is_open", False))
 
-    @property
-    def active_path(self) -> Optional[str]:
-        return self._port
-
     async def start(self) -> None:
         if self._reconnect_task and not self._reconnect_task.done():
             return
@@ -173,13 +168,6 @@ class BleDongleLink:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await t
         await self._close_serial()
-
-    async def wait_transport(self, timeout_s: float = 8.0) -> bool:
-        try:
-            await asyncio.wait_for(self._transport_evt.wait(), timeout=timeout_s)
-            return True
-        except asyncio.TimeoutError:
-            return False
 
     # ---------- status ----------
 
@@ -222,8 +210,8 @@ class BleDongleLink:
         """
         Stronger host-side failsafe to avoid stuck keys.
 
-        This intentionally discards queued HID traffic from the current epoch so the
-        zero keyboard + zero consumer reports win over stale presses/releases.
+        This intentionally discards queued HID traffic so the zero keyboard + zero
+        consumer reports win over stale presses/releases.
         """
         self._enqueue_priority_frames([
             b"\x01" + (b"\x00" * 8),
@@ -267,24 +255,10 @@ class BleDongleLink:
             raise RuntimeError(f"key_up_not_sent: unknown_{usage}_code:{code}")
         self._enqueue_strict(payload, action="key_up")
 
-    async def send_key(self, *, usage: Usage, code: str, key_hold_ms: int = 40) -> None:
-        self.key_down(usage=usage, code=code)
-        await asyncio.sleep(max(0, int(key_hold_ms)) / 1000.0)
-        self.key_up(usage=usage, code=code)
-
     async def send_key_strict(self, *, usage: Usage, code: str, key_hold_ms: int = 40) -> None:
         self.key_down_strict(usage=usage, code=code)
         await asyncio.sleep(max(0, int(key_hold_ms)) / 1000.0)
         self.key_up_strict(usage=usage, code=code)
-
-    async def press(self, *, usage: Usage, code: str, key_hold_ms: int = 40) -> None:
-        # keep the clamp behaviour you had in dispatcher
-        try:
-            ms = int(key_hold_ms)
-        except Exception:
-            ms = 40
-        ms = max(0, min(5000, ms))
-        await self.send_key(usage=usage, code=code, key_hold_ms=ms)
 
     async def run_macro(
         self,
@@ -637,12 +611,12 @@ class BleDongleLink:
             (len(payload) == 3 and payload[:1] == b"\x02")
         )
 
-    def _drain_hid_frames_current_epoch(self) -> int:
+    def _drain_hid_frames(self) -> int:
         """
-        Remove queued hot-path HID frames for the current epoch, preserving ASCII
-        control lines (PING/STATUS/UNPAIR/etc).
+        Remove queued hot-path HID frames, preserving ASCII control lines
+        (PING/STATUS/UNPAIR/etc).
         """
-        kept: list[tuple[int, bytes]] = []
+        kept: list[bytes] = []
         dropped = 0
 
         while True:
@@ -651,8 +625,7 @@ class BleDongleLink:
             except asyncio.QueueEmpty:
                 break
 
-            epoch, payload = item
-            if epoch == self._tx_epoch and self._is_hid_frame(payload):
+            if self._is_hid_frame(item):
                 dropped += 1
                 continue
             kept.append(item)
@@ -665,24 +638,24 @@ class BleDongleLink:
 
     def _enqueue_priority_frames(self, frames: list[bytes]) -> None:
         """
-        Best-effort priority injection for safety frames. Drop queued HID traffic from
-        the current epoch first, then enqueue the provided frames.
+        Best-effort priority injection for safety frames. Drop queued HID traffic
+        first, then enqueue the provided frames.
         """
         if not self.is_open:
             return
 
-        dropped = self._drain_hid_frames_current_epoch()
+        dropped = self._drain_hid_frames()
 
         for payload in frames:
             try:
-                self._tx_q.put_nowait((self._tx_epoch, payload))
+                self._tx_q.put_nowait(payload)
             except asyncio.QueueFull:
                 # If we're still full after draining HID traffic, drop one oldest item
                 # and retry once. This should be rare and mostly affects queued ASCII ops.
                 with contextlib.suppress(asyncio.QueueEmpty):
                     _ = self._tx_q.get_nowait()
                 with contextlib.suppress(asyncio.QueueFull):
-                    self._tx_q.put_nowait((self._tx_epoch, payload))
+                    self._tx_q.put_nowait(payload)
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("priority release-all queued (dropped_hid=%d)", dropped)
@@ -702,14 +675,14 @@ class BleDongleLink:
                 logger.debug("tx raw(%d): %s", len(payload), payload.hex())
 
         try:
-            self._tx_q.put_nowait((self._tx_epoch, payload))
+            self._tx_q.put_nowait(payload)
         except asyncio.QueueFull:
             # Prefer dropping the oldest payload to preserve the most recent transitions
             # (e.g., don’t drop a key-up).
             with contextlib.suppress(asyncio.QueueEmpty):
                 _ = self._tx_q.get_nowait()
             with contextlib.suppress(asyncio.QueueFull):
-                self._tx_q.put_nowait((self._tx_epoch, payload))
+                self._tx_q.put_nowait(payload)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("tx queue full; dropped oldest and kept newest (%d bytes)", len(payload))
 
@@ -722,7 +695,7 @@ class BleDongleLink:
             raise RuntimeError(f"{action}_not_sent: not_ready")
 
         try:
-            self._tx_q.put_nowait((self._tx_epoch, payload))
+            self._tx_q.put_nowait(payload)
         except asyncio.QueueFull:
             raise RuntimeError(f"{action}_not_sent: tx_queue_full")
 
@@ -730,7 +703,7 @@ class BleDongleLink:
         if not self.is_open:
             return
         framed = (line.rstrip("\r\n") + "\n").encode("ascii", errors="replace")
-        await self._tx_q.put((self._tx_epoch, framed))
+        await self._tx_q.put(framed)
 
     def _note_missing_dongle_once(self) -> None:
         if self._missing_dongle_logged:
@@ -947,9 +920,7 @@ class BleDongleLink:
     async def _writer_loop(self) -> None:
         while True:
             try:
-                epoch, payload = await self._tx_q.get()
-                if epoch != self._tx_epoch:
-                    continue
+                payload = await self._tx_q.get()
                 if self._ser is None:
                     continue
                 loop = asyncio.get_running_loop()

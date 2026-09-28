@@ -190,15 +190,6 @@ class FlowRunReport:
         self.steps.append(step)
         return step
 
-    def add_warning(self, message: str) -> None:
-        text = str(message or "").strip()
-        if text and text not in self.warnings:
-            self.warnings.append(text)
-
-    def promote_to_warning(self) -> None:
-        if self.result == "ok":
-            self.result = "ok_with_warnings"
-
     def finish(self, *, result: str, error: str | None = None) -> None:
         self.result = result
         self.error = (str(error).strip() or None) if error else None

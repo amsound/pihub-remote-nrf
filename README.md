@@ -7,7 +7,7 @@ It listens to RF key events from a Logitech Harmony Remote (simple type, no disp
 * **Samsung TV**
 * **Speaker backends**
   * **Audio Pro / LinkPlay / Arylic / WiiM** via TCP API + HTTP API
-  * **Samsung soundbar (local)** via **Google Cast + AirPlay /info**
+  * **Samsung soundbar (local)** via **Google Cast + AirPlay mDNS**
 * **Local runtime flows** over HTTP
 
 It’s lightweight, locally stateful, and tuned for Raspberry Pi 3B+ (aarch64). No Harmony Hub required.
@@ -23,7 +23,7 @@ It’s lightweight, locally stateful, and tuned for Raspberry Pi 3B+ (aarch64). 
 * **TV control** via Samsung WebSocket + SSDP discovery, or Samsung Frame IP Control on port 1516
 * **Speaker control** via pluggable speaker backends:
   * **Audio Pro / LinkPlay / WiiM** via local TCP + HTTP control
-  * **Samsung soundbar (local)** via Google Cast for control and AirPlay `/info` for listen-state detection
+  * **Samsung soundbar (local)** via Google Cast for control and playback, and AirPlay mDNS announcements for AirPlay detection
 * **Backend-aware flows**: local named flows such as `watch`, `listen`, and `power_off`, with behaviour selected automatically from the active speaker backend
 * **Device-state signals**: passive state-driven routing from TV/speaker/Apple TV AirPlay changes into local runtime behavior
 * **Precise edges**: explicit **down/up**; filters kernel auto-repeat
@@ -40,7 +40,7 @@ It’s lightweight, locally stateful, and tuned for Raspberry Pi 3B+ (aarch64). 
 * Samsung Tizen based TV (same VLAN required for SSDP and WoL)
 * One supported speaker backend:
   * **Audio Pro speaker** with local TCP/HTTP control
-  * **Samsung soundbar** with local Google Cast support and AirPlay `/info` available on the device
+  * **Samsung soundbar** with local Google Cast support (AirPlay optional, detected over mDNS)
 * Logitech Unifying receiver and BLE are the core paths
 * TV and speaker domains are optional integrations
 
@@ -130,6 +130,7 @@ docker compose up -d
 | `TV_ENABLED` | enable Samsung TV domain | default `true` |
 | `SPEAKER_BACKEND` | speaker backend and flow-profile selection | `audiopro` or `samsung_soundbar`; default `audiopro` |
 | `SPEAKER_IP` | speaker IP address | required for `audiopro` and `samsung_soundbar` |
+| `KNOWN_SPEAKER_IPS` | Audio Pro peers checked when leaving a native multiroom group (comma-separated) | defaults to the original house's three speakers |
 | `SPEAKER_ENABLED` | enable speaker domain | default `true` |
 | `APPLE_TV_IP` | Static Apple TV IP used for AirPlay mDNS session detection | empty disables Apple TV AirPlay domain |
 | `APPLE_TV_AIRPLAY_ENABLED` | enable Apple TV AirPlay session detector | default `true` |
@@ -162,29 +163,22 @@ Accept the prompt on the TV, then write `result.AccessToken` into `/data/samsung
 
 ## 🔊 Local Samsung soundbar backend
 
-For:
-SPEAKER_BACKEND=samsung_soundbar
+For `SPEAKER_BACKEND=samsung_soundbar`. Everything is local; no SmartThings or cloud.
 
-* PiHub uses two local surfaces on the soundbar:
-	*	Google Cast for:
-	*	volume
-	*	mute
-	*	stop/interruption behavior
-	*	AirPlay /info for:
-	*	local detection of whether an AirPlay session is active
+* **Google Cast** (port 8009, connected directly by IP with no discovery polling):
+  volume, mute, playback of stream slots, stop, and following what the soundbar is playing.
+* **AirPlay detection** from the soundbar's `_airplay._tcp` mDNS announcements
+  (their `flags` value). The AirPlay port is not fixed on this soundbar and changes
+  over time, so pihub never uses it directly and only reads the announcements.
+* **Stream slots:** remote keys 1–9 and 0 play `soundbar_stream_url_1..10`, set on
+  the Settings page. The Listen flow plays one of them. TuneIn stations and HLS
+  playlists go through the local [restreamer](https://github.com/amsound/restreamer)
+  (tick **Restream**); it must run on the same host as pihub, on port 8000.
+* **Stopping:** our own Cast radio is stopped and the Cast app closed. Anything else
+  (AirPlay) is interrupted by launching the default Cast receiver.
+* **Watch:** Cast is closed first (`leave_cast`), because while a Cast app is open the
+  soundbar ignores HDMI-CEC and won't switch to the TV.
 
-* Current intent of this backend:
-	*	keep speaker control fully local
-	*	avoid SmartThings/cloud dependencies
-	*	provide reliable local volume control
-	*	detect when the soundbar is actively being used for AirPlay/listen behavior
-
-Notes:
-	*	stop_playback is implemented by launching the default Google Cast receiver app to interrupt active AirPlay playback
-	*	this backend is intentionally narrower than a full source-control integration
-	*	when `SPEAKER_BACKEND=samsung_soundbar`, PiHub automatically uses a reduced flow profile that avoids unsupported Audio Pro / LinkPlay style actions
-	*	the soundbar flow profile does not call TV power commands, speaker source selection, listen target playback, multiroom leave, or speaker power-off
-	*	the soundbar flow profile relies on Apple TV BLE power macros, soundbar volume control, and local stop/interruption behavior
 ---
 
 ## 🌡️ HTTP endpoint
@@ -194,8 +188,6 @@ PiHub exposes an HTTP endpoint at:
 ```text
 http://<host>:9123
 ```
-
-The rest of the HTTP, flow, input-mapping, and troubleshooting behaviour is unchanged from the legacy Samsung TV backend.
 
 ### Web UI pages
 
@@ -320,8 +312,7 @@ Keymap concepts:
 * actions currently support:
   * `flow`
   * `ble`
-  * `tv`
-  * `speaker`
+  * `speaker` (runs in the background, so a slow speaker never delays the next key)
   * `noop`
 
 ---
@@ -455,25 +446,18 @@ Speaker stop / group handling is based on the speaker state snapshot taken at th
 
 ### Samsung soundbar flow profile
 
-When `SPEAKER_BACKEND=samsung_soundbar`, PiHub uses a reduced CEC-friendly flow profile.
+When `SPEAKER_BACKEND=samsung_soundbar`, PiHub uses a CEC-friendly profile: the Apple
+TV (over BLE) and HDMI-CEC switch the TV and soundbar; PiHub never sends TV power
+commands.
 
-This profile is intended for rooms where Apple TV / HDMI-CEC is already handling TV and soundbar power reliably. The flows avoid direct Samsung TV power commands and avoid speaker operations that the local soundbar backend does not expose meaningfully.
+* `watch`: close Cast; if the TV is off, wake the Apple TV, wait for the TV (up to
+  30 s) and let ARC settle (5 s); then set the watch volume.
+* `listen`: Apple TV off (if the TV is on), set the listen volume, play the listen slot.
+* `power_off`: Apple TV off (if the TV is on); stop the soundbar if it was playing.
+* `watch_signal` / `listen_signal`: the lighter versions run when the TV comes on, or
+  AirPlay/Cast starts, by other means.
 
-The soundbar profile may control:
-
-* Apple TV BLE power-on macro
-* Apple TV BLE power-off macro
-* soundbar volume
-* soundbar stop/interruption when the soundbar started on a listen source
-
-The soundbar profile intentionally does not call:
-
-* Samsung TV `power_on`
-* Samsung TV `power_off`
-* speaker source selection
-* listen target playback
-* LinkPlay native multiroom leave
-* speaker power-off
+Every flow re-checks the TV's real state first, so "is the TV on?" is never stale.
 
 A flow can return `ok: false` when important domain steps fail, for example if BLE is unavailable, speaker commands cannot be sent, the Samsung TV token is missing, or a bounded TV power command does not succeed in time.
 
@@ -487,10 +471,9 @@ A flow can return `ok: false` when important domain steps fail, for example if B
 * **TV flow steps fail immediately with `tv_token_missing`?** That is expected. Explicit TV power commands inside flows now require a saved Samsung TV token. First-time pairing/bootstrap should be done separately with the TV on and correctly configured network details.
 * **TV already on at boot but mode stays `power_off`?** Check `/health` for `tv.details.presence_on` and `presence_source`. Startup remains conservative until an explicit flow or later device-state signal acts.
 * **TV discovery confusion?** `presence_source` shows the most recent TV discovery source, not the current mode source of truth.
-* **Samsung soundbar state looks stale or blank?** Check `POST /refresh/speaker` and `/health` speaker details. The local Samsung backend relies on local Google Cast status for control state and the soundbar’s AirPlay `/info` endpoint for listen-state detection.
-* **Samsung soundbar AirPlay is not being detected?** Confirm the soundbar’s AirPlay endpoint is reachable on `http://<speaker-ip>:45167/info` and that `statusFlags` changes when an AirPlay session becomes active.
-* **Samsung soundbar volume works but source looks limited?** That is expected. The local Samsung backend is intentionally narrow: volume, mute, stop/interruption behavior, and local listen-state detection. It does not expose a full source-control plane, and the Samsung soundbar flow profile avoids source-selection steps entirely.
-* **Samsung soundbar stop behavior feels unusual?** For the local Samsung backend, `stop_playback` is implemented as a Google Cast app launch to interrupt active AirPlay playback.
+* **Samsung soundbar state looks stale or blank?** `POST /refresh/speaker` wakes the Cast watchdog; `/health` shows the speaker details.
+* **Samsung soundbar AirPlay not detected?** Check the soundbar's `_airplay._tcp` mDNS announcement (for example `dns-sd -L "<name>" _airplay._tcp`) and that its `flags` change when AirPlay starts.
+* **Restreamed slot won't play?** The restreamer must be running on the pihub host (port 8000); see its log for the station.
 
 ---
 
@@ -503,6 +486,8 @@ A flow can return `ok: false` when important domain steps fail, for example if B
   * last flow
   * sticky last trigger
 * Dispatcher owns key bindings and hot-path action dispatch
+
+* The first log line on startup is `pihub starting (built <date>)`, which says which build a house is running.
 
 * Build from repo root then push to docker hub
 
