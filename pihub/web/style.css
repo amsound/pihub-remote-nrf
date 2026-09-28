@@ -1,0 +1,82 @@
+/* PiHub web UI: shared look for Status, Settings and History (Remote has its own). */
+
+:root {
+  --bg: #f5f5f7;
+  --card: #ffffff;
+  --text: #1d1d1f;
+  --muted: #86868b;
+  --hair: rgba(0, 0, 0, .08);
+  --ok: #34c759;
+  --warn: #ff9f0a;
+  --bad: #ff3b30;
+  --off: #aeaeb2;
+  --accent: #0a84ff;
+  --chip: #f0f0f3;
+  --field: #f5f5f7;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .05);
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000;
+    --card: #1c1c1e;
+    --text: #f5f5f7;
+    --muted: #8e8e93;
+    --hair: rgba(255, 255, 255, .1);
+    --chip: #2c2c2e;
+    --field: #2c2c2e;
+    --shadow: none;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 18px 20px 24px; display: grid; gap: 12px; }
+
+/* Top bar */
+.top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.top h1 { font-size: 20px; margin: 0; font-weight: 700; }
+nav.tabs { margin-left: auto; display: flex; gap: 2px; background: var(--chip); padding: 3px; border-radius: 9px; }
+nav.tabs a { color: var(--text); text-decoration: none; padding: 4px 12px; border-radius: 7px; font-weight: 500; }
+nav.tabs a.on { background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, .1); }
+
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--chip); font-weight: 600; font-size: 12px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--off); flex: none; display: inline-block; }
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.bad { background: var(--bad); }
+
+.card { background: var(--card); border-radius: 14px; box-shadow: var(--shadow); padding: 14px 16px; min-width: 0; }
+.label { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+.sub { color: var(--muted); font-size: 12px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.muted { color: var(--muted); }
+.err { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); border-radius: 8px; padding: 6px 9px; font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+
+.btn { border: 0; border-radius: 9px; padding: 7px 12px; font: inherit; font-weight: 600; background: var(--chip); color: var(--text); cursor: pointer; }
+.btn:hover { filter: brightness(.96); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.primary { background: var(--accent); color: #fff; }
+.btn.danger { color: var(--bad); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; margin: 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Forms */
+.field { display: grid; gap: 5px; }
+.field label { color: var(--muted); font-size: 12px; font-weight: 600; }
+input[type="text"], input[type="number"], select {
+  width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--hair);
+  background: var(--field); color: var(--text); font: inherit;
+}
+input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 0; }
+.check { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.note { font-size: 12px; font-weight: 600; }
+.note.ok { color: var(--ok); }
+.note.bad { color: var(--bad); }

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>History · PiHub</title>
+<link rel="stylesheet" href="/web/style.css">
+<style>
+.cols { display: grid; grid-template-columns: 1.6fr 1fr; gap: 12px; align-items: start; }
+.head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.head .btn { margin-left: auto; }
+details { border-top: 1px solid var(--hair); }
+details:first-of-type { border-top: 0; }
+summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 120px 1fr auto auto; gap: 10px; align-items: center; padding: 8px 0; }
+summary::-webkit-details-marker { display: none; }
+summary .when, summary .ms { color: var(--muted); font-variant-numeric: tabular-nums; }
+summary .name { font-weight: 600; }
+summary .by { color: var(--muted); }
+.steps { display: grid; gap: 3px; padding: 2px 0 10px 12px; }
+.step { display: grid; grid-template-columns: 14px 1fr auto; gap: 8px; align-items: baseline; font-size: 12px; }
+.step .st { color: var(--muted); }
+.step .why { grid-column: 2 / -1; color: var(--muted); }
+.step .why.bad { color: var(--bad); }
+.fail { color: var(--bad); font-size: 12px; padding: 0 0 8px; }
+.event { padding: 7px 0; border-top: 1px solid var(--hair); display: grid; gap: 2px; }
+.event:first-child { border-top: 0; }
+.event .when { color: var(--muted); font-size: 12px; }
+@media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>PiHub</h1>
+    <nav class="tabs"></nav>
+  </div>
+  <div class="cols">
+    <section class="card">
+      <div class="head"><div class="label" style="margin:0">Flows</div><button class="btn danger" id="clear">Clear history</button></div>
+      <div id="flows" class="muted">Loading…</div>
+    </section>
+    <section class="card">
+      <div class="label">Warnings and errors</div>
+      <div id="events" class="muted">Loading…</div>
+    </section>
+  </div>
+</div>
+<script type="module" src="/web/history.js"></script>
+</body>
+</html>

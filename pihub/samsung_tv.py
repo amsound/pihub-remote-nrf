@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import socket
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterable, Optional
 from urllib.parse import urlparse
@@ -369,6 +370,7 @@ class TvSnapshot:
     ws_connected: bool
     token_present: bool
     last_error: str
+    changed_at: float | None = None  # wall clock of the last on/off change
 
 
 class TvController:
@@ -405,6 +407,7 @@ class TvController:
         self._presence_cached: bool | None = None
         self._presence_source: str = "unknown"
         self._presence_last_change_ts: float | None = None
+        self._presence_changed_at: float | None = None
 
         # Fires immediately when any trusted presence path marks the TV on.
         # This lets power_on() stop WoL / key sends without polling.
@@ -483,6 +486,7 @@ class TvController:
         self._presence_cached = on
         self._presence_source = source
         self._presence_last_change_ts = now
+        self._presence_changed_at = time.time()
 
         # Raw presence truth is immediate. The watch/listen mode promotion can still
         # be debounced below, but power_on() should stop instantly on true presence.
@@ -680,6 +684,7 @@ class TvController:
             ws_connected=st.connected,
             token_present=st.token_present,
             last_error=st.last_error,
+            changed_at=self._presence_changed_at,
         )
 
     def _cancel_pending_watch_signal(self) -> None:

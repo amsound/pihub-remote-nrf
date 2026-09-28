@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from typing import Any
 
 from .flows import FlowRunner, FlowStepFailures
@@ -33,6 +34,7 @@ class RuntimeEngine:
         self._last_flow: str | None = None
         self._flow_running = False
         self._last_trigger: str | None = None
+        self._last_trigger_at: float | None = None  # wall clock, set only when a trigger happens
         self._error = False
         self._last_error: str | None = None
         self._last_result: str | None = None
@@ -70,10 +72,15 @@ class RuntimeEngine:
             "last_flow": self._last_flow,
             "flow_running": self._flow_running,
             "last_trigger": self._last_trigger,
+            "last_trigger_at": self._last_trigger_at,
             "error": self._error,
             "last_error": self._last_error,
             "last_result": self._last_result,
         }
+
+    def _note_trigger(self, trigger: str) -> None:
+        self._last_trigger = trigger
+        self._last_trigger_at = time.time()
 
     def _set_runtime_ok(self, result: str = "ok") -> None:
         self._error = False
@@ -101,7 +108,7 @@ class RuntimeEngine:
         self._dispatcher = dispatcher
 
     async def initialize_startup_mode(self) -> dict[str, Any]:
-        self._last_trigger = "startup_reconcile"
+        self._note_trigger("startup_reconcile")
         logger.info("startup reconcile selected mode=power_off")
         result = await self.set_mode("power_off", trigger="startup_reconcile")
         if result.get("ok"):
@@ -186,7 +193,7 @@ class RuntimeEngine:
 
         prior = self._mode
         await self._dispatcher.set_mode_bindings(name)
-        self._last_trigger = trigger
+        self._note_trigger(trigger)
         self._mode = name
 
         if prior != name:
@@ -258,7 +265,7 @@ class RuntimeEngine:
 
         async with self._lock:
             self._flow_running = True
-            self._last_trigger = trigger
+            self._note_trigger(trigger)
 
             if self._history is not None:
                 self._history.emit(

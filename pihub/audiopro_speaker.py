@@ -109,6 +109,7 @@ class SpeakerState:
 
     last_update_ts: float | None = None
     last_play_ts: float | None = None
+    changed_at: float | None = None     # last source/playback change (wall clock)
 
 
 class AudioProSpeaker:
@@ -219,6 +220,7 @@ class AudioProSpeaker:
 
             "last_update_ts": last_i,
             "update_age_s": age_i,
+            "changed_at": s.changed_at,
         }
 
     def _wake_poll_loop(self) -> None:
@@ -800,6 +802,9 @@ class AudioProSpeaker:
 
         if changed:
             self._state.last_update_ts = _now()
+
+        if self._state.source != old_source or self._state.playback_status != old_status:
+            self._state.changed_at = _now()
 
         if (
             self._state.source != old_source

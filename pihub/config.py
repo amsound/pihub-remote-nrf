@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from dataclasses import dataclass
 
 
@@ -28,6 +29,24 @@ def _env_csv(name: str, default: list[str]) -> list[str]:
         items.append(value)
 
     return items if items else list(default)
+
+def _default_room_name() -> str:
+    """'living-room-pihub' -> 'Living Room'."""
+    host = socket.gethostname().split(".")[0]
+    if host.endswith("-pihub"):
+        host = host[: -len("-pihub")]
+    return host.replace("-", " ").replace("_", " ").title() or "PiHub"
+
+
+def _env_rooms(name: str) -> list[tuple[str, str]]:
+    """ROOMS="Living Room=192.168.90.42,Kitchen=192.168.90.44" -> [(name, host)]."""
+    rooms: list[tuple[str, str]] = []
+    for part in (os.getenv(name) or "").split(","):
+        label, sep, host = part.partition("=")
+        if sep and label.strip() and host.strip():
+            rooms.append((label.strip(), host.strip()))
+    return rooms
+
 
 @dataclass(frozen=True)
 class Config:
@@ -63,6 +82,10 @@ class Config:
     # Domain toggles
     tv_enabled: bool
     speaker_enabled: bool
+
+    # Web UI: this room's name, and the rooms shown in the Status room strip
+    room_name: str
+    rooms: list[tuple[str, str]]
 
     @staticmethod
     def load() -> "Config":
@@ -104,7 +127,12 @@ class Config:
             ["192.168.70.43", "192.168.70.45", "192.168.70.46"],
         )
 
+        room_name = (os.getenv("ROOM_NAME") or "").strip() or _default_room_name()
+        rooms = _env_rooms("ROOMS")
+
         return Config(
+            room_name=room_name,
+            rooms=rooms,
             tv_enabled=tv_enabled,
             speaker_enabled=speaker_enabled,
             ble_serial_device=ble_serial_device,

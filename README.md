@@ -135,6 +135,8 @@ docker compose up -d
 | `APPLE_TV_IP` | Static Apple TV IP used for AirPlay mDNS session detection | empty disables Apple TV AirPlay domain |
 | `APPLE_TV_AIRPLAY_ENABLED` | enable Apple TV AirPlay session detector | default `true` |
 | `APPLE_TV_AIRPLAY_DEBOUNCE_S` | debounce before emitting `watch` from Apple TV AirPlay session | default `2.5` |
+| `ROOM_NAME` | Room name shown on the web pages | defaults from the hostname (`living-room-pihub` → Living Room) |
+| `ROOMS` | Rooms in the Status page's room strip: `Name=host,Name=host` | e.g. `Living Room=192.168.90.42,Kitchen=192.168.90.44,Office=192.168.90.46` |
 | `DEBUG` | Debug knob | defaults to INFO/WARN |
 
 Keymap is bundled with the application and loaded from packaged assets in production; it is not configurable at runtime.
@@ -191,26 +193,29 @@ http://<host>:9123
 
 ### Web UI pages
 
-PiHub also exposes a small built-in web UI on the same HTTP port:
+Plain static pages in `pihub/web/` (no build step), following the system light/dark setting:
 
-```text
-http://<host>:9123/dashboard
-http://<host>:9123/tools
-http://<host>:9123/settings
+* `/status`: one screen with mode, last trigger, system vitals, TV and speaker cards, Apple TV and remote,
+  flow/mode/maintenance buttons, recent flows, and the other rooms (`ROOMS`)
+* `/remote`: phone remote: Off / Listen / Watch, touch pad, volume. Holding a key repeats like the physical
+  remote; a key pressed from the page is released automatically after 8 s if its release never arrives
+* `/settings`: volumes, what Listen plays, stream slots (per speaker backend)
+* `/history`: recent flows with their steps, and warnings/errors
+
+### Status for Home Assistant
+
+`GET /api/status`: compact JSON (mode, last flow/trigger/result, `tv`, `speaker`, `apple_tv`, `remote`,
+`system`). Times (`*_at`) are Unix seconds, set only when that thing actually changed. `GET /health` is the
+older, larger payload, kept for existing consumers.
+
+```yaml
+rest:
+  - resource: http://<pihub>:9123/api/status
+    scan_interval: 15
+    sensor:
+      - name: "Living Room PiHub Mode"
+        value_template: "{{ value_json.mode }}"
 ```
-
-Current pages:
-
-* `/dashboard` — high-level live status view for PiHub, including runtime mode/flow state, domain health, and system information
-* `/tools` — operator page for manually running flows, setting modes, refreshing TV or speaker state, and restarting PiHub
-* `/remote` — built-in local remote UI for flow/mode control and mapped button actions
-* `/settings` — local runtime settings for speaker levels and listen-target behavior
-* `/history` — recent flow reports and warning/error history
-* `/health` — raw JSON health/status payload
-
-These pages are intended as lightweight local operator tools rather than a full external control surface.
-
----
 
 ### Commands accepted over HTTP
 

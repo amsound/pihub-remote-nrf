@@ -31,6 +31,7 @@ from .apple_tv_airplay import AppleTvAirPlay
 from .speaker import SpeakerLike
 from .settings import SettingsStore
 from .history import HistoryStore
+from .status import build_date
 
 
 def _debug_enabled() -> bool:
@@ -48,18 +49,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _build_date() -> str:
-    """When this image was built (written by the Dockerfile), or 'unknown'."""
-    try:
-        with open("/app/BUILD_DATE") as f:
-            return f.read().strip() or "unknown"
-    except OSError:
-        return "unknown"
-
-
 async def main() -> None:
     """Run the PiHub control loop until interrupted."""
-    logger.info("pihub starting (built %s)", _build_date())
+    logger.info("pihub starting (built %s)", build_date())
     cfg = Config.load()
 
     settings = SettingsStore()
@@ -293,6 +285,8 @@ async def main() -> None:
         history=history,
         speaker_backend=cfg.speaker_backend,
         dispatcher=dispatcher,
+        room_name=cfg.room_name,
+        rooms=cfg.rooms,
     )
 
     try:

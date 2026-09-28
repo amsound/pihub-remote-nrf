@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>PiHub</title>
+<link rel="stylesheet" href="/web/style.css">
+<style>
+.rooms { display: flex; gap: 6px; flex-wrap: wrap; }
+.room { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 10px; background: var(--card); box-shadow: var(--shadow); color: var(--text); text-decoration: none; font-weight: 600; border: 1px solid transparent; }
+.room .m { color: var(--muted); font-weight: 500; }
+.room.here { border-color: var(--accent); }
+
+.strip { display: grid; grid-template-columns: 1.5fr 1.6fr repeat(4, 1fr); gap: 12px; }
+.big { font-size: 26px; font-weight: 700; letter-spacing: -.01em; line-height: 1.1; }
+.mid { font-size: 20px; font-weight: 700; line-height: 1.15; }
+.mode { display: flex; align-items: center; gap: 10px; }
+.mode svg { width: 26px; height: 26px; color: var(--accent); }
+.num { font-size: 20px; font-weight: 650; }
+.num small { font-size: 12px; color: var(--muted); font-weight: 500; }
+
+.main { display: grid; grid-template-columns: 1fr 1fr 300px; gap: 12px; }
+.dev { display: grid; gap: 10px; align-content: start; }
+.dev-head { display: flex; align-items: center; gap: 10px; }
+.dev-head svg { width: 22px; height: 22px; color: var(--muted); }
+.dev-head h2 { font-size: 15px; margin: 0; font-weight: 650; }
+.dev-head .tag { margin-left: auto; font-size: 11px; color: var(--muted); background: var(--chip); padding: 2px 8px; border-radius: 6px; font-weight: 600; }
+.state { font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.state .dot { width: 10px; height: 10px; }
+.vol { display: flex; align-items: center; gap: 10px; }
+.bar { flex: 1; height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }
+
+.side { display: grid; gap: 12px; align-content: start; }
+.mini { display: flex; align-items: center; gap: 10px; }
+.mini svg { width: 20px; height: 20px; color: var(--muted); flex: none; }
+.mini .t { font-weight: 600; }
+.mini .s { color: var(--muted); font-size: 12px; }
+.mini .dot { margin-left: auto; }
+#action-note { margin-top: 8px; min-height: 16px; }
+
+.bottom { display: grid; grid-template-columns: 1fr 1fr 300px; gap: 12px; }
+.flows-card { grid-column: span 2; }
+.flow { display: grid; grid-template-columns: 110px 1fr auto auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--hair); }
+.flow:first-child { border-top: 0; }
+.flow .when, .flow .ms { color: var(--muted); font-variant-numeric: tabular-nums; }
+.flow .name { font-weight: 600; }
+.flow .by { color: var(--muted); }
+
+@media (max-width: 900px) {
+  .strip { grid-template-columns: repeat(2, 1fr); }
+  .main, .bottom { grid-template-columns: 1fr; }
+  .flows-card { grid-column: auto; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>PiHub</h1>
+    <span class="pill"><span class="dot" id="overall-dot"></span><span id="overall">…</span></span>
+    <div class="rooms" id="rooms"></div>
+    <nav class="tabs"></nav>
+  </div>
+
+  <section class="strip">
+    <div class="card">
+      <div class="label">Mode</div>
+      <div class="mode"><span id="mode-icon"></span><span class="big" id="mode">—</span></div>
+      <div class="sub" id="mode-sub"></div>
+    </div>
+    <div class="card">
+      <div class="label">Last trigger</div>
+      <div class="mid" id="trigger">—</div>
+      <div class="sub" id="trigger-sub"></div>
+    </div>
+    <div class="card"><div class="label">CPU</div><div class="num" id="cpu">—</div><div class="sub" id="load"></div></div>
+    <div class="card"><div class="label">Memory</div><div class="num" id="mem">—</div><div class="sub" id="power"></div></div>
+    <div class="card"><div class="label">Pi uptime</div><div class="num" id="up">—</div></div>
+    <div class="card"><div class="label">PiHub uptime</div><div class="num" id="pup">—</div></div>
+  </section>
+
+  <section class="main">
+    <div class="card dev" id="tv"></div>
+    <div class="card dev" id="speaker"></div>
+    <div class="side">
+      <div class="card mini" id="appletv"></div>
+      <div class="card mini" id="remote"></div>
+      <div class="card">
+        <div class="label">Run</div>
+        <div class="actions">
+          <button class="btn primary" data-flow="watch">Watch</button>
+          <button class="btn primary" data-flow="listen">Listen</button>
+          <button class="btn" data-flow="power_off">Off</button>
+        </div>
+        <div class="label" style="margin-top:12px">Set mode only</div>
+        <div class="actions">
+          <button class="btn" data-mode="watch">Watch</button>
+          <button class="btn" data-mode="listen">Listen</button>
+          <button class="btn" data-mode="power_off">Off</button>
+        </div>
+        <div class="label" style="margin-top:12px">Maintenance</div>
+        <div class="actions">
+          <button class="btn" data-post="/refresh/tv">Refresh TV</button>
+          <button class="btn" data-post="/refresh/speaker">Refresh speaker</button>
+          <button class="btn danger" data-post="/admin/restart" data-confirm="Restart PiHub?">Restart PiHub</button>
+        </div>
+        <div class="note" id="action-note"></div>
+        <div class="sub" id="built" style="margin-top:6px"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="bottom">
+    <div class="card flows-card">
+      <div class="label">Recent flows</div>
+      <div id="flows"></div>
+    </div>
+    <div class="card">
+      <div class="label">Problems</div>
+      <div id="problems" class="muted">None</div>
+    </div>
+  </section>
+</div>
+<script type="module" src="/web/status.js"></script>
+</body>
+</html>

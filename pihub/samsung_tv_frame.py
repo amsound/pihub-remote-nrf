@@ -11,6 +11,7 @@ import asyncio
 import itertools
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
@@ -35,6 +36,7 @@ class TvFrameSnapshot:
     backend: str = "samsung_frame_ip"
     power: str | None = None
     input_source: str | None = None
+    changed_at: float | None = None  # wall clock of the last on/off change
 
 
 class SamsungFrameTv:
@@ -62,6 +64,7 @@ class SamsungFrameTv:
         self._presence_cached: bool | None = None
         self._presence_source = "unknown"
         self._presence_last_change_ts: float | None = None
+        self._presence_changed_at: float | None = None
         self._power: str | None = None
         self._input_source: str | None = None
         self._last_error = ""
@@ -130,6 +133,7 @@ class SamsungFrameTv:
             self._presence_cached = next_on
             self._presence_source = source
             self._presence_last_change_ts = asyncio.get_running_loop().time()
+            self._presence_changed_at = time.time()
 
             if not previous_on and next_on is True:
                 self._emit_state_change(
@@ -356,6 +360,7 @@ class SamsungFrameTv:
             last_error=self._last_error,
             power=self._power,
             input_source=self._input_source,
+            changed_at=self._presence_changed_at,
         )
 
     async def _wait_for_power_state(

@@ -187,6 +187,7 @@ class SamsungSoundbarState:
     airplay_device: str | None = None
 
     last_update_ts: float | None = None
+    changed_at: float | None = None  # last source/playback change (wall clock)
 
 
 class SamsungSoundbar:
@@ -266,6 +267,7 @@ class SamsungSoundbar:
             "last_update_ts": last_i,
             "update_age_s": age_i,
             "airplay_device": s.airplay_device,
+            "changed_at": s.changed_at,
         }
 
     async def start(self) -> None:
@@ -736,6 +738,8 @@ class SamsungSoundbar:
             if getattr(self._state, key) != value:
                 setattr(self._state, key, value)
                 changed = True
+                if key in ("source", "playback_status"):
+                    self._state.changed_at = _now()
 
         if changed:
             self._state.last_update_ts = _now()
