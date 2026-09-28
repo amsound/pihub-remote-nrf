@@ -721,6 +721,7 @@ class StatusReporter:
         rt = h["runtime"]
         tv, sp, ble, usb, sysd = h["tv"], h["speaker"], h["ble"], h["usb"], h["system"]
         tvd, spd = tv.get("details") or {}, sp.get("details") or {}
+        bled, usbd = ble.get("details") or {}, usb.get("details") or {}
         mem = sysd.get("memory") or {}
         mem_pct = None
         if mem.get("total_bytes") and mem.get("used_bytes") is not None:
@@ -766,11 +767,17 @@ class StatusReporter:
             "apple_tv": {
                 "state": ble["status"],
                 "connected": bool(ble.get("link_ready")),
+                "advertising": bool(bled.get("advertising")),
+                "dongle": bool(ble.get("present")),
+                "interval_ms": (bled.get("conn_params") or {}).get("interval_ms"),
+                "last_disconnect_reason": bled.get("last_disc_reason"),
             },
             "remote": {
                 "state": usb["status"],
                 "receiver": bool(usb.get("present")),
-                "paired": bool((usb.get("details") or {}).get("paired_remote")),
+                "paired": bool(usbd.get("paired_remote")),
+                "input_open": bool(usbd.get("input_open")),
+                "grabbed": bool(usbd.get("grabbed")),
                 "battery": self._remote_battery_level(),
             },
             "system": {

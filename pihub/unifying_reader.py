@@ -208,7 +208,6 @@ class UnifyingReader:
             _MSC_SCAN = ecodes.MSC_SCAN
             _EV_KEY = ecodes.EV_KEY
             
-            _map = self._map
             _resolve = self._resolve_logical_key
             _emit = self._emit
             _debug_unknown = logger.isEnabledFor(logging.DEBUG)

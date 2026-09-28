@@ -33,7 +33,7 @@ function fill(s) {
       const chosen = $("sb_listen_slot").value || String(s.listen_target_stream);
       $("sb_listen_slot").innerHTML = Array.from({ length: 10 }, (_, i) => i + 1).map((n) => {
         const url = $(`soundbar_stream_url_${n}`).value.trim();
-        return `<option value="${n}" ${String(n) === chosen ? "selected" : ""}>Key ${keyOf(n)}${url ? " · " + esc(url.length > 48 ? url.slice(0, 45) + "…" : url) : " (empty)"}</option>`;
+        return `<option value="${n}" ${String(n) === chosen ? "selected" : ""}>Key ${keyOf(n)}${url ? ": " + esc(url.length > 48 ? url.slice(0, 45) + "…" : url) : " (empty)"}</option>`;
       }).join("");
     };
     renderListenOptions();

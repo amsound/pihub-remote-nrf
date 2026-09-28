@@ -5,10 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>History · PiHub</title>
+<script>try{const t=localStorage.getItem("pihub-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="stylesheet" href="/web/style.css">
 <style>
 .cols { display: grid; grid-template-columns: 1.6fr 1fr; gap: 12px; align-items: start; }
-.head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .head .btn { margin-left: auto; }
 details { border-top: 1px solid var(--hair); }
 details:first-of-type { border-top: 0; }
@@ -37,11 +38,11 @@ summary .by { color: var(--muted); }
   </div>
   <div class="cols">
     <section class="card">
-      <div class="head"><div class="label" style="margin:0">Flows</div><button class="btn danger" id="clear">Clear history</button></div>
+      <div class="head"><h2 style="margin:0">Flows</h2><button class="btn danger" id="clear">Clear history</button></div>
       <div id="flows" class="muted">Loading…</div>
     </section>
     <section class="card">
-      <div class="label">Warnings and errors</div>
+      <h2>Warnings and errors</h2>
       <div id="events" class="muted">Loading…</div>
     </section>
   </div>

@@ -114,7 +114,6 @@ class BleDongleLink:
 
         self._last_error: str | None = None
 
-        self._reader_task: Optional[asyncio.Task] = None
         self._writer_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
         self._poll_task: Optional[asyncio.Task] = None
@@ -160,10 +159,10 @@ class BleDongleLink:
         self._reconnect_task = asyncio.create_task(self._reconnect_loop(), name="ble-serial-reconnect")
 
     async def stop(self) -> None:
-        for t in (self._poll_task, self._reconnect_task, self._reader_task, self._writer_task):
+        for t in (self._poll_task, self._reconnect_task, self._writer_task):
             if t and not t.done():
                 t.cancel()
-        for t in (self._poll_task, self._reconnect_task, self._reader_task, self._writer_task):
+        for t in (self._poll_task, self._reconnect_task, self._writer_task):
             if t:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await t
@@ -819,8 +818,8 @@ class BleDongleLink:
             ser.reset_output_buffer()
 
 
-        if self._reader_task is None or self._reader_task.done():
-            self._reader_task = asyncio.create_task(self._reader_loop(), name="ble-serial-reader")
+        # Reads are event-driven: the loop wakes us only when the dongle has sent data.
+        asyncio.get_running_loop().add_reader(ser.fileno(), self._on_serial_readable)
         if self._writer_task is None or self._writer_task.done():
             self._writer_task = asyncio.create_task(self._writer_loop(), name="ble-serial-writer")
 
@@ -899,6 +898,7 @@ class BleDongleLink:
         self._transport_evt.clear()
 
     async def _close_serial(self) -> None:
+        self._stop_reading()
         if self._resync_task and not self._resync_task.done():
             self._resync_task.cancel()
         self._resync_task = None
@@ -936,25 +936,28 @@ class BleDongleLink:
                 await self._force_reconnect("writer_error")
                 await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
 
-    async def _reader_loop(self) -> None:
-        while True:
-            try:
-                if self._ser is None:
-                    await asyncio.sleep(0.1)
-                    continue
-                loop = asyncio.get_running_loop()
-                data = await loop.run_in_executor(None, self._ser.read, 256)  # type: ignore[arg-type]
-                if not data:
-                    await asyncio.sleep(0.01)
-                    continue
-                self._ingest_rx_bytes(data)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self._last_error = f"reader_error: {exc}"
-                logger.warning("reader error, reconnecting: %r", exc)
-                await self._force_reconnect("reader_error")
-                await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
+    def _on_serial_readable(self) -> None:
+        """Called by the event loop when the serial port has data (no polling)."""
+        ser = self._ser
+        if ser is None:
+            return
+        try:
+            data = ser.read(4096)  # non-blocking (timeout=0): whatever is waiting
+        except Exception as exc:
+            self._last_error = f"reader_error: {exc}"
+            logger.warning("reader error, reconnecting: %r", exc)
+            self._stop_reading()
+            asyncio.get_running_loop().create_task(self._force_reconnect("reader_error"))
+            return
+        if data:
+            self._ingest_rx_bytes(data)
+
+    def _stop_reading(self) -> None:
+        ser = self._ser
+        if ser is None:
+            return
+        with contextlib.suppress(Exception):
+            asyncio.get_running_loop().remove_reader(ser.fileno())
 
     def _ingest_rx_bytes(self, chunk: bytes) -> None:
         for b in chunk:

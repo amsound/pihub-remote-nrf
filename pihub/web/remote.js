@@ -32,26 +32,21 @@ document.querySelectorAll(".seg button").forEach((btn) => {
   });
 });
 
-// ---- Keys: send the press and the release, in order, so holding volume repeats ----
+// ---- Keys: one tap per press (no hold-to-repeat), sent in order ----
 let queue = Promise.resolve();
-function sendEdge(key, edge) {
+function sendTap(key) {
   queue = queue
-    .then(() => postJSON("/remote/edge", { key, edge, trigger: "http.remote" }))
+    .then(() => postJSON("/remote/tap", { key, hold_ms: 60 }))
     .catch(() => {});
 }
 
-const held = new Set();
 const pad = document.getElementById("pad");
 
 function bindKey(el) {
   const key = el.dataset.key;
-  const release = () => {
-    el.classList.remove("pressed");
-    if (held.delete(key)) sendEdge(key, "up");
-  };
+  const unpress = () => el.classList.remove("pressed");
   el.addEventListener("pointerdown", (e) => {
     e.preventDefault();
-    if (el.setPointerCapture) el.setPointerCapture(e.pointerId);
     el.classList.add("pressed");
     haptic();
     if (pad.contains(el) && !el.classList.contains("ok")) {
@@ -63,25 +58,12 @@ function bindKey(el) {
       pad.appendChild(ripple);
       setTimeout(() => ripple.remove(), 500);
     }
-    if (!held.has(key)) {
-      held.add(key);
-      sendEdge(key, "down");
-    }
+    sendTap(key);
     if (key === "rem_mute") setTimeout(() => statusPoll.now(), 400);
   });
-  el.addEventListener("pointerup", release);
-  el.addEventListener("pointercancel", release);
-  el.addEventListener("lostpointercapture", release);
+  el.addEventListener("pointerup", unpress);
+  el.addEventListener("pointercancel", unpress);
+  el.addEventListener("pointerleave", unpress);
   el.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 document.querySelectorAll("[data-key]").forEach(bindKey);
-
-// Never leave a key held if the page goes to the background mid-press.
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) return;
-  for (const key of [...held]) {
-    held.delete(key);
-    sendEdge(key, "up");
-  }
-  document.querySelectorAll(".pressed").forEach((el) => el.classList.remove("pressed"));
-});

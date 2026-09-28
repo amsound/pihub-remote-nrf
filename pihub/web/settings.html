@@ -5,12 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Settings · PiHub</title>
+<script>try{const t=localStorage.getItem("pihub-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="stylesheet" href="/web/style.css">
 <style>
-.wrap { max-width: 900px; }
 form { display: grid; gap: 12px; }
-.card h2 { font-size: 15px; margin: 0 0 4px; font-weight: 650; }
-.card > p { margin: 0 0 12px; }
+.card > p { margin: -4px 0 12px; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px 16px; }
 .slots { display: grid; gap: 8px; }
 .slot { display: grid; grid-template-columns: 52px 1fr auto; gap: 10px; align-items: center; }
@@ -29,7 +28,6 @@ form { display: grid; gap: 12px; }
   <form id="form" autocomplete="off">
     <section class="card">
       <h2>Volume</h2>
-      <p class="muted">Set by the Watch and Listen flows.</p>
       <div class="grid2">
         <div class="field"><label for="watch_volume_pct">Watch volume (0–100)</label><input type="number" id="watch_volume_pct" min="0" max="100" required></div>
         <div class="field"><label for="listen_volume_pct">Listen volume (0–100)</label><input type="number" id="listen_volume_pct" min="0" max="100" required></div>
@@ -39,24 +37,20 @@ form { display: grid; gap: 12px; }
     <!-- Samsung soundbar: every number key is a stream slot -->
     <section class="card hidden" data-backend="samsung_soundbar">
       <h2>Listen</h2>
-      <p class="muted">What the Listen flow plays.</p>
-      <div class="field" style="max-width:420px"><label for="sb_listen_slot">Stream slot</label><select id="sb_listen_slot"></select></div>
+      <div class="field" style="max-width:420px"><label for="sb_listen_slot">Plays</label><select id="sb_listen_slot"></select></div>
     </section>
     <section class="card hidden" data-backend="samsung_soundbar">
       <h2>Stream slots</h2>
-      <p class="muted">Number keys 1–9 and 0 in Listen mode. Tick <b>Restream</b> for HLS streams and playlists
-        (.m3u8, .pls, .m3u) so they go through the restreamer; TuneIn stations (an ID like <b>s345724</b> or a
-        tunein.com URL) always do. Plain MP3/AAC streams play directly.</p>
+      <p class="muted">Restream HLS streams and playlists; TuneIn stations always restream.</p>
       <div class="slots" id="sb_slots"></div>
     </section>
 
     <!-- Audio Pro: keys 1–6 are the speaker's presets, 7–0 stream URLs -->
     <section class="card hidden" data-backend="audiopro">
       <h2>Listen</h2>
-      <p class="muted">What the Listen flow plays.</p>
       <div class="grid2">
         <div class="field"><label for="listen_target_type">Plays</label>
-          <select id="listen_target_type"><option value="preset">A speaker preset</option><option value="stream">A stream URL</option></select></div>
+          <select id="listen_target_type"><option value="preset">Speaker preset</option><option value="stream">Stream URL</option></select></div>
         <div class="field" id="preset_field"><label for="listen_target_preset">Speaker preset (1–6)</label><input type="number" id="listen_target_preset" min="1" max="6"></div>
         <div class="field" id="stream_field"><label for="listen_target_stream">Stream URL (keys 7, 8, 9, 0)</label>
           <select id="listen_target_stream"><option value="1">Key 7</option><option value="2">Key 8</option><option value="3">Key 9</option><option value="4">Key 0</option></select></div>
@@ -64,7 +58,6 @@ form { display: grid; gap: 12px; }
     </section>
     <section class="card hidden" data-backend="audiopro">
       <h2>Stream URLs</h2>
-      <p class="muted">Keys 1–6 play the speaker's own presets; these are keys 7, 8, 9 and 0 in Listen mode.</p>
       <div class="slots" id="ap_slots"></div>
     </section>
 

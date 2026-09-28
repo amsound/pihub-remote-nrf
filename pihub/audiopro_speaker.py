@@ -535,7 +535,7 @@ class AudioProSpeaker:
                 await asyncio.wait_for(self._writer.drain(), timeout=SEND_TIMEOUT_S)
                 self._last_send_monotonic = time.monotonic()
                 return
-            except asyncio.TimeoutError as e:
+            except asyncio.TimeoutError:
                 send_error = ConnectionError(f"send timeout after {SEND_TIMEOUT_S:.1f}s")
             except Exception as e:
                 send_error = e
