@@ -40,9 +40,12 @@ body {
 .wrap { max-width: 1180px; margin: 0 auto; padding: 18px 20px 24px; display: grid; gap: 12px; }
 
 /* Top bar */
-.top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+/* Two columns: whatever is on the left wraps within its own column, so the menu never moves. */
+.top { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; }
+.top-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
 .top h1 { font-size: 20px; margin: 0; font-weight: 700; }
-.theme { margin-left: auto; display: flex; gap: 2px; background: var(--chip); padding: 3px; border-radius: 9px; }
+.foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; padding: 4px 2px 0; }
+.theme { display: flex; gap: 2px; background: var(--chip); padding: 3px; border-radius: 9px; }
 .theme button { border: 0; background: none; color: var(--muted); width: 28px; height: 24px; border-radius: 7px; display: grid; place-items: center; cursor: pointer; padding: 0; }
 .theme button svg { width: 15px; height: 15px; }
 .theme button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .1); }

@@ -19,9 +19,7 @@
 .strip .card { padding: 12px 16px; }
 .label { display: flex; justify-content: space-between; gap: 8px; }
 .label .t { text-transform: none; letter-spacing: 0; font-weight: 500; }
-.big { font-size: 24px; font-weight: 700; letter-spacing: -.01em; line-height: 1.15; display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.big svg { width: 24px; height: 24px; color: var(--accent); flex: none; }
-.big small { font-size: 13px; color: var(--muted); font-weight: 500; }
+.big { font-size: 20px; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .main { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
 .dev { display: grid; gap: 10px; align-content: start; }
@@ -37,12 +35,12 @@
 .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }
 
 .conn { display: grid; grid-template-columns: 20px 1fr auto; gap: 2px 10px; align-items: center; }
-.conn + .conn { border-top: 1px solid var(--hair); padding-top: 10px; }
+.conn + .conn { border-top: 1px solid var(--hair); margin-top: 12px; padding-top: 12px; }
 .conn svg { width: 20px; height: 20px; color: var(--muted); }
 .conn .n { font-weight: 600; }
 .conn .d { grid-column: 2 / -1; color: var(--muted); font-size: 12px; }
 
-.bottom { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; align-items: start; }
+.bottom { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
 .flow { display: grid; grid-template-columns: 110px 90px 1fr auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--hair); }
 .flow:first-child { border-top: 0; }
 .flow .when, .flow .ms { color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -57,14 +55,9 @@
 .seg button { position: relative; z-index: 1; border: 0; background: none; color: var(--text); font: inherit; font-weight: 600; padding: 7px 0; cursor: pointer; }
 .seg button.pending { animation: breathe 1s ease-in-out infinite; }
 @keyframes breathe { 50% { opacity: .35; } }
-.more { margin-top: 12px; }
-.more summary { cursor: pointer; color: var(--muted); font-weight: 600; list-style: none; }
-.more summary::-webkit-details-marker { display: none; }
-.more summary::after { content: " ›"; }
-.more[open] summary::after { content: " ⌄"; }
-.more .rows { display: grid; gap: 8px; margin-top: 10px; }
-.more .row { display: flex; align-items: center; gap: 8px; }
-.more .row .k { color: var(--muted); width: 76px; flex: none; }
+.rows { display: grid; gap: 8px; margin-top: 14px; }
+.row { display: flex; align-items: center; gap: 8px; }
+.row .k { color: var(--muted); width: 76px; flex: none; }
 .btn.sm { padding: 5px 10px; font-size: 12px; }
 #action-note { margin-top: 10px; min-height: 16px; }
 
@@ -77,10 +70,12 @@
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>PiHub</h1>
-    <span class="pill" id="overall-pill"><span class="dot" id="overall-dot"></span><span id="overall"></span></span>
-    <span class="pill bad" id="power-pill" hidden>Undervoltage</span>
-    <div class="rooms" id="rooms"></div>
+    <div class="top-left">
+      <h1>PiHub</h1>
+      <span class="pill" id="overall-pill"><span class="dot" id="overall-dot"></span><span id="overall"></span></span>
+      <span class="pill bad" id="power-pill" hidden>Undervoltage</span>
+      <div class="rooms" id="rooms"></div>
+    </div>
     <nav class="tabs"></nav>
   </div>
 
@@ -115,21 +110,18 @@
         <button data-flow="listen">Listen</button>
         <button data-flow="watch">Watch</button>
       </div>
-      <details class="more">
-        <summary>More</summary>
-        <div class="rows">
+      <div class="rows">
           <div class="row"><span class="k">Set mode</span>
             <button class="btn sm" data-mode="power_off">Off</button><button class="btn sm" data-mode="listen">Listen</button><button class="btn sm" data-mode="watch">Watch</button></div>
           <div class="row"><span class="k">Refresh</span>
             <button class="btn sm" data-post="/refresh/tv">TV</button><button class="btn sm" data-post="/refresh/speaker">Speaker</button></div>
           <div class="row"><span class="k">PiHub</span>
             <button class="btn sm danger" data-post="/admin/restart" data-confirm="Restart PiHub?">Restart</button></div>
-        </div>
-      </details>
+      </div>
       <div class="note" id="action-note"></div>
-      <div class="sub" id="built"></div>
     </div>
   </section>
+  <footer class="foot"><span class="info"></span><div class="theme"></div></footer>
 </div>
 <script type="module" src="/web/status.js"></script>
 </body>

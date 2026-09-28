@@ -28,6 +28,8 @@ export const esc = (s) =>
 export const title = (s) => (s ? String(s).replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()) : "");
 
 export const MODE = { watch: "Watch", listen: "Listen", power_off: "Off" };
+// Flow names as shown: the automatic variants read the same, the trigger says "Automatic".
+export const FLOW = { ...MODE, watch_signal: "Watch", listen_signal: "Listen" };
 
 // A change time (Unix seconds) as a clock time: "10:28", "yesterday 22:14", "28 Sep 10:28".
 export function clock(ts) {
@@ -76,14 +78,17 @@ const THEME_LABELS = { "": "Follow system", light: "Light", dark: "Dark" };
 export function renderTopBar(el, current, name) {
   const tab = (href, label) => `<a href="${href}" class="${current === href ? "on" : ""}">${label}</a>`;
   el.querySelector("h1").textContent = name || "PiHub";
-  el.querySelector("nav.tabs").innerHTML =
-    tab("/status", "Status") + tab("/remote", "Remote") + tab("/settings", "Settings") + tab("/history", "History");
+  const nav = el.querySelector("nav.tabs");
+  if (!nav.children.length) {
+    nav.innerHTML = tab("/status", "Status") + tab("/remote", "Remote") + tab("/settings", "Settings") + tab("/history", "History");
+  }
+}
 
+// Footer shared by Status, Settings and History: host details and the theme switch.
+export function renderFooter(el, d) {
+  el.querySelector(".info").textContent = d ? `${d.host}, ${d.ip || ""}, built ${d.built}` : "";
   let theme = el.querySelector(".theme");
-  if (!theme) {
-    theme = document.createElement("div");
-    theme.className = "theme";
-    el.querySelector("nav.tabs").before(theme);
+  if (!theme.children.length) {
     theme.innerHTML = Object.keys(THEME_ICONS)
       .map((t) => `<button type="button" data-theme="${t}" title="${THEME_LABELS[t]}" aria-label="${THEME_LABELS[t]}">${THEME_ICONS[t]}</button>`).join("");
     theme.addEventListener("click", (e) => {
@@ -97,17 +102,17 @@ export function renderTopBar(el, current, name) {
   theme.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x.dataset.theme === currentTheme));
 }
 
-// What set things off, in words: "Watch button", "TV came on", "Phone remote".
+// What set things off, in words: "Remote: Watch button", "Automatic: Watch", "Web remote".
 const REMOTE_KEYS = { rem_mode_1: "Listen button", rem_mode_2: "Watch button", rem_power_off: "Off button" };
 export function triggerText(trigger) {
   const t = String(trigger || "");
   if (!t) return "";
-  if (t.startsWith("remote.")) return REMOTE_KEYS[t.slice(7)] || "Remote";
-  if (t === "device_state_change.watch") return "TV came on";
-  if (t === "device_state_change.listen") return "Speaker started";
-  if (t === "http.remote.flow" || t === "http.remote") return "Phone remote";
+  if (t.startsWith("remote.")) return REMOTE_KEYS[t.slice(7)] ? `Remote: ${REMOTE_KEYS[t.slice(7)]}` : "Remote";
+  if (t === "device_state_change.watch") return "Automatic: Watch";
+  if (t === "device_state_change.listen") return "Automatic: Listen";
+  if (t === "http.remote.flow" || t === "http.remote") return "Web remote";
   if (t === "http.status") return "Status page";
-  if (t.startsWith("http.")) return "Web";
+  if (t.startsWith("http.")) return "HTTP request";
   if (t.startsWith("startup")) return "Startup";
   return title(t.replace(/\./g, " "));
 }

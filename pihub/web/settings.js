@@ -1,4 +1,4 @@
-import { getJSON, postJSON, esc, renderTopBar } from "/web/common.js";
+import { getJSON, postJSON, esc, renderTopBar, renderFooter } from "/web/common.js";
 
 const $ = (id) => document.getElementById(id);
 const keyOf = (slot) => slot % 10; // slot 10 is key 0
@@ -7,6 +7,7 @@ let backend = "";
 async function load() {
   const [status, res] = await Promise.all([getJSON("/api/status"), getJSON("/api/settings")]);
   renderTopBar(document.querySelector(".top"), "/settings", status.name);
+  renderFooter(document.querySelector(".foot"), status);
   document.title = `Settings · ${status.name}`;
   if (!res.ok) {
     $("note").className = "note bad";

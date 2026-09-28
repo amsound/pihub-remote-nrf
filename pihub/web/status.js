@@ -1,4 +1,4 @@
-import { getJSON, postJSON, esc, title, MODE, clock, duration, dotClass, renderTopBar, poll, triggerText } from "/web/common.js";
+import { getJSON, postJSON, esc, title, MODE, FLOW, clock, duration, dotClass, renderTopBar, renderFooter, poll, triggerText } from "/web/common.js";
 
 const ICONS = {
   watch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/></svg>',
@@ -31,26 +31,31 @@ function render(d) {
   $("overall-pill").title = d.problems.length ? d.problems.join("\n") : "";
   $("power-pill").hidden = !d.system.throttled;
 
-  $("mode").innerHTML = `${ICONS[d.mode] || ""}${esc(MODE[d.mode] || title(d.mode))}`;
+  $("mode").textContent = MODE[d.mode] || title(d.mode);
   $("trigger").textContent = triggerText(d.last_trigger) || "None yet";
   $("trigger-at").textContent = d.last_trigger_at ? clock(d.last_trigger_at) : "";
 
   const s = d.system;
-  $("cpu").innerHTML = s.cpu_temp_c != null ? `${Math.round(s.cpu_temp_c)}<small>°C</small>` : '<small>n/a</small>';
-  $("mem").innerHTML = s.memory_used_pct != null ? `${s.memory_used_pct}<small>%</small>` : '<small>n/a</small>';
-  $("up").innerHTML = duration(s.uptime_s);
-  $("pup").innerHTML = duration(s.pihub_uptime_s);
+  $("cpu").textContent = s.cpu_temp_c != null ? `${Math.round(s.cpu_temp_c)}°C` : "n/a";
+  $("mem").textContent = s.memory_used_pct != null ? `${s.memory_used_pct}%` : "n/a";
+  $("up").textContent = duration(s.uptime_s, false);
+  $("pup").textContent = duration(s.pihub_uptime_s, false);
 
   const tv = d.tv;
+  const tvHead = `<div class="dev-head">${ICONS.watch}<h2>TV</h2>${tv.backend ? `<span class="tag">${TV_BACKEND[tv.backend] || esc(tv.backend)}</span>` : ""}</div>`;
   $("tv").innerHTML = !tv.backend
-    ? `<div class="dev-head">${ICONS.watch}<h2>TV</h2></div><div class="muted">Not configured</div>`
-    : `<div class="dev-head">${ICONS.watch}<h2>TV</h2><span class="tag">${TV_BACKEND[tv.backend] || esc(tv.backend)}</span></div>
-       <div class="state"><span class="dot ${tv.on ? "ok" : ""}"></span>${tv.on == null ? "Unknown" : tv.on ? "On" : "Off"}<span class="since">${since(tv.changed_at)}</span></div>
-       <dl class="kv">
-         <dt>Seen via</dt><dd>${esc(SEEN_VIA[tv.on_via] || title(tv.on_via) || "Not yet")}</dd>
-         <dt>Control</dt><dd>${tv.control_ready ? "Ready" : tv.on ? "Not ready" : "Idle, TV off"}</dd>
-       </dl>
-       ${tv.error ? `<div class="err">${esc(tv.error)}</div>` : ""}`;
+    ? `${tvHead}<div class="state"><span class="dot"></span>Not configured</div>`
+    : tv.on == null
+      // Fresh start: nothing has reported the TV's state yet.
+      ? `${tvHead}<div class="state"><span class="dot"></span>Not seen yet</div>
+         ${tv.error ? `<div class="err">${esc(tv.error)}</div>` : ""}`
+      : `${tvHead}
+         <div class="state"><span class="dot ${tv.on ? "ok" : ""}"></span>${tv.on ? "On" : "Off"}<span class="since">${since(tv.changed_at)}</span></div>
+         <dl class="kv">
+           <dt>Seen via</dt><dd>${esc(SEEN_VIA[tv.on_via] || title(tv.on_via))}</dd>
+           <dt>Control</dt><dd>${tv.control_ready ? "Ready" : tv.on ? "Not ready" : "Idle, TV off"}</dd>
+         </dl>
+         ${tv.error ? `<div class="err">${esc(tv.error)}</div>` : ""}`;
 
   const sp = d.speaker;
   const playing = sp.playback === "play" || sp.playback === "playing";
@@ -79,7 +84,7 @@ function render(d) {
     <div class="conn">${ICONS.remote}<span class="n">Harmony remote</span><span class="dot ${dotClass(r.state)}"></span><span class="d">${rem}</span></div>`;
 
   if (!pendingFlow) $("seg").dataset.mode = d.mode || "";
-  $("built").textContent = `${d.host}, ${d.ip || ""}, built ${d.built}`;
+  renderFooter(document.querySelector(".foot"), d);
   renderRooms(d);
 }
 
@@ -114,7 +119,7 @@ async function refreshFlows() {
   $("flows").innerHTML = flows.length ? flows.map((f) => {
     const secs = f.duration_ms != null ? (f.duration_ms / 1000).toFixed(1) + "s" : "";
     const dot = f.result === "running" ? "" : f.result === "ok" ? "ok" : "bad";
-    return `<div class="flow"><span class="when">${clock(f.ts_started)}</span><span class="name">${esc(MODE[f.flow_name] || title(f.flow_name))}</span>
+    return `<div class="flow"><span class="when">${clock(f.ts_started)}</span><span class="name">${esc(FLOW[f.flow_name] || title(f.flow_name))}</span>
       <span class="muted">${esc(triggerText(f.trigger))}</span><span class="ms">${secs} <span class="dot ${dot}" style="vertical-align:middle;margin-left:4px"></span></span></div>`;
   }).join("") : '<div class="muted">No flows yet</div>';
 }
@@ -149,7 +154,7 @@ document.querySelectorAll("#seg button").forEach((btn) => {
   });
 });
 
-document.querySelectorAll(".more [data-mode], .more [data-post]").forEach((btn) => {
+document.querySelectorAll(".rows [data-mode], .rows [data-post]").forEach((btn) => {
   btn.addEventListener("click", async () => {
     if (btn.dataset.confirm && !confirm(btn.dataset.confirm)) return;
     const url = btn.dataset.mode ? `/mode/set/${btn.dataset.mode}` : btn.dataset.post;

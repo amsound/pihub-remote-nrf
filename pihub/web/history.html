@@ -10,20 +10,22 @@
 <style>
 .cols { display: grid; grid-template-columns: 1.6fr 1fr; gap: 12px; align-items: start; }
 .head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.head .btn { margin-left: auto; }
 details { border-top: 1px solid var(--hair); }
 details:first-of-type { border-top: 0; }
-summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 120px 1fr auto auto; gap: 10px; align-items: center; padding: 8px 0; }
+summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 14px 110px 1fr auto auto; gap: 10px; align-items: center; padding: 8px 0; }
+summary .chev { width: 12px; height: 12px; color: var(--muted); transition: transform .15s; }
+details[open] summary .chev { transform: rotate(90deg); }
+summary:hover .name { color: var(--accent); }
 summary::-webkit-details-marker { display: none; }
 summary .when, summary .ms { color: var(--muted); font-variant-numeric: tabular-nums; }
 summary .name { font-weight: 600; }
 summary .by { color: var(--muted); }
-.steps { display: grid; gap: 3px; padding: 2px 0 10px 12px; }
+.steps { display: grid; gap: 3px; padding: 2px 0 10px 24px; }
 .step { display: grid; grid-template-columns: 14px 1fr auto; gap: 8px; align-items: baseline; font-size: 12px; }
 .step .st { color: var(--muted); }
 .step .why { grid-column: 2 / -1; color: var(--muted); }
 .step .why.bad { color: var(--bad); }
-.fail { color: var(--bad); font-size: 12px; padding: 0 0 8px; }
+.fail { color: var(--bad); font-size: 12px; padding: 0 0 8px 24px; }
 .event { padding: 7px 0; border-top: 1px solid var(--hair); display: grid; gap: 2px; }
 .event:first-child { border-top: 0; }
 .event .when { color: var(--muted); font-size: 12px; }
@@ -33,12 +35,14 @@ summary .by { color: var(--muted); }
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>PiHub</h1>
+    <div class="top-left"><h1>PiHub</h1></div>
     <nav class="tabs"></nav>
   </div>
   <div class="cols">
     <section class="card">
-      <div class="head"><h2 style="margin:0">Flows</h2><button class="btn danger" id="clear">Clear history</button></div>
+      <div class="head"><h2 style="margin:0">Flows</h2>
+        <label class="check" style="margin-left:auto"><input type="checkbox" id="show-skipped">Show skipped steps</label>
+        <button class="btn danger" id="clear" style="margin-left:8px">Clear history</button></div>
       <div id="flows" class="muted">Loading…</div>
     </section>
     <section class="card">
@@ -46,6 +50,7 @@ summary .by { color: var(--muted); }
       <div id="events" class="muted">Loading…</div>
     </section>
   </div>
+  <footer class="foot"><span class="info"></span><div class="theme"></div></footer>
 </div>
 <script type="module" src="/web/history.js"></script>
 </body>
