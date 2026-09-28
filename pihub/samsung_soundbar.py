@@ -234,6 +234,12 @@ class SamsungSoundbar:
         self._tv = tv
         self._state_change_callback = state_change_callback
 
+    def set_state_change_callback(
+        self, callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None
+    ) -> None:
+        """Where watch/listen device-state signals go (the runtime)."""
+        self._state_change_callback = callback
+
     @property
     def enabled(self) -> bool:
         return self._enabled
@@ -917,7 +923,7 @@ class SamsungSoundbar:
             return "wifi"
 
         # Optional weak hint from TV presence only.
-        if self._tv is not None and getattr(self._tv, "_presence_cached", None) is True:
+        if self._tv is not None and self._tv.snapshot().presence_on is True:
             return "hdmi"
 
         return None

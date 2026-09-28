@@ -7,7 +7,7 @@ import contextlib
 import logging
 from typing import Any
 
-from .flows import FlowStepFailures, SequenceRunner
+from .flows import FlowRunner, FlowStepFailures
 from .history import FlowRunReport, HistoryStore
 
 logger = logging.getLogger(__name__)
@@ -39,8 +39,7 @@ class RuntimeEngine:
         self._startup_reconciled = False
         self._lock = asyncio.Lock()
         self._active_sequence_task: asyncio.Task | None = None
-        self._flows = SequenceRunner(
-            runtime=self,
+        self._flows = FlowRunner(
             tv=tv,
             speaker=speaker,
             ble=ble,
@@ -75,23 +74,6 @@ class RuntimeEngine:
             "last_error": self._last_error,
             "last_result": self._last_result,
         }
-
-    def note_dispatch_outcome(
-        self,
-        *,
-        report: FlowRunReport,
-        step_report: Any,
-        sequence_name: str,
-        step: Any,
-        error: str | None = None,
-    ) -> None:
-        del report, sequence_name, step
-
-        if error:
-            step_report.settle_outcome(status="failed", error=error)
-            return
-
-        step_report.settle_outcome(status="ok")
 
     def _set_runtime_ok(self, result: str = "ok") -> None:
         self._error = False
@@ -290,7 +272,7 @@ class RuntimeEngine:
             logger.info("flow %s started (trigger=%s)", name, self._log_trigger_kind(trigger))
 
             seq_task = asyncio.create_task(
-                self._flows.run(name=name, trigger=trigger, args=args, source=source, report=report),
+                self._flows.run(name=name, trigger=trigger, source=source, report=report),
                 name=f"sequence:{name}",
             )
             self._active_sequence_task = seq_task

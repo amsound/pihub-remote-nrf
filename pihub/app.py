@@ -249,7 +249,7 @@ async def main() -> None:
     tv_emits_watch_signal = cfg.speaker_backend == "samsung_soundbar"
 
     if tv is not None and tv_emits_watch_signal:
-        tv._state_change_callback = _on_domain_state_change
+        tv.set_state_change_callback(_on_domain_state_change)
     else:
         logger.debug(
             "tv state-change callback disabled for speaker_backend=%s",
@@ -257,7 +257,7 @@ async def main() -> None:
         )
 
     if speaker is not None:
-        speaker._state_change_callback = _on_domain_state_change
+        speaker.set_state_change_callback(_on_domain_state_change)
 
     if apple_tv_airplay is not None:
         apple_tv_airplay.set_state_change_callback(_on_domain_state_change)

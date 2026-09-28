@@ -423,6 +423,12 @@ class TvController:
         self._pending_watch_signal_task: Optional[asyncio.Task] = None
         self._ws_warm_task: Optional[asyncio.Task] = None
 
+    def set_state_change_callback(
+        self, callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None
+    ) -> None:
+        """Where watch/listen device-state signals go (the runtime)."""
+        self._state_change_callback = callback
+
     async def start(self) -> None:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()

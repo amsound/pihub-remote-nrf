@@ -178,6 +178,12 @@ class AudioProSpeaker:
         self._pending_multiroom_host_ip_task: asyncio.Task | None = None
         self._last_pinfget_monotonic = 0.0
 
+    def set_state_change_callback(
+        self, callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None
+    ) -> None:
+        """Where watch/listen device-state signals go (the runtime)."""
+        self._state_change_callback = callback
+
     # ---------- small public helpers ----------
 
     @property

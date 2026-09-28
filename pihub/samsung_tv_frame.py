@@ -74,6 +74,12 @@ class SamsungFrameTv:
             "true" if self._read_token() else "false",
         )
 
+    def set_state_change_callback(
+        self, callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None
+    ) -> None:
+        """Where watch/listen device-state signals go (the runtime)."""
+        self._state_change_callback = callback
+
     async def start(self) -> None:
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=8)

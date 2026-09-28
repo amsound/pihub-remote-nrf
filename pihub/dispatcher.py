@@ -623,15 +623,11 @@ class Dispatcher:
             self._clear_speaker_direct_fault()
             self._clear_direct_failure_latch()
         except Exception as exc:
-            backend = ""
-            try:
-                backend = str((sp.snapshot() or {}).get("backend") or "").strip().lower()
-            except Exception:
-                backend = ""
-
-            if backend == "samsung_soundbar" and str(exc).startswith("unsupported_on_backend:"):
+            # A key this backend can't act on (e.g. next track on live radio) is
+            # not a fault; the backend says so with "unsupported_on_backend:".
+            if str(exc).startswith("unsupported_on_backend:"):
                 logger.debug(
-                    "speaker direct action skipped due to samsung backend limitation action=%s rem_key=%s error=%s",
+                    "speaker action not supported by this backend action=%s rem_key=%s error=%s",
                     action,
                     rem_key,
                     str(exc),
