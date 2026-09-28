@@ -102,8 +102,8 @@ export function renderFooter(el, d) {
   theme.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x.dataset.theme === currentTheme));
 }
 
-// What set things off, in words: "Remote: Watch button", "Automatic: Watch", "Web remote".
-const REMOTE_KEYS = { rem_mode_1: "Listen button", rem_mode_2: "Watch button", rem_power_off: "Off button" };
+// What set things off, in words: "Remote: Watch", "Automatic: Watch", "Web remote".
+const REMOTE_KEYS = { rem_mode_1: "Listen", rem_mode_2: "Watch", rem_power_off: "Off" };
 export function triggerText(trigger) {
   const t = String(trigger || "");
   if (!t) return "";
@@ -115,6 +115,44 @@ export function triggerText(trigger) {
   if (t.startsWith("http.")) return "HTTP request";
   if (t.startsWith("startup")) return "Startup";
   return title(t.replace(/\./g, " "));
+}
+
+// Room strip (Status, Settings, History): every room's mode and health, linking to
+// the same page on that room's PiHub. This room's entry uses the page's own status;
+// the others are read from their /api/status every 10 s.
+export function roomStrip(el) {
+  const others = new Map();
+  let current = null;
+
+  const render = () => {
+    if (!current || !current.rooms || !current.rooms.length) { el.innerHTML = ""; return; }
+    el.innerHTML = current.rooms.map((room) => {
+      const here = new URL(room.url).host === location.host;
+      const rd = here ? current : others.get(room.url);
+      const mode = rd ? MODE[rd.mode] || title(rd.mode) : "Offline";
+      return `<a class="room ${here ? "here" : ""}" href="${esc(room.url)}${location.pathname}"><span class="dot ${rd ? dotClass(rd.status) : ""}"></span>${esc(room.name)}<span class="m">${esc(mode)}</span></a>`;
+    }).join("");
+  };
+
+  const siblings = poll(async () => {
+    if (!current || !current.rooms) return;
+    await Promise.all(current.rooms
+      .filter((room) => new URL(room.url).host !== location.host)
+      .map(async (room) => {
+        try { others.set(room.url, await getJSON(`${room.url}/api/status`, { timeoutMs: 2500 })); }
+        catch { others.delete(room.url); }
+      }));
+    render();
+  }, 10000);
+
+  return {
+    update(d) {
+      const first = !current;
+      current = d;
+      render();
+      if (first) siblings.now(); // fetch the other rooms straight away
+    },
+  };
 }
 
 // Poll only while the page is visible.

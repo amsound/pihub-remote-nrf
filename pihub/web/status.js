@@ -1,4 +1,4 @@
-import { getJSON, postJSON, esc, title, MODE, FLOW, clock, duration, dotClass, renderTopBar, renderFooter, poll, triggerText } from "/web/common.js";
+import { getJSON, postJSON, esc, title, MODE, FLOW, clock, duration, dotClass, renderTopBar, renderFooter, roomStrip, poll, triggerText } from "/web/common.js";
 
 const ICONS = {
   watch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/></svg>',
@@ -18,6 +18,9 @@ const SEEN_VIA = {
 };
 const $ = (id) => document.getElementById(id);
 const since = (ts) => (ts ? `since ${clock(ts)}` : "");
+const PLAYBACK = { play: "Playing", playing: "Playing", pause: "Paused", paused: "Paused", stop: "Stopped", stopped: "Stopped", load: "Loading", loading: "Loading", idle: "Idle" };
+const cap = (t) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
+const rooms = roomStrip(document.getElementById("rooms"));
 
 let current = null;
 let pendingFlow = false;
@@ -26,7 +29,7 @@ function render(d) {
   current = d;
   renderTopBar(document.querySelector(".top"), "/status", d.name);
   document.title = `${d.name} · PiHub`;
-  $("overall").textContent = d.status === "ok" ? "All good" : "Needs attention";
+  $("overall").textContent = d.status === "ok" ? "OK" : "Not OK";
   $("overall-dot").className = "dot " + dotClass(d.status);
   $("overall-pill").title = d.problems.length ? d.problems.join("\n") : "";
   $("power-pill").hidden = !d.system.throttled;
@@ -44,30 +47,32 @@ function render(d) {
   const tv = d.tv;
   const tvHead = `<div class="dev-head">${ICONS.watch}<h2>TV</h2>${tv.backend ? `<span class="tag">${TV_BACKEND[tv.backend] || esc(tv.backend)}</span>` : ""}</div>`;
   $("tv").innerHTML = !tv.backend
-    ? `${tvHead}<div class="state"><span class="dot"></span>Not configured</div>`
+    ? `${tvHead}<div class="dev-body"><div class="state"><span class="dot"></span>Not configured</div></div>`
     : tv.on == null
       // Fresh start: nothing has reported the TV's state yet.
-      ? `${tvHead}<div class="state"><span class="dot"></span>Not seen yet</div>
-         ${tv.error ? `<div class="err">${esc(tv.error)}</div>` : ""}`
-      : `${tvHead}
+      ? `${tvHead}<div class="dev-body"><div class="state"><span class="dot"></span>Not seen yet</div>
+         ${tv.error ? `<div class="err">${esc(tv.error)}</div>` : ""}</div>`
+      : `${tvHead}<div class="dev-body">
          <div class="state"><span class="dot ${tv.on ? "ok" : ""}"></span>${tv.on ? "On" : "Off"}<span class="since">${since(tv.changed_at)}</span></div>
          <dl class="kv">
            <dt>Seen via</dt><dd>${esc(SEEN_VIA[tv.on_via] || title(tv.on_via))}</dd>
            <dt>Control</dt><dd>${tv.control_ready ? "Ready" : tv.on ? "Not ready" : "Idle, TV off"}</dd>
          </dl>
-         ${tv.error ? `<div class="err">${esc(tv.error)}</div>` : ""}`;
+         ${tv.error ? `<div class="err">${esc(tv.error)}</div>` : ""}</div>`;
 
   const sp = d.speaker;
-  const playing = sp.playback === "play" || sp.playback === "playing";
+  const playback = PLAYBACK[sp.playback] || cap(sp.playback);
   const spState = sp.state === "disabled" ? "Not configured"
     : sp.state !== "ok" ? "Unavailable"
-    : sp.source ? (SPEAKER_SOURCE[sp.source] || title(sp.source)) + (playing ? ", playing" : "")
+    : sp.source ? (SPEAKER_SOURCE[sp.source] || cap(title(sp.source))) + (playback ? ` · ${playback}` : "")
     : "Idle";
   $("speaker").innerHTML = `
     <div class="dev-head">${ICONS.speaker}<h2>Speaker</h2><span class="tag">${SPEAKER_BACKEND[sp.backend] || esc(sp.backend || "")}</span></div>
-    <div class="state"><span class="dot ${dotClass(sp.state)}"></span>${spState}<span class="since">${since(sp.changed_at)}</span></div>
-    <div class="vol"><span class="bar"><i style="width:${sp.volume ?? 0}%"></i></span><span>${sp.muted ? "Muted" : sp.volume != null ? sp.volume + "%" : ""}</span></div>
-    ${sp.error ? `<div class="err">${esc(sp.error)}</div>` : ""}`;
+    <div class="dev-body">
+      <div class="state"><span class="dot ${dotClass(sp.state)}"></span>${spState}<span class="since">${since(sp.changed_at)}</span></div>
+      <div class="vol"><span class="bar"><i style="width:${sp.volume ?? 0}%"></i></span><span>${sp.muted ? "Muted" : sp.volume != null ? sp.volume + "%" : ""}</span></div>
+      ${sp.error ? `<div class="err">${esc(sp.error)}</div>` : ""}
+    </div>`;
 
   const a = d.apple_tv;
   const atv = !a.dongle ? "Bluetooth dongle not found"
@@ -85,32 +90,7 @@ function render(d) {
 
   if (!pendingFlow) $("seg").dataset.mode = d.mode || "";
   renderFooter(document.querySelector(".foot"), d);
-  renderRooms(d);
-}
-
-// ---- Room strip: this room's status plus each sibling's /api/status ----
-const roomData = new Map();
-
-function renderRooms(d) {
-  const el = $("rooms");
-  if (!d.rooms || !d.rooms.length) { el.innerHTML = ""; return; }
-  el.innerHTML = d.rooms.map((room) => {
-    const here = new URL(room.url).host === location.host;
-    const rd = here ? d : roomData.get(room.url);
-    const mode = rd ? MODE[rd.mode] || title(rd.mode) : "Offline";
-    return `<a class="room ${here ? "here" : ""}" href="${esc(room.url)}/status"><span class="dot ${rd ? dotClass(rd.status) : ""}"></span>${esc(room.name)}<span class="m">${esc(mode)}</span></a>`;
-  }).join("");
-}
-
-async function refreshRooms() {
-  if (!current || !current.rooms) return;
-  await Promise.all(current.rooms
-    .filter((room) => new URL(room.url).host !== location.host)
-    .map(async (room) => {
-      try { roomData.set(room.url, await getJSON(`${room.url}/api/status`, { timeoutMs: 2500 })); }
-      catch { roomData.delete(room.url); }
-    }));
-  renderRooms(current);
+  rooms.update(d);
 }
 
 // ---- Recent flows, with what triggered each ----
@@ -127,7 +107,6 @@ async function refreshFlows() {
 // ---- Control ----
 const statusPoll = poll(async () => render(await getJSON("/api/status")), 3000);
 poll(refreshFlows, 10000);
-poll(refreshRooms, 10000);
 
 function note(text, cls = "") {
   $("action-note").className = "note " + cls;

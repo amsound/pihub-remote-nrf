@@ -1,6 +1,7 @@
-import { getJSON, postJSON, esc, title, MODE, FLOW, clock, renderTopBar, renderFooter, poll, triggerText } from "/web/common.js";
+import { getJSON, postJSON, esc, title, MODE, FLOW, clock, renderTopBar, renderFooter, roomStrip, poll, triggerText } from "/web/common.js";
 
 const $ = (id) => document.getElementById(id);
+const rooms = roomStrip($("rooms"));
 const CHEVRON = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
 const SHOW_SKIPPED_KEY = "pihub-history-show-skipped";
 let showSkipped = false;
@@ -31,6 +32,7 @@ async function refresh() {
   ]);
   renderTopBar(document.querySelector(".top"), "/history", status.name);
   renderFooter(document.querySelector(".foot"), status);
+  rooms.update(status);
   document.title = `History · ${status.name}`;
 
   open = new Set([...document.querySelectorAll("details[open]")].map((d) => d.dataset.id));

@@ -8,26 +8,25 @@
 <script>try{const t=localStorage.getItem("pihub-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="stylesheet" href="/web/style.css">
 <style>
-.rooms { display: flex; gap: 6px; flex-wrap: wrap; }
-.room { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 10px; background: var(--card); box-shadow: var(--shadow); color: var(--text); text-decoration: none; font-weight: 600; border: 1px solid transparent; }
-.room .m { color: var(--muted); font-weight: 500; }
-.room.here { border-color: var(--accent); }
 .pill.bad { color: var(--bad); }
 
 /* Headline boxes: one value each; a time, where it applies, sits on the label line */
-.strip { display: grid; grid-template-columns: 1.3fr 1.5fr repeat(4, 1fr); gap: 12px; }
+/* Six equal columns with the same gap as the three cards below: two boxes sit exactly over one card. */
+.strip { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
 .strip .card { padding: 12px 16px; }
 .label { display: flex; justify-content: space-between; gap: 8px; }
 .label .t { text-transform: none; letter-spacing: 0; font-weight: 500; }
-.big { font-size: 20px; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.big { font-size: 17px; font-weight: 600; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.main { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
-.dev { display: grid; gap: 10px; align-content: start; }
+.main { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+/* Heading at the top; everything else centred in the rest of the card. */
+.dev { display: flex; flex-direction: column; gap: 10px; }
+.dev-body { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 10px; }
 .dev-head { display: flex; align-items: center; gap: 10px; }
 .dev-head svg { width: 20px; height: 20px; color: var(--muted); }
 .dev-head h2 { margin: 0; }
 .dev-head .tag { margin-left: auto; font-size: 11px; color: var(--muted); background: var(--chip); padding: 2px 8px; border-radius: 6px; font-weight: 600; }
-.state { font-size: 20px; font-weight: 700; display: flex; align-items: baseline; gap: 8px; }
+.state { font-size: 18px; font-weight: 650; display: flex; align-items: baseline; gap: 8px; }
 .state .dot { width: 10px; height: 10px; align-self: center; }
 .state .since { margin-left: auto; font-size: 12px; font-weight: 500; color: var(--muted); }
 .vol { display: flex; align-items: center; gap: 10px; }
@@ -40,7 +39,7 @@
 .conn .n { font-weight: 600; }
 .conn .d { grid-column: 2 / -1; color: var(--muted); font-size: 12px; }
 
-.bottom { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
+.bottom { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; }
 .flow { display: grid; grid-template-columns: 110px 90px 1fr auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--hair); }
 .flow:first-child { border-top: 0; }
 .flow .when, .flow .ms { color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -55,15 +54,23 @@
 .seg button { position: relative; z-index: 1; border: 0; background: none; color: var(--text); font: inherit; font-weight: 600; padding: 7px 0; cursor: pointer; }
 .seg button.pending { animation: breathe 1s ease-in-out infinite; }
 @keyframes breathe { 50% { opacity: .35; } }
-.rows { display: grid; gap: 8px; margin-top: 14px; }
-.row { display: flex; align-items: center; gap: 8px; }
-.row .k { color: var(--muted); width: 76px; flex: none; }
-.btn.sm { padding: 5px 10px; font-size: 12px; }
+/* One grid for every control row: a label column, then three equal button columns. */
+.rows { display: grid; gap: 8px; }
+.row { display: grid; grid-template-columns: 78px repeat(3, minmax(0, 1fr)); gap: 8px; align-items: center; }
+.row .k { color: var(--muted); }
+.row .seg { grid-column: 2 / -1; }
+.row + .row.first-of-set { margin-top: 6px; }
+.btn.sm { padding: 6px 0; font-size: 12px; width: 100%; }
 #action-note { margin-top: 10px; min-height: 16px; }
 
 @media (max-width: 1000px) {
-  .strip { grid-template-columns: repeat(3, 1fr); }
-  .main, .bottom { grid-template-columns: 1fr; }
+  .strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .main, .bottom { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .flow { grid-template-columns: 44px 56px minmax(0, 1fr) auto; }
+  .flow .muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
 </style>
 </head>
@@ -93,7 +100,7 @@
     <div class="card dev" id="speaker"></div>
     <div class="card dev">
       <div class="dev-head"><h2>Connections</h2></div>
-      <div id="connections"></div>
+      <div id="connections" class="dev-body"></div>
     </div>
   </section>
 
@@ -104,19 +111,21 @@
     </div>
     <div class="card">
       <h2>Control</h2>
-      <div class="seg" id="seg" data-mode="">
-        <span class="seg-thumb"></span>
-        <button data-flow="power_off">Off</button>
-        <button data-flow="listen">Listen</button>
-        <button data-flow="watch">Watch</button>
-      </div>
       <div class="rows">
-          <div class="row"><span class="k">Set mode</span>
-            <button class="btn sm" data-mode="power_off">Off</button><button class="btn sm" data-mode="listen">Listen</button><button class="btn sm" data-mode="watch">Watch</button></div>
-          <div class="row"><span class="k">Refresh</span>
-            <button class="btn sm" data-post="/refresh/tv">TV</button><button class="btn sm" data-post="/refresh/speaker">Speaker</button></div>
-          <div class="row"><span class="k">PiHub</span>
-            <button class="btn sm danger" data-post="/admin/restart" data-confirm="Restart PiHub?">Restart</button></div>
+        <div class="row"><span class="k">Run flow</span>
+          <div class="seg" id="seg" data-mode="">
+            <span class="seg-thumb"></span>
+            <button data-flow="power_off">Off</button>
+            <button data-flow="listen">Listen</button>
+            <button data-flow="watch">Watch</button>
+          </div>
+        </div>
+        <div class="row first-of-set"><span class="k">Mode only</span>
+          <button class="btn sm" data-mode="power_off">Off</button><button class="btn sm" data-mode="listen">Listen</button><button class="btn sm" data-mode="watch">Watch</button></div>
+        <div class="row"><span class="k">Refresh</span>
+          <button class="btn sm" data-post="/refresh/tv">TV</button><button class="btn sm" data-post="/refresh/speaker">Speaker</button></div>
+        <div class="row"><span class="k">PiHub</span>
+          <button class="btn sm danger" data-post="/admin/restart" data-confirm="Restart PiHub?">Restart</button></div>
       </div>
       <div class="note" id="action-note"></div>
     </div>
