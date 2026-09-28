@@ -6,7 +6,7 @@ let backend = "";
 
 async function load() {
   const [status, res] = await Promise.all([getJSON("/api/status"), getJSON("/api/settings")]);
-  renderTopBar(document.querySelector(".top"), "/settings", status.name);
+  renderTopBar(document.querySelector(".top"), "/settings", status);
   renderFooter(document.querySelector(".foot"), status);
   roomStrip($("rooms")).update(status);
   document.title = `Settings · ${status.name}`;

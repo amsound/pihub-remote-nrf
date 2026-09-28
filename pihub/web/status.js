@@ -27,12 +27,8 @@ let pendingFlow = false;
 
 function render(d) {
   current = d;
-  renderTopBar(document.querySelector(".top"), "/status", d.name);
+  renderTopBar(document.querySelector(".top"), "/status", d);
   document.title = `${d.name} · PiHub`;
-  $("overall").textContent = d.status === "ok" ? "OK" : "Not OK";
-  $("overall-dot").className = "dot " + dotClass(d.status);
-  $("overall-pill").title = d.problems.length ? d.problems.join("\n") : "";
-  $("power-pill").hidden = !d.system.throttled;
 
   $("mode").textContent = MODE[d.mode] || title(d.mode);
   $("trigger").textContent = triggerText(d.last_trigger) || "None yet";

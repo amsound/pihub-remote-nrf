@@ -43,7 +43,8 @@ body {
 /* Two columns: whatever is on the left wraps within its own column, so the menu never moves. */
 .top { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; }
 .top-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
-.top h1 { font-size: 20px; margin: 0; font-weight: 700; }
+.top h1 { font-size: 20px; margin: 0; font-weight: 700; display: inline-flex; align-items: center; gap: 8px; }
+.top h1 .dot { width: 9px; height: 9px; }
 .rooms { display: flex; gap: 6px; flex-wrap: wrap; }
 .room { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 10px; background: var(--card); box-shadow: var(--shadow); color: var(--text); text-decoration: none; font-weight: 600; border: 1px solid transparent; white-space: nowrap; }
 .room .m { color: var(--muted); font-weight: 500; }
@@ -67,7 +68,6 @@ nav.tabs { display: flex; gap: 2px; background: var(--chip); padding: 3px; borde
 nav.tabs a { color: var(--text); text-decoration: none; padding: 4px 12px; border-radius: 7px; font-weight: 500; }
 nav.tabs a.on { background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, .1); }
 
-.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--chip); font-weight: 600; font-size: 12px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--off); flex: none; display: inline-block; }
 .dot.ok { background: var(--ok); }
 .dot.warn { background: var(--warn); }

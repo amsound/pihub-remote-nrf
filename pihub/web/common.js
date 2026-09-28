@@ -74,10 +74,14 @@ const THEME_ICONS = {
 };
 const THEME_LABELS = { "": "Follow system", light: "Light", dark: "Dark" };
 
-// Top bar shared by Status, Settings and History.
-export function renderTopBar(el, current, name) {
+// Top bar shared by Status, Settings and History: room name with a health dot
+// (hover it for any problems), the room strip, and the menu.
+export function renderTopBar(el, current, d) {
   const tab = (href, label) => `<a href="${href}" class="${current === href ? "on" : ""}">${label}</a>`;
-  el.querySelector("h1").textContent = name || "PiHub";
+  const h1 = el.querySelector("h1");
+  const problems = [...(d.problems || []), ...(d.system?.throttled ? ["Undervoltage"] : [])];
+  const health = d.system?.throttled ? "bad" : dotClass(d.status);
+  h1.innerHTML = `${esc(d.name || "PiHub")}<span class="dot ${health}" title="${esc(problems.join("\n") || "OK")}"></span>`;
   const nav = el.querySelector("nav.tabs");
   if (!nav.children.length) {
     nav.innerHTML = tab("/status", "Status") + tab("/remote", "Remote") + tab("/settings", "Settings") + tab("/history", "History");

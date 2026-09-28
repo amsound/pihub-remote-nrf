@@ -30,7 +30,7 @@ async function refresh() {
   const [status, { flows = [] }, { events = [] }] = await Promise.all([
     getJSON("/api/status"), getJSON("/history/flows?limit=20"), getJSON("/history/events?limit=100"),
   ]);
-  renderTopBar(document.querySelector(".top"), "/history", status.name);
+  renderTopBar(document.querySelector(".top"), "/history", status);
   renderFooter(document.querySelector(".foot"), status);
   rooms.update(status);
   document.title = `History · ${status.name}`;

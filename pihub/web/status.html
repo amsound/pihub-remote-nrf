@@ -8,7 +8,6 @@
 <script>try{const t=localStorage.getItem("pihub-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="stylesheet" href="/web/style.css">
 <style>
-.pill.bad { color: var(--bad); }
 
 /* Headline boxes: one value each; a time, where it applies, sits on the label line */
 /* Six equal columns with the same gap as the three cards below: two boxes sit exactly over one card. */
@@ -79,8 +78,6 @@
   <div class="top">
     <div class="top-left">
       <h1>PiHub</h1>
-      <span class="pill" id="overall-pill"><span class="dot" id="overall-dot"></span><span id="overall"></span></span>
-      <span class="pill bad" id="power-pill" hidden>Undervoltage</span>
       <div class="rooms" id="rooms"></div>
     </div>
     <nav class="tabs"></nav>
