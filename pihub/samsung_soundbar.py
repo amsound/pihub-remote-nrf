@@ -16,6 +16,8 @@ from urllib.parse import quote
 
 import aiohttp
 import pychromecast
+from pychromecast.const import CAST_TYPE_AUDIO
+from pychromecast.models import CastInfo, HostServiceInfo
 
 logger = logging.getLogger(__name__)
 logging.getLogger("pychromecast.discovery").setLevel(logging.ERROR)
@@ -65,7 +67,8 @@ AIRPLAY_SERVICE_TYPE = "_airplay._tcp.local."
 AIRPLAY_MDNS_RESOLVE_TIMEOUT_MS = 2000
 
 VOLUME_STEP = 0.01
-CAST_DISCOVERY_TIMEOUT_S = 5
+CAST_PORT = 8009
+CAST_CONNECT_TIMEOUT_S = 10
 CAST_WATCHDOG_INTERVAL_S = 60.0
 
 
@@ -211,7 +214,6 @@ class SamsungSoundbar:
         self._loop: asyncio.AbstractEventLoop | None = None
 
         self._cast = None
-        self._cast_browser = None
         self._cast_uuid = None
         self._cast_friendly_name = None
         self._cast_status_listener: _CastStatusListener | None = None
@@ -406,9 +408,8 @@ class SamsungSoundbar:
         if self._cast is not None:
             return
 
-        cast, browser = await asyncio.to_thread(self._connect_cast_blocking)
+        cast = await asyncio.to_thread(self._connect_cast_blocking)
         self._cast = cast
-        self._cast_browser = browser
 
         if self._cast_status_listener is None:
             self._cast_status_listener = _CastStatusListener(self)
@@ -431,11 +432,9 @@ class SamsungSoundbar:
 
     async def _disconnect_cast(self) -> None:
         cast = self._cast
-        browser = self._cast_browser
         listener = self._cast_status_listener
 
         self._cast = None
-        self._cast_browser = None
         self._cast_connected_logged = False
         self._cast_ready_logged = False
 
@@ -444,126 +443,38 @@ class SamsungSoundbar:
                 if cast is not None and listener is not None:
                     cast.unregister_status_listener(listener)
             with contextlib.suppress(Exception):
-                if browser is not None:
-                    browser.stop_discovery()
-            with contextlib.suppress(Exception):
                 if cast is not None:
                     cast.disconnect()
 
-        if cast is not None or browser is not None:
+        if cast is not None:
             await asyncio.to_thread(_cleanup)
 
     def _connect_cast_blocking(self):
-        # Configured IP is authoritative. pychromecast known_hosts helps discovery,
-        # but it does not guarantee returned casts are limited to that host.
-        # Always filter candidates by host before accepting one.
-
-        if self._cast_uuid is not None:
-            casts, browser = pychromecast.get_listed_chromecasts(
-                uuids=[self._cast_uuid],
-                known_hosts=[self._speaker_ip],
-                discovery_timeout=CAST_DISCOVERY_TIMEOUT_S,
-            )
-            cast = self._select_configured_cast(casts)
-            if cast is not None:
-                cast.wait()
-                return cast, browser
-
-            with contextlib.suppress(Exception):
-                browser.stop_discovery()
-
-            logger.warning(
-                "cached cast uuid did not match configured speaker_ip=%s; clearing cached uuid",
-                self._speaker_ip,
-            )
-            self._cast_uuid = None
-
-        if self._cast_friendly_name:
-            casts, browser = pychromecast.get_listed_chromecasts(
-                friendly_names=[self._cast_friendly_name],
-                known_hosts=[self._speaker_ip],
-                discovery_timeout=CAST_DISCOVERY_TIMEOUT_S,
-            )
-            cast = self._select_configured_cast(casts)
-            if cast is not None:
-                cast.wait()
-                return cast, browser
-
-            with contextlib.suppress(Exception):
-                browser.stop_discovery()
-
-            logger.warning(
-                "cached cast friendly_name did not match configured speaker_ip=%s cached_name=%s; clearing cached name",
-                self._speaker_ip,
-                self._cast_friendly_name,
-            )
-            self._cast_friendly_name = None
-
-        casts, browser = pychromecast.get_chromecasts(known_hosts=[self._speaker_ip])
-        cast = self._select_configured_cast(casts)
-        if cast is None:
-            with contextlib.suppress(Exception):
-                browser.stop_discovery()
-
-            names = []
-            for candidate in casts:
-                cast_info = getattr(candidate, "cast_info", None)
-                names.append(
-                    {
-                        "host": self._cast_host(candidate),
-                        "friendly_name": (
-                            getattr(cast_info, "friendly_name", None)
-                            or getattr(candidate, "name", None)
-                        ),
-                    }
-                )
-
-            raise RuntimeError(
-                f"cast_not_found_for_configured_ip:{self._speaker_ip}:candidates={names!r}"
-            )
-
-        cast.wait()
-
-        self._cast_uuid = getattr(cast, "uuid", None)
-        cast_info = getattr(cast, "cast_info", None)
-        self._cast_friendly_name = (
-            getattr(cast_info, "friendly_name", None) or getattr(cast, "name", None)
+        # Connect straight to the configured IP; no discovery browser. With
+        # known_hosts, pychromecast's HostBrowser polls the soundbar's setup API
+        # (https://<ip>:8443/setup/eureka_info) every 30 s for as long as it runs,
+        # and the HW-S61D sometimes drops whatever it is playing (Cast or AirPlay)
+        # a few seconds after one of those requests. Setting cast_type up front
+        # also skips the one-off lookup Chromecast() would make against that API.
+        cast_info = CastInfo(
+            services={HostServiceInfo(self._speaker_ip, CAST_PORT)},
+            uuid=self._cast_uuid,
+            model_name=None,
+            friendly_name=self._cast_friendly_name or self._state.airplay_device,
+            host=self._speaker_ip,
+            port=CAST_PORT,
+            cast_type=CAST_TYPE_AUDIO,
+            manufacturer="Samsung",
         )
+        cast = pychromecast.Chromecast(cast_info=cast_info)
+        try:
+            cast.wait(timeout=CAST_CONNECT_TIMEOUT_S)
+        except Exception:
+            with contextlib.suppress(Exception):
+                cast.disconnect(timeout=0)
+            raise
 
-        return cast, browser
-    
-    @staticmethod
-    def _cast_host(cast: Any) -> str | None:
-        cast_info = getattr(cast, "cast_info", None)
-
-        for value in (
-            getattr(cast_info, "host", None),
-            getattr(cast, "host", None),
-            getattr(getattr(cast, "socket_client", None), "host", None),
-        ):
-            text = SamsungSoundbar._norm_str(value)
-            if text:
-                return text
-
-        return None
-
-    def _select_configured_cast(self, casts: list[Any]) -> Any | None:
-        for cast in casts:
-            host = self._cast_host(cast)
-            if host == self._speaker_ip:
-                return cast
-
-        for cast in casts:
-            cast_info = getattr(cast, "cast_info", None)
-            logger.debug(
-                "ignoring cast candidate speaker_ip=%s candidate_host=%s friendly_name=%s uuid=%s",
-                self._speaker_ip,
-                self._cast_host(cast) or "unknown",
-                getattr(cast_info, "friendly_name", None) or getattr(cast, "name", None) or "unknown",
-                getattr(cast, "uuid", None) or "unknown",
-            )
-
-        return None
+        return cast
 
     async def _read_cast_status(self) -> dict[str, Any]:
         if self._cast is None:
