@@ -63,6 +63,7 @@ class HttpServer:
             tv=tv,
             speaker=speaker,
             runtime=runtime,
+            dispatcher=dispatcher,
             room_name=room_name,
             rooms=rooms,
             http_port=port,

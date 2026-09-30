@@ -20,6 +20,16 @@ const $ = (id) => document.getElementById(id);
 const since = (ts) => (ts ? `since ${clock(ts)}` : "");
 const PLAYBACK = { play: "Playing", playing: "Playing", pause: "Paused", paused: "Paused", stop: "Stopped", stopped: "Stopped", load: "Loading", loading: "Loading", idle: "Idle" };
 const cap = (t) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
+const KEY_REASON = {
+  stream_slot_empty: "empty slot", invalid_stream_slot: "no such slot", play_url_failed: "stream wouldn't play",
+  speaker_action_failed: "speaker didn't respond", speaker_unreachable: "speaker unreachable",
+  speaker_not_connected: "speaker not connected", speaker_not_ready: "speaker not ready", settings_missing: "no settings",
+};
+function keyErrorText(k) {
+  if (!k) return "";
+  const key = /^rem_(\d)$/.test(k.key || "") ? `Key ${k.key.slice(4)}` : cap(title(k.action || k.key || "Key"));
+  return `${key}: ${KEY_REASON[k.reason] || title(k.reason)} (${clock(k.at)})`;
+}
 const rooms = roomStrip(document.getElementById("rooms"));
 
 let current = null;
@@ -68,6 +78,7 @@ function render(d) {
       <div class="state"><span class="dot ${dotClass(sp.state)}"></span>${spState}<span class="since">${since(sp.changed_at)}</span></div>
       <div class="vol"><span class="bar"><i style="width:${sp.volume ?? 0}%"></i></span><span>${sp.muted ? "Muted" : sp.volume != null ? sp.volume + "%" : ""}</span></div>
       ${sp.error ? `<div class="err">${esc(sp.error)}</div>` : ""}
+      ${sp.key_error ? `<div class="keyerr">Last key press failed. ${esc(keyErrorText(sp.key_error))}</div>` : ""}
     </div>`;
 
   const a = d.apple_tv;
@@ -84,7 +95,7 @@ function render(d) {
     <div class="conn">${ICONS.bluetooth}<span class="n">Apple TV</span><span class="dot ${dotClass(a.state)}"></span><span class="d">${atv}${drop}</span></div>
     <div class="conn">${ICONS.remote}<span class="n">Harmony remote</span><span class="dot ${dotClass(r.state)}"></span><span class="d">${rem}</span></div>`;
 
-  if (!pendingFlow) $("seg").dataset.mode = d.mode || "";
+  if (!pendingFlow) $("seg").dataset.current = d.mode || "";
   renderFooter(document.querySelector(".foot"), d);
   rooms.update(d);
 }
@@ -129,7 +140,7 @@ document.querySelectorAll("#seg button").forEach((btn) => {
   });
 });
 
-document.querySelectorAll(".rows [data-mode], .rows [data-post]").forEach((btn) => {
+document.querySelectorAll(".rows button[data-mode], .rows button[data-post]").forEach((btn) => {
   btn.addEventListener("click", async () => {
     if (btn.dataset.confirm && !confirm(btn.dataset.confirm)) return;
     const url = btn.dataset.mode ? `/mode/set/${btn.dataset.mode}` : btn.dataset.post;

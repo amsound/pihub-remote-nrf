@@ -15,10 +15,7 @@ from .ble_dongle import CompiledBleFrames
 from .slots import SlotEmptyError, play_slot, resolve_slot
 from .validation import parse_ms
 
-try:
-    from importlib import resources as importlib_resources
-except ImportError:  # pragma: no cover - fallback for older Python
-    import importlib_resources  # type: ignore
+from importlib import resources as importlib_resources
 
 _DIRECT_FAIL_LOG_INTERVAL_S = 60.0
 
@@ -39,8 +36,6 @@ _DENY_CALLS = {
     "_runner",
     "snapshot",
 }
-
-EdgeCB = Callable[[str, str], Awaitable[None]] | Callable[[str, str], None]
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +78,8 @@ class Dispatcher:
         self._settings = settings
         self._run_flow = run_flow
         self._last_cmd_fail_log = 0.0
+        # Last speaker key press that failed (reason/action/key/at), or None.
+        self.last_key_error: dict[str, Any] | None = None
 
         # Load full keymap document, then split into parts we use
         km = self._load_keymap()
@@ -90,8 +87,6 @@ class Dispatcher:
             self._validate_keymap(km)
             self._scancode_map: Dict[str, str] = dict(km["scancode_map"])
             self._bindings: Dict[str, Dict[str, List[Dict[str, Any]]]] = dict(km["modes"])
-            if not isinstance(self._scancode_map, dict) or not isinstance(self._bindings, dict):
-                raise TypeError
         except Exception as exc:
             raise ValueError(
                 "keymap.json schema invalid: expected 'scancode_map' (dict) and 'modes' (dict)."
@@ -176,30 +171,18 @@ class Dispatcher:
     def _clear_direct_failure_latch(self) -> None:
         self._last_cmd_fail_log = 0.0
 
-    def _set_speaker_direct_fault(self, reason: str) -> None:
-        sp = getattr(self, "_speaker", None)
-        if sp is None:
-            return
-        try:
-            state = getattr(sp, "state", None)
-            if state is not None:
-                state.last_error = reason
-        except Exception:
-            logger.debug("failed to set speaker direct fault reason=%s", reason, exc_info=True)
+    def _key_failed(self, reason: str, *, action: str | None, rem_key: str | None) -> None:
+        """A speaker key press that couldn't be carried out.
 
+        Kept here, not on the speaker: a failed key press isn't a speaker fault.
+        Shown on the Status page until the next speaker key press succeeds.
+        """
+        self.last_key_error = {"reason": reason, "action": action, "key": rem_key, "at": time.time()}
+        self._log_direct_failure(domain="speaker", reason=reason, action=action, rem_key=rem_key)
 
-    def _clear_speaker_direct_fault(self) -> None:
-        sp = getattr(self, "_speaker", None)
-        if sp is None:
-            return
-        try:
-            state = getattr(sp, "state", None)
-            if state is not None:
-                current = str(getattr(state, "last_error", "") or "")
-                if current.startswith("direct_action_"):
-                    state.last_error = None
-        except Exception:
-            logger.debug("failed to clear speaker direct fault", exc_info=True)
+    def _key_ok(self) -> None:
+        self.last_key_error = None
+        self._clear_direct_failure_latch()
 
     async def _call_action_method(self, obj: Any, method: str, kwargs: dict) -> None:
         """Call an async method by name on obj. Fail closed on invalid dispatch."""
@@ -235,9 +218,7 @@ class Dispatcher:
         compiled: Dict[str, CompiledBleFrames] = {}
         total = 0
 
-        for mode, mapping in (self._bindings or {}).items():
-            if not isinstance(mapping, dict):
-                continue
+        for mode, mapping in self._bindings.items():
             try:
                 frames = self._ble.compile_ble_frames(mapping)
             except Exception:
@@ -257,7 +238,7 @@ class Dispatcher:
         if mode is None:
             self._active_bindings = {}
         else:
-            self._active_bindings = self._bindings.get(mode, {}) or {}
+            self._active_bindings = self._bindings.get(mode, {})
 
         self._active_ble_frames = None if mode is None else self._ble_frames_by_mode.get(mode)
 
@@ -368,7 +349,7 @@ class Dispatcher:
             try:
                 await asyncio.sleep(REPEAT_INITIAL_MS / 1000.0)
                 while True:
-                    actions = self._active_bindings.get(rem_key, []) or []
+                    actions = self._active_bindings.get(rem_key, [])
                     for idx, a in enumerate(actions):
                         if not isinstance(a, dict):
                             continue
@@ -512,135 +493,57 @@ class Dispatcher:
         if edge != "down":
             return
 
-        sp = getattr(self, "_speaker", None)
-        if sp is None:
-            self._log_direct_failure(
-                domain="speaker",
-                reason="speaker_missing",
-                action=str(a.get("action") or ""),
-                rem_key=rem_key,
-            )
-            return
-
-        try:
-            st = getattr(sp, "state", None)
-            if st is not None:
-                reachable = bool(getattr(st, "reachable", False))
-                connected = bool(getattr(st, "connected", False))
-                ready = bool(getattr(st, "ready", False))
-
-                if not reachable:
-                    self._set_speaker_direct_fault("direct_action_speaker_not_reachable")
-                    self._log_direct_failure(
-                        domain="speaker",
-                        reason="speaker_unreachable",
-                        action=str(a.get("action") or ""),
-                        rem_key=rem_key,
-                    )
-                    return
-
-                if not connected:
-                    self._set_speaker_direct_fault("direct_action_speaker_not_connected")
-                    self._log_direct_failure(
-                        domain="speaker",
-                        reason="speaker_not_connected",
-                        action=str(a.get("action") or ""),
-                        rem_key=rem_key,
-                    )
-                    return
-
-                if not ready:
-                    self._set_speaker_direct_fault("direct_action_speaker_not_ready")
-                    self._log_direct_failure(
-                        domain="speaker",
-                        reason="speaker_not_ready",
-                        action=str(a.get("action") or ""),
-                        rem_key=rem_key,
-                    )
-                    return
-        except Exception:
-            self._set_speaker_direct_fault("direct_action_speaker_state_error")
-            self._log_direct_failure(
-                domain="speaker",
-                reason="speaker_state_error",
-                action=str(a.get("action") or ""),
-                rem_key=rem_key,
-            )
-            return
-
         action = a.get("action")
+        sp = self._speaker
+        if sp is None:
+            self._log_direct_failure(domain="speaker", reason="speaker_missing", action=action, rem_key=rem_key)
+            return
+
+        st = sp.state
+        if not st.reachable:
+            self._key_failed("speaker_unreachable", action=action, rem_key=rem_key)
+            return
+        if not st.connected:
+            self._key_failed("speaker_not_connected", action=action, rem_key=rem_key)
+            return
+        if not st.ready:
+            self._key_failed("speaker_not_ready", action=action, rem_key=rem_key)
+            return
+
         if not isinstance(action, str) or not action:
             return
 
         if action == "play_slot":
             if self._settings is None:
-                self._set_speaker_direct_fault("direct_action_settings_missing")
-                self._log_direct_failure(
-                    domain="speaker",
-                    reason="settings_missing",
-                    action=action,
-                    rem_key=rem_key,
-                )
+                self._key_failed("settings_missing", action=action, rem_key=rem_key)
                 return
             try:
-                backend = str(getattr(self._cfg, "speaker_backend", "") or "").strip().lower()
-                target = resolve_slot(self._settings, backend, int(a.get("slot")))
+                target = resolve_slot(self._settings, self._cfg.speaker_backend, int(a.get("slot")))
             except Exception:
-                self._set_speaker_direct_fault("direct_action_invalid_stream_slot")
-                self._log_direct_failure(
-                    domain="speaker",
-                    reason="invalid_stream_slot",
-                    action=action,
-                    rem_key=rem_key,
-                )
+                self._key_failed("invalid_stream_slot", action=action, rem_key=rem_key)
                 return
             try:
                 await play_slot(sp, target)
-                self._clear_speaker_direct_fault()
-                self._clear_direct_failure_latch()
             except SlotEmptyError:
-                self._set_speaker_direct_fault("direct_action_stream_slot_empty")
-                self._log_direct_failure(
-                    domain="speaker",
-                    reason="stream_slot_empty",
-                    action=action,
-                    rem_key=rem_key,
-                )
+                self._key_failed("stream_slot_empty", action=action, rem_key=rem_key)
+                return
             except Exception:
-                reason = "play_url_failed" if target.url else "speaker_action_failed"
-                self._set_speaker_direct_fault(f"direct_action_{reason}")
-                self._log_direct_failure(
-                    domain="speaker",
-                    reason=reason,
-                    action=action,
-                    rem_key=rem_key,
-                )
+                self._key_failed("play_url_failed" if target.url else "speaker_action_failed", action=action, rem_key=rem_key)
+                return
+            self._key_ok()
             return
 
-        kwargs = self._action_kwargs(a)
         try:
-            await self._call_action_method(sp, action, kwargs)
-            self._clear_speaker_direct_fault()
-            self._clear_direct_failure_latch()
+            await self._call_action_method(sp, action, self._action_kwargs(a))
         except Exception as exc:
             # A key this backend can't act on (e.g. next track on live radio) is
             # not a fault; the backend says so with "unsupported_on_backend:".
             if str(exc).startswith("unsupported_on_backend:"):
-                logger.debug(
-                    "speaker action not supported by this backend action=%s rem_key=%s error=%s",
-                    action,
-                    rem_key,
-                    str(exc),
-                )
+                logger.debug("speaker action not supported by this backend action=%s rem_key=%s error=%s", action, rem_key, exc)
                 return
-
-            self._set_speaker_direct_fault("direct_action_speaker_action_failed")
-            self._log_direct_failure(
-                domain="speaker",
-                reason="speaker_action_failed",
-                action=action,
-                rem_key=rem_key,
-            )
+            self._key_failed("speaker_action_failed", action=action, rem_key=rem_key)
+            return
+        self._key_ok()
 
     async def _handle_flow_action(
         self,
@@ -662,16 +565,13 @@ class Dispatcher:
             return
 
         trigger = f"remote.{rem_key}" if rem_key else "remote"
-        min_hold_ms = (
-            parse_ms(
-                a.get("min_hold_ms"),
-                default=0,
-                min=0,
-                max=5000,
-                allow_none=False,
-                context="keymap.min_hold_ms",
-            )
-            or 0
+        min_hold_ms = parse_ms(
+            a.get("min_hold_ms"),
+            default=0,
+            min=0,
+            max=5000,
+            allow_none=False,
+            context="keymap.min_hold_ms",
         )
         when = a.get("when", "down")
 

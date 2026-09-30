@@ -28,6 +28,7 @@
 .state { font-size: 18px; font-weight: 650; display: flex; align-items: baseline; gap: 8px; }
 .state .dot { width: 10px; height: 10px; align-self: center; }
 .state .since { margin-left: auto; font-size: 12px; font-weight: 500; color: var(--muted); }
+.keyerr { color: var(--muted); font-size: 12px; }
 .vol { display: flex; align-items: center; gap: 10px; }
 .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; }
 .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }
@@ -47,10 +48,12 @@
 /* Control: the same Off / Listen / Watch selector as the phone remote */
 .seg { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); background: var(--chip); border-radius: 10px; padding: 3px; }
 .seg-thumb { position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 3); border-radius: 8px; background: var(--seg-thumb); box-shadow: 0 1px 2px rgba(0,0,0,.12); transition: transform .3s cubic-bezier(.3,.7,.2,1); }
-.seg[data-mode="listen"] .seg-thumb { transform: translateX(100%); }
-.seg[data-mode="watch"] .seg-thumb { transform: translateX(200%); }
-.seg[data-mode=""] .seg-thumb { opacity: 0; }
+.seg[data-current="listen"] .seg-thumb { transform: translateX(100%); }
+.seg[data-current="watch"] .seg-thumb { transform: translateX(200%); }
+.seg[data-current=""] .seg-thumb { opacity: 0; }
 .seg button { position: relative; z-index: 1; border: 0; background: none; color: var(--text); font: inherit; font-weight: 600; padding: 7px 0; cursor: pointer; }
+/* The selected one can be tapped again to rerun its flow (e.g. restart the radio). */
+.seg button:active { transform: scale(.96); }
 .seg button.pending { animation: breathe 1s ease-in-out infinite; }
 @keyframes breathe { 50% { opacity: .35; } }
 /* One grid for every control row: a label column, then three equal button columns. */
@@ -110,7 +113,7 @@
       <h2>Control</h2>
       <div class="rows">
         <div class="row"><span class="k">Run flow</span>
-          <div class="seg" id="seg" data-mode="">
+          <div class="seg" id="seg" data-current="">
             <span class="seg-thumb"></span>
             <button data-flow="power_off">Off</button>
             <button data-flow="listen">Listen</button>

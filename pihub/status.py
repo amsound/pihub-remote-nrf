@@ -91,6 +91,7 @@ class StatusReporter:
         tv: Any = None,
         speaker: Any = None,
         runtime: Any = None,
+        dispatcher: Any = None,
         room_name: str = "",
         rooms: list[tuple[str, str]] | None = None,
         http_port: int = 9123,
@@ -104,6 +105,7 @@ class StatusReporter:
         self._tv = tv
         self._speaker = speaker
         self._runtime = runtime
+        self._dispatcher = dispatcher
         self._process_start_monotonic = time.monotonic()
         self._throttling_cache: tuple[float, dict[str, Any]] | None = None
         self._build_date = build_date()
@@ -361,14 +363,14 @@ class StatusReporter:
                 "presence_on": s.presence_on,
                 "presence_source": s.presence_source,
                 "last_change_age_s": s.last_change_age_s,
-                "changed_at": getattr(s, "changed_at", None),
+                "changed_at": s.changed_at,
                 "ws_connected": bool(s.ws_connected),
                 "token_present": bool(s.token_present),
             },
         )
 
     def _speaker_health_state(self) -> dict[str, Any]:
-        if self._speaker is None or not getattr(self._speaker, "enabled", False):
+        if self._speaker is None or not self._speaker.enabled:
             return self._mk_domain_state(
                 status="disabled",
                 configured=bool(self._speaker is not None),
@@ -383,12 +385,12 @@ class StatusReporter:
             )
 
         snap = self._speaker.snapshot()
-        sstate = getattr(self._speaker, "state", None)
+        sstate = self._speaker.state
 
-        reachable = bool(getattr(sstate, "reachable", False))
-        connected = bool(getattr(sstate, "connected", False))
-        ready = bool(getattr(sstate, "ready", False))
-        speaker_last_error = _norm_error(getattr(sstate, "last_error", None))
+        reachable = bool(sstate.reachable)
+        connected = bool(sstate.connected)
+        ready = bool(sstate.ready)
+        speaker_last_error = _norm_error(sstate.last_error)
         speaker_error = bool(speaker_last_error)
 
         speaker_configured = True
@@ -763,6 +765,8 @@ class StatusReporter:
                 "detail": spd.get("source_detail"),
                 "changed_at": spd.get("changed_at"),
                 "error": sp.get("last_error"),
+                # The last speaker key press that failed (not a speaker fault).
+                "key_error": self._dispatcher.last_key_error if self._dispatcher is not None else None,
             },
             "apple_tv": {
                 "state": ble["status"],

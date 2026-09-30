@@ -8,12 +8,16 @@ import logging
 import os
 import signal
 import sys
+import warnings
 
 try:
-    import uvloop as _uvloop  # type: ignore
-    _uvloop.install()
-except Exception:
-    pass
+    import uvloop
+except ImportError:  # not installed (e.g. a dev machine): use the standard loop
+    uvloop = None
+
+# uvloop 0.22's add_signal_handler still calls asyncio.iscoroutinefunction (deprecated
+# in 3.14); the warning is uvloop's, not ours.
+warnings.filterwarnings("ignore", message="'asyncio.iscoroutinefunction' is deprecated", category=DeprecationWarning)
 
 from typing import Any
 from .config import Config
@@ -51,7 +55,10 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     """Run the PiHub control loop until interrupted."""
-    logger.info("pihub starting (built %s)", build_date())
+    logger.info(
+        "pihub starting (built %s, python %s, %s loop)",
+        build_date(), sys.version.split()[0], "uvloop" if uvloop else "asyncio",
+    )
     cfg = Config.load()
 
     settings = SettingsStore()
@@ -314,4 +321,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(), loop_factory=uvloop.new_event_loop if uvloop else None)

@@ -297,14 +297,10 @@ class FlowContext:
         raise FlowWaitTimeout(kind="tv_on", timeout_s=timeout_s)
 
     def _volume(self, which: str) -> int:
-        default = getattr(_FLOW_DEFAULTS, f"{which}_volume_pct")
+        watch = which == "watch"
         if self._settings is None:
-            return int(default)
-        try:
-            getter = self._settings.get_watch_volume_pct if which == "watch" else self._settings.get_listen_volume_pct
-            return int(getter())
-        except Exception:
-            return int(default)
+            return _FLOW_DEFAULTS.watch_volume_pct if watch else _FLOW_DEFAULTS.listen_volume_pct
+        return self._settings.get_watch_volume_pct() if watch else self._settings.get_listen_volume_pct()
 
 
 # =====================================================================
@@ -506,28 +502,16 @@ class FlowRunner:
 
     async def _refresh_tv_presence(self) -> None:
         """Make "is the TV on?" current before the flow decides anything on it."""
-        refresh = getattr(self._tv, "refresh_presence", None)
-        if refresh is None:
+        if self._tv is None:
             return
         try:
-            await asyncio.wait_for(refresh(), timeout=TV_REFRESH_TIMEOUT_S)
+            await asyncio.wait_for(self._tv.refresh_presence(), timeout=TV_REFRESH_TIMEOUT_S)
         except Exception:
             logger.debug("tv presence refresh failed; using cached state", exc_info=True)
 
     def _snapshot(self) -> dict[str, Any]:
-        speaker_snap: dict[str, Any] = {}
-        if self._speaker is not None:
-            try:
-                speaker_snap = self._speaker.snapshot() or {}
-            except Exception:
-                logger.debug("speaker snapshot failed", exc_info=True)
-
-        tv_is_on = False
-        if self._tv is not None:
-            try:
-                tv_is_on = self._tv.snapshot().presence_on is True
-            except Exception:
-                logger.debug("tv snapshot failed", exc_info=True)
+        speaker_snap = self._speaker.snapshot() if self._speaker is not None else {}
+        tv_is_on = self._tv is not None and self._tv.snapshot().presence_on is True
 
         return {
             "tv_is_on": tv_is_on,

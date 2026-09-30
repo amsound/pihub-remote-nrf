@@ -53,7 +53,7 @@ It’s lightweight, locally stateful, and tuned for Raspberry Pi 3B+ (aarch64). 
 ```yaml
 services:
   pihub-nrf:
-    image: a1exm/pihub-nrf:latest
+    image: ghcr.io/amsound/pihub-remote-nrf:latest
     container_name: pihub-nrf
     init: true
     cpu_shares: 2048
@@ -492,22 +492,22 @@ A flow can return `ok: false` when important domain steps fail, for example if B
   * sticky last trigger
 * Dispatcher owns key bindings and hot-path action dispatch
 
-* The first log line on startup is `pihub starting (built <date>)`, which says which build a house is running.
+* The first log line on startup is `pihub starting (built <date>, python <version>, <loop> loop)`, which says which build a house is running.
 
-* Build from repo root then push to docker hub
+* Images are built by GitHub Actions (`.github/workflows/image.yml`) on every push to `main` that touches the code, and published to `ghcr.io/amsound/pihub-remote-nrf`:
+  * `:latest` is the newest build
+  * `:sha-<commit>` pins one exact build, for rolling back
+
+Update a house:
 
 ```bash
-git fetch origin
-git reset --hard origin/main
-docker build -f Dockerfile -t pihub-nrf:latest .
+docker compose pull && docker compose up -d
 ```
 
-Then push image to Docker Hub:
+Roll back by setting `image:` to a `:sha-<commit>` tag and running the same command.
+
+Build locally instead (e.g. to test before pushing):
 
 ```bash
-VER=x.x.x
-docker tag pihub-nrf:latest a1exm/pihub-nrf:$VER
-docker tag pihub-nrf:latest a1exm/pihub-nrf:latest
-docker push a1exm/pihub-nrf:$VER
-docker push a1exm/pihub-nrf:latest
+docker build -t ghcr.io/amsound/pihub-remote-nrf:latest .
 ```
