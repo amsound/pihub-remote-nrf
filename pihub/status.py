@@ -324,7 +324,7 @@ class StatusReporter:
         tv_enabled = True
         tv_present = s.presence_on is not None
         tv_link_up = bool(s.presence_on is True)
-        is_frame = getattr(s, "backend", "") == "samsung_frame_ip"
+        is_frame = s.backend == "samsung_frame_ip"
         # Frame: IP control is always reachable, so a token is all it needs.
         # Legacy: the websocket is the control path.
         control_ready = bool(s.token_present) if is_frame else bool(s.ws_connected)
@@ -752,7 +752,12 @@ class StatusReporter:
                 "on": tvd.get("presence_on"),
                 "on_via": tvd.get("presence_source"),
                 "changed_at": tvd.get("changed_at"),
-                "control_ready": bool(tv.get("link_ready")),
+                # Can PiHub send commands right now, whether or not the TV is on.
+                # Legacy: the websocket is up (a key over it also wakes a TV that is
+                # still lingering after switch-off). Frame: IP control has its token.
+                "control_ready": bool(
+                    tvd.get("token_present") if tvd.get("backend") == "samsung_frame_ip" else tvd.get("ws_connected")
+                ),
                 "error": tv.get("last_error") if tv.get("error") else None,
             },
             "speaker": {

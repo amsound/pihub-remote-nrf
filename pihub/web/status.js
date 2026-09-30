@@ -18,6 +18,10 @@ const SEEN_VIA = {
 };
 const $ = (id) => document.getElementById(id);
 const since = (ts) => (ts ? `since ${clock(ts)}` : "");
+// Frame: IP control needs its token. Legacy: the websocket, which stays up after switch-off.
+const tvControl = (tv) => tv.backend === "frame"
+  ? (tv.control_ready ? "Ready" : "No token")
+  : (tv.control_ready ? "Connected" : "Not connected");
 const PLAYBACK = { play: "Playing", playing: "Playing", pause: "Paused", paused: "Paused", stop: "Stopped", stopped: "Stopped", load: "Loading", loading: "Loading", idle: "Idle" };
 const cap = (t) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
 const KEY_REASON = {
@@ -62,7 +66,7 @@ function render(d) {
          <div class="state"><span class="dot ${tv.on ? "ok" : ""}"></span>${tv.on ? "On" : "Off"}<span class="since">${since(tv.changed_at)}</span></div>
          <dl class="kv">
            <dt>Seen via</dt><dd>${esc(SEEN_VIA[tv.on_via] || title(tv.on_via))}</dd>
-           <dt>Control</dt><dd>${tv.control_ready ? "Ready" : tv.on ? "Not ready" : "Idle, TV off"}</dd>
+           <dt>Control</dt><dd>${tvControl(tv)}</dd>
          </dl>
          ${tv.error ? `<div class="err">${esc(tv.error)}</div>` : ""}</div>`;
 

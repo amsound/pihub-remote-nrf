@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import base64
 import json
 import logging
@@ -69,13 +70,7 @@ def send_wol(mac: str, *, port: int = 9, broadcast: str = "255.255.255.255") -> 
         s.close()
 
 def _default_wol_broadcasts(tv_ip: str) -> list[str]:
-    """
-    Return candidate broadcast targets for WoL.
-
-    We try both limited broadcast and a simple /24 directed broadcast derived
-    from the configured TV IP. This keeps behaviour explicit and avoids needing
-    full subnet discovery logic for now.
-    """
+    """WoL targets: the limited broadcast (tested) plus the TV's /24 directed broadcast."""
     out: list[str] = ["255.255.255.255"]
 
     parts = (tv_ip or "").strip().split(".")
@@ -85,38 +80,6 @@ def _default_wol_broadcasts(tv_ip: str) -> list[str]:
             out.append(directed)
 
     return out
-
-async def send_wol_once_multi(
-    mac: str,
-    *,
-    broadcasts: list[str],
-    ports: list[int],
-    count: int = 3,
-    gap_s: float = 0.08,
-) -> None:
-    """
-    Send a short WoL spray to each candidate broadcast target on multiple ports.
-
-    For each burst round:
-    - send one magic packet to every broadcast target
-    - on every requested port
-    - wait a short gap before the next round
-    """
-    for burst_idx in range(count):
-        for broadcast in broadcasts:
-            for port in ports:
-                try:
-                    send_wol(mac, port=port, broadcast=broadcast)
-                except Exception:
-                    logger.debug(
-                        "tv wol send failed broadcast=%s port=%s",
-                        broadcast,
-                        port,
-                        exc_info=True,
-                    )
-        if burst_idx + 1 < count:
-            await asyncio.sleep(gap_s)
-
 
 # --- Samsung websocket control plane ---
 
@@ -163,15 +126,15 @@ class TvWsClient:
 
     def _read_token(self) -> str:
         try:
-            tok = open(self._token_file, "r", encoding="utf-8").read().strip()
-            self.state.token_present = bool(tok)
-            return tok
+            with open(self._token_file, "r", encoding="utf-8") as f:
+                tok = f.read().strip()
         except FileNotFoundError:
-            self.state.token_present = False
-            return ""
+            tok = ""
         except Exception:
-            self.state.token_present = False
-            return ""
+            logger.debug("failed to read tv token", exc_info=True)
+            tok = ""
+        self.state.token_present = bool(tok)
+        return tok
 
     def _refresh_token_present(self) -> None:
         tok = self._read_token()
@@ -226,14 +189,14 @@ class TvWsClient:
 
                 try:
                     payload = json.loads(msg.data)
-                except Exception:
+                except ValueError:
                     continue
 
                 data = (payload or {}).get("data")
                 if isinstance(data, str):
                     try:
                         data = json.loads(data)
-                    except Exception:
+                    except ValueError:
                         data = None
 
                 if isinstance(data, dict):
@@ -317,10 +280,8 @@ class TvWsClient:
                 logger.debug("websocket disconnected tv_ip=%s reason=local_close", self._tv_ip)
 
         if ws and not ws.closed:
-            try:
+            with contextlib.suppress(Exception):
                 await ws.close()
-            except Exception:
-                pass
 
     async def send_key(self, key: str) -> bool:
         payload = {
@@ -351,10 +312,8 @@ class TvWsClient:
                     ws_to_close = ws
 
         if ws_to_close and not ws_to_close.closed:
-            try:
+            with contextlib.suppress(Exception):
                 await ws_to_close.close()
-            except Exception:
-                pass
         return False
 
 
@@ -371,6 +330,7 @@ class TvSnapshot:
     token_present: bool
     last_error: str
     changed_at: float | None = None  # wall clock of the last on/off change
+    backend: str = "samsung_ws"
 
 
 class TvController:
@@ -738,14 +698,10 @@ class TvController:
         if cb is None:
             return
 
-        try:
-            task = asyncio.create_task(
-                cb(name, payload),
-                name=f"tv_state_change:{name}",
-            )
-        except Exception:
-            logger.exception("tv state change callback spawn failed name=%s", name)
-            return
+        task = asyncio.create_task(
+            cb(name, payload),
+            name=f"tv_state_change:{name}",
+        )
 
         def _done(t: asyncio.Task) -> None:
             try:
@@ -854,29 +810,23 @@ class TvController:
         key_sent = False
 
         async def wol_worker() -> None:
-            WOL_LOOP_INTERVAL_S = 0.40
-            WOL_PORTS = [9, 7]
-            WOL_BROADCASTS = _default_wol_broadcasts(self.tv_ip)
-            WOL_BURST_COUNT = 5
-            WOL_BURST_GAP_S = 0.06
+            # One magic packet per target, straight away and then every interval.
+            # Tested on the kitchen QE32Q50A: WoL is ignored while the TV lingers
+            # after switch-off (network up for ~17-19 s), and one packet wakes it
+            # within ~1 s once the linger ends. Repeating covers the linger.
+            WOL_INTERVAL_S = 0.5
+            broadcasts = _default_wol_broadcasts(self.tv_ip)
 
             while not stop_event.is_set() and self._presence_cached is not True:
-                try:
-                    await send_wol_once_multi(
-                        self.tv_mac,
-                        broadcasts=WOL_BROADCASTS,
-                        ports=WOL_PORTS,
-                        count=WOL_BURST_COUNT,
-                        gap_s=WOL_BURST_GAP_S,
-                    )
-                except Exception:
-                    logger.debug("tv wol send failed during power_on", exc_info=True)
+                for broadcast in broadcasts:
+                    try:
+                        send_wol(self.tv_mac, broadcast=broadcast)
+                    except Exception:
+                        logger.debug("tv wol send failed broadcast=%s", broadcast, exc_info=True)
 
                 # Do not sleep blindly. Wake immediately if presence arrives.
-                try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=WOL_LOOP_INTERVAL_S)
-                except asyncio.TimeoutError:
-                    pass
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(stop_event.wait(), timeout=WOL_INTERVAL_S)
 
         async def key_worker() -> None:
             nonlocal key_sent
@@ -884,10 +834,15 @@ class TvController:
             # Immediate path: no artificial delay. WoL and the websocket connect both
             # start straight away. The connect may be retried, but the key is sent once.
             #
-            # KEY_0, not KEY_POWER, on purpose: while the websocket is up the TV only
-            # takes a power *toggle*, so KEY_POWER would switch off a TV that is in
-            # fact already on. Any key wakes a TV that is logically off but still
-            # holding the websocket, and KEY_0 is harmless if it was on.
+            # This is what wakes a TV during its post-switch-off linger, when WoL is
+            # ignored. Tested: a key over the websocket that was already open before
+            # switch-off wakes it at 4, 9 and 14 s into the linger; a freshly opened
+            # socket late in the linger does not. So the open socket must be left
+            # alone, never closed or replaced because presence went false.
+            #
+            # KEY_0, not KEY_POWER, on purpose: it wakes a lingering TV just the same,
+            # and it is harmless to a TV that is in fact already on, where KEY_POWER
+            # would switch it off.
             WS_CONNECT_TIMEOUT_S = 2.0
             WS_CONNECT_RETRY_INTERVAL_S = 0.35
 
@@ -943,48 +898,45 @@ class TvController:
                 except asyncio.TimeoutError:
                     pass
 
-        async def msearch_worker() -> None:
-            # Optional detection accelerator. This does not wake the TV, so it is safe.
-            # It helps if SSDP alive is missed but the TV is already answering M-SEARCH.
-            MSEARCH_INTERVAL_S = 2.0
-            MSEARCH_TIMEOUT_S = 1.0
+        async def probe_worker() -> None:
+            # Fallback detection only (does not wake the TV). SSDP alive normally
+            # marks the TV on ~1 s after it wakes; the /dmr probe covers a missed one.
+            PROBE_INTERVAL_S = 1.0
 
             while not stop_event.is_set() and self._presence_cached is not True:
-                try:
-                    await msearch_bootstrap(self, timeout_s=MSEARCH_TIMEOUT_S)
-                except Exception:
-                    logger.debug("tv power_on msearch bootstrap failed", exc_info=True)
-
-                if self._presence_cached is True:
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(stop_event.wait(), timeout=PROBE_INTERVAL_S)
+                if stop_event.is_set() or self._presence_cached is True:
                     return
-
                 try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=MSEARCH_INTERVAL_S)
-                except asyncio.TimeoutError:
-                    pass
+                    if await presence_probe_up(self._session, self.tv_ip, timeout_s=0.8):
+                        self._commit_presence(True, source="probe_http_up")
+                        return
+                except Exception:
+                    logger.debug("tv power_on http presence probe failed", exc_info=True)
 
         try:
             wol_task = asyncio.create_task(wol_worker(), name="tv:power_on_wol")
             key_task = asyncio.create_task(key_worker(), name="tv:power_on_key")
-            msearch_task = asyncio.create_task(msearch_worker(), name="tv:power_on_msearch")
+            probe_task = asyncio.create_task(probe_worker(), name="tv:power_on_probe")
 
             try:
                 powered_on = await self._wait_for_presence_true(timeout_s=timeout_s)
                 return powered_on
             finally:
                 # The moment presence is true, or the attempt times out, stop all
-                # power-on behaviour. This cancels WoL spray, M-SEARCH, and any
+                # power-on behaviour. This cancels WoL, the probe, and any
                 # in-flight websocket key path that has not sent yet.
                 stop_event.set()
 
-                for task in (wol_task, key_task, msearch_task):
+                for task in (wol_task, key_task, probe_task):
                     if not task.done():
                         task.cancel()
 
                 await asyncio.gather(
                     wol_task,
                     key_task,
-                    msearch_task,
+                    probe_task,
                     return_exceptions=True,
                 )
 
@@ -1050,8 +1002,10 @@ class _SsdpNotifyProtocol(asyncio.DatagramProtocol):
             self._closed.set_result(exc)
 
 
-async def ssdp_listener(tv: TvController) -> None:
-    """Listen for SSDP NOTIFY from the configured TV IP and forward to controller.
+async def ssdp_listener(tv: Any) -> None:
+    """Listen for SSDP NOTIFY from the configured TV IP and forward to its notify_ssdp().
+
+    Used by both TV backends (TvController, SamsungFrameTv).
 
     Runs on the event loop (no reader thread), so cancelling it stops it at once.
     """
@@ -1188,10 +1142,7 @@ async def msearch_bootstrap(tv: TvController, *, timeout_s: float = 3.0) -> None
 
         logger.debug("tv:msearch bootstrap complete tv_ip=%s acted=false reason=timeout", tv.tv_ip)
     finally:
-        try:
-            sock.close()
-        except Exception:
-            pass
+        sock.close()
 
 
 def start_discovery_tasks(tv: TvController) -> list[asyncio.Task]:

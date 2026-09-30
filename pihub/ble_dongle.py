@@ -151,7 +151,7 @@ class BleDongleLink:
 
     @property
     def is_open(self) -> bool:
-        return self._ser is not None and bool(getattr(self._ser, "is_open", False))
+        return self._ser is not None and self._ser.is_open
 
     async def start(self) -> None:
         if self._reconnect_task and not self._reconnect_task.done():
@@ -266,30 +266,20 @@ class BleDongleLink:
         default_key_hold_ms: int = 40,
         inter_delay_ms: int = 400,
     ) -> None:
-        gap_s = max(0, int(inter_delay_ms)) / 1000.0
+        """Each step is a key press or a {"wait_ms": n} pause; presses are spaced by inter_delay_ms."""
+        gap_s = inter_delay_ms / 1000.0
         for i, step in enumerate(steps):
-            step = step or {}
-
-            wait_ms = step.get("wait_ms")
-            if wait_ms is not None:
-                try:
-                    await asyncio.sleep(max(0, int(wait_ms)) / 1000.0)
-                except Exception:
-                    pass
+            if "wait_ms" in step:
+                await asyncio.sleep(step["wait_ms"] / 1000.0)
                 continue
 
-            usage = step.get("usage")
-            code = step.get("code")
-            key_hold_ms = step.get("key_hold_ms", default_key_hold_ms)
-            try:
-                key_hold_ms = int(key_hold_ms)
-            except Exception:
-                key_hold_ms = int(default_key_hold_ms)
-
-            if isinstance(usage, str) and isinstance(code, str):
-                await self.send_key_strict(usage=usage, code=code, key_hold_ms=key_hold_ms)
-                if i != len(steps) - 1:
-                    await asyncio.sleep(gap_s)
+            await self.send_key_strict(
+                usage=step["usage"],
+                code=step["code"],
+                key_hold_ms=step.get("key_hold_ms", default_key_hold_ms),
+            )
+            if i != len(steps) - 1:
+                await asyncio.sleep(gap_s)
 
     async def power_on(self) -> None:
         steps = [
@@ -328,9 +318,9 @@ class BleDongleLink:
         cc_down: Dict[str, bytes] = {}
         cc_up: Dict[str, bytes] = {}
 
-        for _rem_key, actions in (bindings or {}).items():
-            for a in actions or []:
-                if (a or {}).get("domain") != "ble":
+        for _rem_key, actions in bindings.items():
+            for a in actions:
+                if a.get("domain") != "ble":
                     continue
                 usage = a.get("usage")
                 code = a.get("code")
@@ -424,8 +414,8 @@ class BleDongleLink:
 
         kb = doc.get("keyboard") if isinstance(doc, dict) else None
         cc = doc.get("consumer") if isinstance(doc, dict) else None
-        self._hid_kb = {str(k): int(v) for k, v in (kb or {}).items()} if isinstance(kb, dict) else {}
-        self._hid_cc = {str(k): int(v) for k, v in (cc or {}).items()} if isinstance(cc, dict) else {}
+        self._hid_kb = {str(k): int(v) for k, v in kb.items()} if isinstance(kb, dict) else {}
+        self._hid_cc = {str(k): int(v) for k, v in cc.items()} if isinstance(cc, dict) else {}
 
     @staticmethod
     def _fmt_diff(changes: dict) -> str:
@@ -751,6 +741,7 @@ class BleDongleLink:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                logger.debug("ping/status poll failed", exc_info=True)
                 await asyncio.sleep(0.5)
 
 
@@ -770,7 +761,7 @@ class BleDongleLink:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
+                logger.debug("status resync failed", exc_info=True)
             finally:
                 self._resync_task = None
 
@@ -871,8 +862,8 @@ class BleDongleLink:
                     return preferred[0]
                 if fallback:
                     return fallback[0]
-            except Exception:
-                pass
+            except OSError:
+                logger.debug("listing %s failed", byid, exc_info=True)
 
         # Fallback: ttyACM0..7
         for i in range(0, 8):

@@ -69,10 +69,7 @@ def _clamp_int(v: int, lo: int, hi: int) -> int:
 
 def _parse_payload(payload: bytes) -> str:
     # Payloads are ASCII like "AXX+VOL+030" or longer ending with "&"
-    try:
-        return payload.decode("utf-8", errors="replace").strip()
-    except Exception:
-        return ""
+    return payload.decode("utf-8", errors="replace").strip()
 
 def _needs_amp(s: str) -> bool:
     # Doc: payloads longer than 11 bytes should end with '&'
@@ -453,12 +450,9 @@ class AudioProSpeaker:
         self._reader, self._writer = None, None
 
         if writer:
-            try:
+            with contextlib.suppress(Exception):
                 writer.close()
-                with contextlib.suppress(Exception, asyncio.TimeoutError):
-                    await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
-            except Exception:
-                pass
+                await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
 
     def _mark_down(self, err: str | None) -> None:
         self._state.reachable = False
@@ -734,14 +728,10 @@ class AudioProSpeaker:
         if cb is None:
             return
 
-        try:
-            task = asyncio.create_task(
-                cb(name, payload),
-                name=f"audiopro_state_change:{name}",
-            )
-        except Exception:
-            logger.exception("speaker state change callback spawn failed name=%s", name)
-            return
+        task = asyncio.create_task(
+            cb(name, payload),
+            name=f"audiopro_state_change:{name}",
+        )
 
         def _done(t: asyncio.Task) -> None:
             try:
@@ -1002,7 +992,7 @@ class AudioProSpeaker:
 
         try:
             data = json.loads(raw)
-        except Exception:
+        except ValueError:
             return None
 
         return {
@@ -1016,10 +1006,10 @@ class AudioProSpeaker:
     
     def _handle_vol(self, payload: str) -> None:
         try:
-            vol_s = payload.strip().split("+")[-1]
-            self._apply_updates(volume_pct=int(vol_s))
-        except Exception:
+            vol = int(payload.strip().split("+")[-1])
+        except ValueError:
             return
+        self._apply_updates(volume_pct=vol)
 
     def _handle_mut(self, payload: str) -> None:
         # AXX+MUT+XXX is not reliable across all inputs/modes.
@@ -1105,7 +1095,7 @@ class AudioProSpeaker:
         if code.isdigit():
             try:
                 slave_count = int(code)
-            except Exception:
+            except ValueError:  # isdigit() also accepts non-ASCII digits int() rejects
                 return
 
             host_active = slave_count > 0
@@ -1160,7 +1150,7 @@ class AudioProSpeaker:
 
         try:
             vol_pct = int(info["vol"])
-        except Exception:
+        except ValueError:
             vol_pct = None
 
         if info["mute"] == "0":
@@ -1502,8 +1492,7 @@ class AudioProSpeaker:
 
     async def power_off(self) -> None:
         """Courtesy amplifier off via HTTP API, but only when ready and actually sent."""
-        cmd = getattr(self, "_http_poweroff_cmd", DEFAULT_HTTP_POWEROFF_CMD)
-        await self._http_command(cmd, action="power_off")
+        await self._http_command(DEFAULT_HTTP_POWEROFF_CMD, action="power_off")
 
     async def play_url(self, url: str) -> None:
         if not url:

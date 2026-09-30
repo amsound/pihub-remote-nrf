@@ -376,16 +376,6 @@ class SamsungSoundbar:
             try:
                 await self._refresh_now()
                 self._note_refresh_success()
-
-                self._watchdog_wake_evt.clear()
-                try:
-                    await asyncio.wait_for(
-                        self._watchdog_wake_evt.wait(),
-                        timeout=CAST_WATCHDOG_INTERVAL_S,
-                    )
-                except asyncio.TimeoutError:
-                    pass
-
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -395,17 +385,14 @@ class SamsungSoundbar:
                     ready=False,
                     last_error=str(exc),
                 )
-
                 self._note_refresh_failure(exc)
 
-                self._watchdog_wake_evt.clear()
-                try:
-                    await asyncio.wait_for(
-                        self._watchdog_wake_evt.wait(),
-                        timeout=CAST_WATCHDOG_INTERVAL_S,
-                    )
-                except asyncio.TimeoutError:
-                    pass
+            self._watchdog_wake_evt.clear()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    self._watchdog_wake_evt.wait(),
+                    timeout=CAST_WATCHDOG_INTERVAL_S,
+                )
 
     async def _refresh_now(self) -> None:
         await self._ensure_cast()
@@ -429,12 +416,10 @@ class SamsungSoundbar:
             cast.media_controller.register_status_listener(_CastMediaListener(self, cast))
 
         if not self._cast_connected_logged:
-            cast_info = getattr(cast, "cast_info", None)
-            friendly_name = getattr(cast_info, "friendly_name", None) or getattr(cast, "name", None)
             logger.info(
                 "connected speaker_ip=%s friendly_name=%s",
                 self._speaker_ip,
-                friendly_name or "unknown",
+                cast.name or "unknown",
             )
             self._cast_connected_logged = True
 
@@ -493,16 +478,7 @@ class SamsungSoundbar:
             if cast is None:
                 raise RuntimeError("cast_not_connected")
 
-            status = getattr(cast, "status", None)
-            cast_info = getattr(cast, "cast_info", None)
-
-            return {
-                "friendly_name": getattr(cast_info, "friendly_name", None) or getattr(cast, "name", None),
-                "app_id": getattr(cast, "app_id", None),
-                "app_name": getattr(cast, "app_display_name", None),
-                "volume": getattr(status, "volume_level", None),
-                "muted": getattr(status, "volume_muted", None),
-            }
+            return self._cast_status(cast, cast.status)
 
         try:
             return await asyncio.to_thread(_read)
@@ -522,23 +498,18 @@ class SamsungSoundbar:
         if not self._enabled:
             return
 
-        cast = self._cast
-        cast_info = getattr(cast, "cast_info", None) if cast is not None else None
+        self._apply_cast_snapshot(self._cast_status(self._cast, status))
 
-        cast_status = {
-            "friendly_name": (
-                getattr(cast_info, "friendly_name", None)
-                or getattr(cast, "name", None)
-                if cast is not None
-                else None
-            ),
-            "app_id": getattr(cast, "app_id", None) if cast is not None else None,
-            "app_name": getattr(cast, "app_display_name", None) if cast is not None else None,
-            "volume": getattr(status, "volume_level", None),
-            "muted": getattr(status, "volume_muted", None),
+    @staticmethod
+    def _cast_status(cast: pychromecast.Chromecast | None, status: Any) -> dict[str, Any]:
+        """What we track from a Cast receiver status (None before the first one arrives)."""
+        return {
+            "friendly_name": cast.name if cast is not None else None,
+            "app_id": cast.app_id if cast is not None else None,
+            "app_name": cast.app_display_name if cast is not None else None,
+            "volume": status.volume_level if status is not None else None,
+            "muted": status.volume_muted if status is not None else None,
         }
-
-        self._apply_cast_snapshot(cast_status)
 
     async def _cast_command(self, fn) -> None:
         async with self._send_lock:
@@ -627,7 +598,7 @@ class SamsungSoundbar:
         if self._speaker_ip not in addresses:
             return
 
-        flags = self._parse_airplay_txt_flags(getattr(info, "properties", None))
+        flags = self._parse_airplay_txt_flags(info.properties)
         device = self._clean_airplay_device_name(name)
 
         loop.call_soon_threadsafe(
@@ -826,10 +797,8 @@ class SamsungSoundbar:
         if friendly_name:
             self._cast_friendly_name = friendly_name
 
-        cast_obj = self._cast
-        cast_uuid = getattr(cast_obj, "uuid", None) if cast_obj is not None else None
-        if cast_uuid is not None:
-            self._cast_uuid = cast_uuid
+        if self._cast is not None and self._cast.uuid is not None:
+            self._cast_uuid = self._cast.uuid
 
         changed = self._apply_state_updates(
             reachable=True,
@@ -863,13 +832,13 @@ class SamsungSoundbar:
         if not self._enabled or cast is not self._cast:
             return
 
-        player_state = self._norm_str(getattr(status, "player_state", None))
+        player_state = self._norm_str(status.player_state)
         if player_state == "UNKNOWN":
             player_state = None
 
         was_playing = self._state.cast_player_state in CAST_PLAYING_STATES
         if was_playing and player_state not in CAST_PLAYING_STATES:
-            idle_reason = getattr(status, "idle_reason", None)
+            idle_reason = status.idle_reason
             if player_state == "PAUSED":
                 logger.info("cast playback paused")
             elif idle_reason == "INTERRUPTED":
@@ -954,17 +923,10 @@ class SamsungSoundbar:
         if cb is None:
             return
 
-        try:
-            task = asyncio.create_task(
-                cb(name, payload),
-                name=f"samsung_soundbar_state_change:{name}",
-            )
-        except Exception:
-            logger.exception(
-                "state change callback spawn failed name=%s",
-                name,
-            )
-            return
+        task = asyncio.create_task(
+            cb(name, payload),
+            name=f"samsung_soundbar_state_change:{name}",
+        )
 
         def _done(t: asyncio.Task) -> None:
             try:
@@ -1029,7 +991,7 @@ class SamsungSoundbar:
         mc = cast.media_controller
         with contextlib.suppress(Exception):
             mc.update_status()
-        return getattr(mc, "status", None)
+        return mc.status
 
     async def play(self) -> None:
         def _cmd(cast) -> None:
