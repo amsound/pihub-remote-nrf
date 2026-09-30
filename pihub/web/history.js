@@ -28,7 +28,7 @@ let open = new Set();
 
 async function refresh() {
   const [status, { flows = [] }, { events = [] }] = await Promise.all([
-    getJSON("/api/status"), getJSON("/history/flows?limit=20"), getJSON("/history/events?limit=100"),
+    getJSON("/api/status"), getJSON("/api/history/flows?limit=20"), getJSON("/api/history/events?limit=100"),
   ]);
   renderTopBar(document.querySelector(".top"), "/history", status);
   renderFooter(document.querySelector(".foot"), status);
@@ -68,6 +68,6 @@ $("show-skipped").addEventListener("change", (e) => {
 
 $("clear").addEventListener("click", async () => {
   if (!confirm("Clear all flow history and events?")) return;
-  await postJSON("/history/clear");
+  await postJSON("/api/history/clear");
   history.now();
 });

@@ -9,7 +9,7 @@ import logging
 import re
 import time
 from contextlib import suppress
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable
 
 from .ble_dongle import CompiledBleFrames
 from .slots import SlotEmptyError, play_slot, resolve_slot
@@ -85,35 +85,35 @@ class Dispatcher:
         km = self._load_keymap()
         try:
             self._validate_keymap(km)
-            self._scancode_map: Dict[str, str] = dict(km["scancode_map"])
-            self._bindings: Dict[str, Dict[str, List[Dict[str, Any]]]] = dict(km["modes"])
+            self._scancode_map: dict[str, str] = dict(km["scancode_map"])
+            self._bindings: dict[str, dict[str, list[dict[str, Any]]]] = dict(km["modes"])
         except Exception as exc:
             raise ValueError(
                 "keymap.json schema invalid: expected 'scancode_map' (dict) and 'modes' (dict)."
             ) from exc
 
-        self._mode: Optional[str] = None
+        self._mode: str | None = None
         self._mode_none_logged = False
-        self._active_bindings: Dict[str, List[Dict[str, Any]]] = {}
+        self._active_bindings: dict[str, list[dict[str, Any]]] = {}
 
         # Active repeat tasks keyed by rem_* (per-key)
-        self._repeat_tasks: Dict[str, asyncio.Task] = {}
+        self._repeat_tasks: dict[str, asyncio.Task] = {}
 
         # Press timing (seconds from loop.time()) keyed by rem_*
-        self._pressed_at: Dict[str, float] = {}
+        self._pressed_at: dict[str, float] = {}
 
         # Delayed hold triggers: (rem_key, action_index) -> task
-        self._hold_tasks: Dict[Tuple[str, int], asyncio.Task] = {}
+        self._hold_tasks: dict[tuple[str, int], asyncio.Task] = {}
 
         # Speaker actions run on one background worker per domain, so a slow
         # or unreachable device never holds up the next key press (BLE frames
         # stay inline). One worker per domain keeps that domain's actions in order.
-        self._domain_queues: Dict[str, asyncio.Queue] = {}
-        self._domain_workers: Dict[str, asyncio.Task] = {}
+        self._domain_queues: dict[str, asyncio.Queue] = {}
+        self._domain_workers: dict[str, asyncio.Task] = {}
 
         # Precompiled BLE frames per mode (hot path)
-        self._ble_frames_by_mode: Dict[str, CompiledBleFrames] = {}
-        self._active_ble_frames: Optional[CompiledBleFrames] = None
+        self._ble_frames_by_mode: dict[str, CompiledBleFrames] = {}
+        self._active_ble_frames: CompiledBleFrames | None = None
         self._compile_ble_frames_once()
 
         # Summary: count modes and scancodes
@@ -122,7 +122,7 @@ class Dispatcher:
         logger.info("keymap loaded: %s modes, %s scancodes", acts, scan_total)
 
     @property
-    def scancode_map(self) -> Dict[str, str]:
+    def scancode_map(self) -> dict[str, str]:
         """Public accessor for the logical rem_* scancode map."""
         return self._scancode_map
 
@@ -215,7 +215,7 @@ class Dispatcher:
         This keeps the hot path to:
         dict lookup (active frames) + enqueue bytes
         """
-        compiled: Dict[str, CompiledBleFrames] = {}
+        compiled: dict[str, CompiledBleFrames] = {}
         total = 0
 
         for mode, mapping in self._bindings.items():
@@ -230,7 +230,7 @@ class Dispatcher:
         self._ble_frames_by_mode = compiled
         logger.info("compiled %d ble HID codes into binary frames", total)
 
-    async def set_mode_bindings(self, mode: Optional[str]) -> None:
+    async def set_mode_bindings(self, mode: str | None) -> None:
         """Apply the current mode by selecting its key bindings and BLE frame cache."""
         prior_mode = self._mode
         self._mode = mode
@@ -434,7 +434,7 @@ class Dispatcher:
         a: dict,
         edge: str,
         *,
-        rem_key: Optional[str] = None,
+        rem_key: str | None = None,
         action_index: int = 0,
     ) -> None:
         domain = a.get("domain")
@@ -550,7 +550,7 @@ class Dispatcher:
         a: dict,
         edge: str,
         *,
-        rem_key: Optional[str],
+        rem_key: str | None,
         action_index: int,
     ) -> None:
         """Handle local flow actions via the runtime engine."""
@@ -570,7 +570,6 @@ class Dispatcher:
             default=0,
             min=0,
             max=5000,
-            allow_none=False,
             context="keymap.min_hold_ms",
         )
         when = a.get("when", "down")

@@ -31,7 +31,7 @@ document.querySelectorAll(".seg button").forEach((btn) => {
     const started = performance.now();
     let ok = false;
     try {
-      ({ ok } = await postJSON(`/flow/run/${btn.dataset.flow}`, { trigger: "http.remote.flow" }));
+      ({ ok } = await postJSON(`/api/flow/${btn.dataset.flow}`, { trigger: "http.remote.flow" }));
     } catch { /* treated as failed */ }
     if (!ok) {
       // Let the switch register before bouncing back, even if the failure is instant.
@@ -52,7 +52,7 @@ document.querySelectorAll(".seg button").forEach((btn) => {
 let queue = Promise.resolve();
 function sendTap(key) {
   queue = queue
-    .then(() => postJSON("/remote/tap", { key, hold_ms: 60 }))
+    .then(() => postJSON("/api/key/tap", { key, hold_ms: 60 }))
     .catch(() => {});
 }
 

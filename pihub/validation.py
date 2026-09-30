@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
-
 logger = logging.getLogger(__name__)
 
 def _ctx(context: str) -> str:
@@ -14,16 +12,15 @@ def _ctx(context: str) -> str:
 def parse_ms(
     value: object,
     *,
-    default: Optional[int] = None,
+    default: int | None = None,
     min: int = 0,
     max: int = 5000,
-    allow_none: bool = True,
     log: logging.Logger = logger,
     context: str = "",
-) -> Optional[int]:
-    """Parse a permissive millisecond value with bounds checking."""
+) -> int | None:
+    """Parse a permissive millisecond value with bounds checking; None gives the default."""
     if value is None:
-        return default if allow_none else default
+        return default
 
     try:
         parsed = int(value)

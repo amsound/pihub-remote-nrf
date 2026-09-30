@@ -1,8 +1,7 @@
-"""Status reporting: the /health payload and the compact /api/status.
+"""Status reporting: /api/status, for the web pages and Home Assistant.
 
-/health keeps its long-standing shape (existing consumers read it).
-/api/status is the compact one for the dashboard and Home Assistant: one level
-of nesting, plain values, only what's useful at a glance.
+health() works out every domain's state in detail; api_status() turns that into
+the compact payload: one level of nesting, plain values, only what's useful.
 """
 
 from __future__ import annotations
@@ -263,10 +262,8 @@ class StatusReporter:
         ble_reasons: list[str] = []
         if not ble_present:
             ble_reasons.append("ble.dongle_missing")
-        else:
-            if ble_link_ready:
-                pass
-            elif not ble_transport_up:
+        elif not ble_link_ready:
+            if not ble_transport_up:
                 ble_reasons.append("ble.transport_down")
             elif ble_connected:
                 ble_reasons.append("ble.connected_not_ready")
@@ -613,7 +610,7 @@ class StatusReporter:
         }
 
     def health(self) -> dict:
-        """The full /health payload (shape kept stable for existing consumers)."""
+        """Every domain's state in detail (the source for api_status)."""
         pihub_id = socket.gethostname()
         system_state = self._system_snapshot()
 
@@ -669,29 +666,6 @@ class StatusReporter:
             "speaker": speaker_state["status"],
         }
 
-        ha = {
-            "overall_status": status,
-            "current_mode": runtime_state.get("mode"),
-            "last_flow": runtime_state.get("last_flow"),
-            "flow_running": runtime_state.get("flow_running"),
-            "last_result": runtime_state.get("last_result"),
-            "last_error": runtime_state.get("last_error"),
-            "degraded_reasons": degraded_reasons,
-            "binary_sensors": {
-                "runtime_error": bool(runtime_state.get("error")),
-                "flow_running": bool(runtime_state.get("flow_running")),
-                "ble_ready": bool(ble_state.get("link_ready")),
-                "tv_on": (tv_state.get("details") or {}).get("presence_on"),
-                "speaker_ready": bool(speaker_state.get("link_ready")),
-            },
-            "domains": {
-                "usb": usb_state.get("status"),
-                "ble": ble_state.get("status"),
-                "tv": tv_state.get("status"),
-                "speaker": speaker_state.get("status"),
-            },
-        }
-
         return {
             "pihub_id": pihub_id,
             "status": status,
@@ -703,7 +677,6 @@ class StatusReporter:
             "tv": tv_state,
             "speaker": speaker_state,
             "system": system_state,
-            "ha": ha,
         }
 
     def _remote_battery_level(self) -> str | None:

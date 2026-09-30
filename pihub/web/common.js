@@ -112,6 +112,7 @@ export function triggerText(trigger) {
   if (t === "device_state_change.listen") return "Automatic: Listen";
   if (t === "http.remote.flow" || t === "http.remote") return "Web remote";
   if (t === "http.status") return "Status page";
+  if (t === "http.ha") return "Home Assistant";
   if (t.startsWith("http.")) return "HTTP request";
   if (t.startsWith("startup")) return "Startup";
   return title(t.replace(/\./g, " "));

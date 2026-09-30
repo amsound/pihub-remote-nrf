@@ -87,28 +87,24 @@ class HttpServer:
                 web.get("/tools", self._redirect_to("/status")),
                 web.static("/web", WEB_DIR),
 
-                # Status
-                web.get("/health", self._handle_health),
+                # JSON API: everything a program calls lives under /api/
                 web.get("/api/status", self._handle_api_status),
 
-                # History
-                web.get("/history/events", self._handle_history_events),
-                web.get("/history/flows", self._handle_history_flows),
-                web.post("/history/clear", self._handle_history_clear),
+                web.get("/api/history/events", self._handle_history_events),
+                web.get("/api/history/flows", self._handle_history_flows),
+                web.post("/api/history/clear", self._handle_history_clear),
 
-                # Settings
                 web.get("/api/settings", self._handle_settings_get),
                 web.post("/api/settings", self._handle_settings_save),
 
-                # Control
-                web.post("/flow/run/{name}", self._handle_flow_run),
-                web.post("/mode/set/{name}", self._handle_mode_set),
-                web.post("/command", self._handle_command),
-                web.post("/remote/edge", self._handle_remote_edge),
-                web.post("/remote/tap", self._handle_remote_tap),
-                web.post("/refresh/tv", self._handle_refresh_tv),
-                web.post("/refresh/speaker", self._handle_refresh_speaker),
-                web.post("/admin/restart", self._handle_restart),
+                web.post("/api/flow/{name}", self._handle_flow_run),
+                web.post("/api/mode/{name}", self._handle_mode_set),
+                web.post("/api/command", self._handle_command),
+                web.post("/api/key/edge", self._handle_remote_edge),
+                web.post("/api/key/tap", self._handle_remote_tap),
+                web.post("/api/refresh/tv", self._handle_refresh_tv),
+                web.post("/api/refresh/speaker", self._handle_refresh_speaker),
+                web.post("/api/restart", self._handle_restart),
             ]
         )
 
@@ -148,13 +144,6 @@ class HttpServer:
         return handler
 
     # ---- status ----
-
-    def snapshot(self) -> dict:
-        """The /health payload (built by StatusReporter)."""
-        return self._status.health()
-
-    async def _handle_health(self, _: web.Request) -> web.Response:
-        return web.json_response(self.snapshot())
 
     async def _handle_api_status(self, _: web.Request) -> web.Response:
         # Other rooms' Status pages read this too (the room strip).

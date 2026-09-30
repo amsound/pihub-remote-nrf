@@ -106,7 +106,7 @@ function render(d) {
 
 // ---- Recent flows, with what triggered each ----
 async function refreshFlows() {
-  const { flows = [] } = await getJSON("/history/flows?limit=6");
+  const { flows = [] } = await getJSON("/api/history/flows?limit=6");
   $("flows").innerHTML = flows.length ? flows.map((f) => {
     const secs = f.duration_ms != null ? (f.duration_ms / 1000).toFixed(1) + "s" : "";
     const dot = f.result === "running" ? "" : f.result === "ok" ? "ok" : "bad";
@@ -131,7 +131,7 @@ document.querySelectorAll("#seg button").forEach((btn) => {
     btn.classList.add("pending");
     note("");
     try {
-      const { ok, data } = await postJSON(`/flow/run/${btn.dataset.flow}`, { trigger: "http.status" });
+      const { ok, data } = await postJSON(`/api/flow/${btn.dataset.flow}`, { trigger: "http.status" });
       if (!ok) note(`${btn.textContent}: ${data.error || data.reason || "failed"}`, "bad");
     } catch {
       note(`${btn.textContent}: no response`, "bad");
@@ -147,7 +147,7 @@ document.querySelectorAll("#seg button").forEach((btn) => {
 document.querySelectorAll(".rows button[data-mode], .rows button[data-post]").forEach((btn) => {
   btn.addEventListener("click", async () => {
     if (btn.dataset.confirm && !confirm(btn.dataset.confirm)) return;
-    const url = btn.dataset.mode ? `/mode/set/${btn.dataset.mode}` : btn.dataset.post;
+    const url = btn.dataset.mode ? `/api/mode/${btn.dataset.mode}` : btn.dataset.post;
     const label = btn.closest(".row").querySelector(".k").textContent + " " + btn.textContent;
     btn.disabled = true;
     try {

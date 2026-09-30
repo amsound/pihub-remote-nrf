@@ -18,7 +18,7 @@ It’s lightweight, locally stateful, and tuned for Raspberry Pi 3B+ (aarch64). 
 
 * **RF → Actions** via Linux `evdev`, mapped to canonical `rem_*` names
 * **Local mode authority** with active key bindings selected by PiHub
-* **HTTP control surface** on port `9123`, including `/health`, `/dashboard`, `/tools`, and `/settings`
+* **HTTP control surface** on port `9123`: pages (`/status`, `/remote`, `/settings`, `/history`) and a JSON API under `/api/`
 * **BLE Output**: per-button **Consumer + Keyboard** usages
 * **TV control** via Samsung WebSocket + SSDP discovery, or Samsung Frame IP Control on port 1516
 * **Speaker control** via pluggable speaker backends:
@@ -197,106 +197,70 @@ Plain static pages in `pihub/web/` (no build step), following the system light/d
 
 * `/status`: one screen with mode, last trigger, system vitals, TV and speaker cards, Apple TV and remote,
   flow/mode/maintenance buttons, recent flows, and the other rooms (`ROOMS`)
-* `/remote`: phone remote: Off / Listen / Watch, touch pad, volume. Holding a key repeats like the physical
-  remote; a key pressed from the page is released automatically after 8 s if its release never arrives
+* `/remote`: phone remote: Off / Listen / Watch, touch pad, volume. Keys are taps
 * `/settings`: volumes, what Listen plays, stream slots (per speaker backend)
 * `/history`: recent flows with their steps, and warnings/errors
 
-### Status for Home Assistant
+### HTTP API
 
-`GET /api/status`: compact JSON (mode, last flow/trigger/result, `tv`, `speaker`, `apple_tv`, `remote`,
-`system`). Times (`*_at`) are Unix seconds, set only when that thing actually changed. `GET /health` is the
-older, larger payload, kept for existing consumers.
+Pages live at the top level; everything a program calls is under `/api/` (JSON).
+
+| Call | What it does |
+|---|---|
+| `GET /api/status` | Compact status: `mode`, last flow/trigger/result, `tv`, `speaker`, `apple_tv`, `remote`, `system`. Times (`*_at`) are Unix seconds, set only when that thing actually changed. Other rooms' pages read it too (CORS open). |
+| `POST /api/flow/{name}` | Run a flow: `watch`, `listen` or `power_off`. Optional body `{"trigger": "http.ha"}` names the caller in Recent flows. |
+| `POST /api/mode/{name}` | Set the mode without running the flow. |
+| `POST /api/command` | Generic form: `{"domain": "flow", "action": "run", "args": {"name": "watch"}}`. |
+| `POST /api/key/tap` | Press and release a remote key: `{"key": "rem_vol_up", "hold_ms": 60}`. |
+| `POST /api/key/edge` | Raw key down/up; a key left down is released after 8 s. |
+| `POST /api/refresh/tv`, `/api/refresh/speaker` | Re-check that device now (e.g. the soundbar's Cast/AirPlay state after an outside change). |
+| `GET /api/history/flows`, `/api/history/events`; `POST /api/history/clear` | Flow history and warnings/errors. |
+| `GET`/`POST /api/settings` | Volumes, what Listen plays, stream slots. |
+| `POST /api/restart` | Restart PiHub. |
+
+```bash
+curl -X POST http://pihub.local:9123/api/flow/watch -H 'Content-Type: application/json' -d '{"trigger": "http.ha"}'
+```
+
+### Home Assistant
+
+The current activity comes from `/api/status` (`mode`); starting one is `POST /api/flow/{name}`. A template
+select shows the activity and changes it:
 
 ```yaml
 rest:
-  - resource: http://<pihub>:9123/api/status
-    scan_interval: 15
+  - resource: http://192.168.90.42:9123/api/status
+    scan_interval: 10
     sensor:
-      - name: "Living Room PiHub Mode"
+      - name: "Living Room Activity"
+        unique_id: pihub_living_room_activity
         value_template: "{{ value_json.mode }}"
+
+rest_command:
+  pihub_flow:
+    url: "http://{{ host }}:9123/api/flow/{{ flow }}"
+    method: POST
+    content_type: "application/json"
+    payload: '{"trigger": "http.ha"}'
+    timeout: 30
+
+template:
+  - select:
+      - name: "Living Room Activity Select"
+        unique_id: pihub_living_room_activity_select
+        state: "{{ states('sensor.living_room_activity') }}"
+        options: "{{ ['power_off', 'listen', 'watch'] }}"
+        select_option:
+          - action: rest_command.pihub_flow
+            data:
+              host: 192.168.90.42
+              flow: "{{ option }}"
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.living_room_activity
 ```
 
-### Commands accepted over HTTP
-
-PiHub currently accepts three local command forms:
-
-#### Run a flow
-
-```text
-POST /flow/run/{name}
-```
-
-Examples:
-
-```bash
-curl -X POST http://pihub.local:9123/flow/run/watch
-curl -X POST http://pihub.local:9123/flow/run/listen
-curl -X POST http://pihub.local:9123/flow/run/power_off
-```
-
-Optional JSON body:
-
-```json
-{ "trigger": "http.browser" }
-```
-
-#### Set mode directly
-
-```text
-POST /mode/set/{name}
-```
-
-Examples:
-
-```bash
-curl -X POST http://pihub.local:9123/mode/set/watch
-curl -X POST http://pihub.local:9123/mode/set/listen
-curl -X POST http://pihub.local:9123/mode/set/power_off
-```
-
-Optional JSON body:
-
-```json
-{ "trigger": "http.browser" }
-```
-
-#### Universal command endpoint
-
-```text
-POST /command
-```
-
-JSON body format:
-
-```json
-{
-  "domain": "flow",
-  "action": "run",
-  "args": {
-    "name": "watch",
-    "trigger": "http.command"
-  }
-}
-```
-
-#### Refresh domain state
-
-```text
-POST /refresh/tv
-POST /refresh/speaker
-```
-
-Examples:
-
-```bash
-curl -X POST http://pihub.local:9123/refresh/tv
-curl -X POST http://pihub.local:9123/refresh/speaker
-```
-
-These endpoints trigger an immediate best-effort refresh of the relevant domain state.
-
-This is particularly useful with the local Samsung soundbar backend when you want PiHub to immediately re-check Cast and AirPlay state after an external change.
+Repeat the `rest` sensor and the select per room with that room's PiHub address.
 
 ---
 
@@ -474,9 +438,9 @@ A flow can return `ok: false` when important domain steps fail, for example if B
 * **No device-state flow action?** Check whether the same logical flow already ran recently, or whether another sequence was already active and the signal was skipped intentionally.
 * **Mode changed but `last_flow` is null?** That is expected when mode changed by startup reconcile or direct mode set rather than by a successfully completed flow.
 * **TV flow steps fail immediately with `tv_token_missing`?** That is expected. Explicit TV power commands inside flows now require a saved Samsung TV token. First-time pairing/bootstrap should be done separately with the TV on and correctly configured network details.
-* **TV already on at boot but mode stays `power_off`?** Check `/health` for `tv.details.presence_on` and `presence_source`. Startup remains conservative until an explicit flow or later device-state signal acts.
+* **TV already on at boot but mode stays `power_off`?** Check `/api/status` for `tv.on` and `tv.on_via`. Startup remains conservative until an explicit flow or later device-state signal acts.
 * **TV discovery confusion?** `presence_source` shows the most recent TV discovery source, not the current mode source of truth.
-* **Samsung soundbar state looks stale or blank?** `POST /refresh/speaker` wakes the Cast watchdog; `/health` shows the speaker details.
+* **Samsung soundbar state looks stale or blank?** `POST /api/refresh/speaker` wakes the Cast watchdog; `/api/status` shows the speaker state.
 * **Samsung soundbar AirPlay not detected?** Check the soundbar's `_airplay._tcp` mDNS announcement (for example `dns-sd -L "<name>" _airplay._tcp`) and that its `flags` change when AirPlay starts.
 * **Restreamed slot won't play?** The restreamer must be running on the pihub host (port 8000); see its log for the station.
 
