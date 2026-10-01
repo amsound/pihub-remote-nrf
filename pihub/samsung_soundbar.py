@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -17,12 +18,14 @@ from urllib.parse import quote
 import aiohttp
 import pychromecast
 from pychromecast.const import CAST_TYPE_AUDIO
+from pychromecast.controllers import BaseController
 from pychromecast.models import CastInfo, HostServiceInfo
 
 logger = logging.getLogger(__name__)
 logging.getLogger("pychromecast.discovery").setLevel(logging.ERROR)
 
 DEFAULT_MEDIA_RECEIVER_APP_ID = "CC1AD845"
+CAST_MEDIA_NAMESPACE = "urn:x-cast:com.google.cast.media"
 
 HLS_CONTENT_TYPE = "application/vnd.apple.mpegurl"
 
@@ -158,6 +161,39 @@ class _CastMediaListener:
 
     def load_media_failed(self, queue_item_id: int, error_code: int) -> None:
         logger.warning("cast load_media_failed item=%s error_code=%s", queue_item_id, error_code)
+
+
+class _CastMediaErrorTap(BaseController):
+    """Logs what the receiver says when playback fails.
+
+    pychromecast only passes on idle_reason=ERROR. The receiver may also send
+    an ERROR message with a detailedErrorCode (network, decode, buffer...), which
+    pychromecast drops. This listens on the media channel alongside it and logs
+    those, and the raw status that carried the error. It never sends anything.
+    """
+
+    _MAX_LOG_CHARS = 700
+
+    def __init__(self) -> None:
+        super().__init__(CAST_MEDIA_NAMESPACE)
+
+    def receive_message(self, _message: Any, data: dict) -> bool:
+        kind = data.get("type")
+        if kind == "MEDIA_STATUS":
+            failed = [st for st in data.get("status") or [] if st.get("idleReason") == "ERROR"]
+            if failed:
+                logger.warning("cast error status: %s", self._brief(failed))
+        elif kind is not None:
+            # ERROR, LOAD_FAILED, LOAD_CANCELLED, INVALID_REQUEST, ...
+            logger.warning(
+                "cast media message type=%s detailedErrorCode=%s reason=%s raw=%s",
+                kind, data.get("detailedErrorCode"), data.get("reason"), self._brief(data),
+            )
+        return True
+
+    def _brief(self, data: Any) -> str:
+        text = json.dumps(data, default=str, separators=(",", ":"))
+        return text if len(text) <= self._MAX_LOG_CHARS else text[: self._MAX_LOG_CHARS] + "..."
 
 
 @dataclass
@@ -414,6 +450,9 @@ class SamsungSoundbar:
 
         with contextlib.suppress(Exception):
             cast.media_controller.register_status_listener(_CastMediaListener(self, cast))
+
+        with contextlib.suppress(Exception):
+            cast.register_handler(_CastMediaErrorTap())
 
         if not self._cast_connected_logged:
             logger.info(
