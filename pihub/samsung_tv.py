@@ -380,7 +380,6 @@ class TvController:
         self._power_on_key_lock = asyncio.Lock()
         self._power_on_attempt_id = 0
 
-        self._last_power_off_request_ts: float | None = None
         self._state_change_callback = state_change_callback
 
         self._pending_watch_signal_task: Optional[asyncio.Task] = None
@@ -750,8 +749,6 @@ class TvController:
         await self.refresh_presence()
         if self._presence_cached is False:
             return True
-
-        self._last_power_off_request_ts = asyncio.get_running_loop().time()
 
         # KEY_POWER is a toggle. Do not retry after a failed send_key(), because
         # failure can be ambiguous: the TV may have received the frame before the

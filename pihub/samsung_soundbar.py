@@ -105,6 +105,8 @@ def _guess_content_type(url: str) -> str:
         return "audio/aac"
     if path.endswith(".ogg"):
         return "audio/ogg"
+    if path.endswith(".flac"):
+        return "audio/flac"
     return "audio/aac"  # reasonable default for live radio
 
 
@@ -209,13 +211,11 @@ class SamsungSoundbarState:
     muted: bool | None = None
 
     source: str | None = None
-    raw_input_source: str | None = None
     sound_from: str | None = None
     listen_active: bool = False
 
     friendly_name: str | None = None
     cast_app_id: str | None = None
-    cast_app_name: str | None = None
     # Receiver media state: PLAYING / BUFFERING / PAUSED / IDLE, or None.
     cast_player_state: str | None = None
 
@@ -242,7 +242,8 @@ class SamsungSoundbar:
         self._task: asyncio.Task | None = None
         self._stop_evt = asyncio.Event()
         self._watchdog_wake_evt = asyncio.Event()
-        self._refresh_lock = asyncio.Lock()
+        # What each stream address turned out to be (Content-Type), so it is only asked once.
+        self._content_types: dict[str, str] = {}
         self._send_lock = asyncio.Lock()
 
         self._state = SamsungSoundbarState()
@@ -545,7 +546,6 @@ class SamsungSoundbar:
         return {
             "friendly_name": cast.name if cast is not None else None,
             "app_id": cast.app_id if cast is not None else None,
-            "app_name": cast.app_display_name if cast is not None else None,
             "volume": status.volume_level if status is not None else None,
             "muted": status.volume_muted if status is not None else None,
         }
@@ -813,7 +813,6 @@ class SamsungSoundbar:
         old_listen = bool(self._state.listen_active)
 
         app_id = self._norm_str(cast_status.get("app_id"))
-        app_name = self._norm_str(cast_status.get("app_name"))
         friendly_name = self._norm_str(cast_status.get("friendly_name"))
 
         volume = cast_status.get("volume")
@@ -846,7 +845,6 @@ class SamsungSoundbar:
             last_error=None,
             friendly_name=friendly_name,
             cast_app_id=app_id,
-            cast_app_name=app_name,
             cast_player_state=player_state,
             volume=volume_norm,
             muted=muted_norm,
@@ -1164,8 +1162,13 @@ class SamsungSoundbar:
             content_type = RESTREAMER_CONTENT_TYPE
         else:
             cast_url = url
+            content_type = content_type or self._content_types.get(url)
             if not content_type:
-                content_type = await self._probe_content_type(url) or _guess_content_type(url)
+                # Asking means opening the stream once ourselves, so remember the answer.
+                probed = await self._probe_content_type(url)
+                if probed:
+                    self._content_types[url] = probed
+                content_type = probed or _guess_content_type(url)
 
         logger.debug("cast play_url content_type=%s url=%s", content_type, cast_url)
 

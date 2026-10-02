@@ -293,11 +293,6 @@ class HistoryStore:
 
             self._dirty = False
 
-    def flush(self) -> None:
-        with self._lock:
-            self._write_locked()
-            self._dirty = False
-
     def close(self) -> None:
         if self._stop_evt.is_set():
             return
@@ -305,10 +300,7 @@ class HistoryStore:
         self._flush_evt.set()
         if self._writer.is_alive():
             self._writer.join(timeout=1.0)
-        with self._lock:
-            if self._dirty:
-                self._write_locked()
-                self._dirty = False
+        self._write_if_dirty()
 
     def clear(self) -> None:
         with self._lock:
@@ -385,11 +377,7 @@ class HistoryStore:
                     deadline = time.monotonic() + _HISTORY_FLUSH_DEBOUNCE_S
 
             try:
-                with self._lock:
-                    if not self._dirty:
-                        continue
-                    self._write_locked()
-                    self._dirty = False
+                self._write_if_dirty()
                 retry_delay_s = 1.0
                 last_log_ts = 0.0
                 last_log_key = None
@@ -413,17 +401,27 @@ class HistoryStore:
                 time.sleep(retry_delay_s)
                 retry_delay_s = min(retry_delay_s * 2.0, 30.0)
 
-    def _write_locked(self) -> None:
+    def _write_if_dirty(self) -> None:
+        """Save to disk if anything changed.
+
+        Only the copy is made under the lock. Building the JSON and writing it
+        take tens of milliseconds on a Pi, and the event loop takes this lock
+        for every history read and write, so it must not wait behind them.
+        """
+        with self._lock:
+            if not self._dirty:
+                return
+            events, flows = list(self._events), list(self._flow_reports)
+            self._dirty = False
+
         parent = os.path.dirname(self._path) or "."
         os.makedirs(parent, exist_ok=True)
-
-        payload = {
-            "events": [event.to_dict() for event in self._events],
-            "flows": [report.to_dict() for report in self._flow_reports],
-        }
-
+        payload = json.dumps(
+            {"events": [event.to_dict() for event in events], "flows": [report.to_dict() for report in flows]},
+            separators=(",", ":"),
+        )
         tmp = f"{self._path}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
+            f.write(payload)
             f.write("\n")
         os.replace(tmp, self._path)

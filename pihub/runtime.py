@@ -38,7 +38,6 @@ class RuntimeEngine:
         self._error = False
         self._last_error: str | None = None
         self._last_result: str | None = None
-        self._startup_reconciled = False
         self._lock = asyncio.Lock()
         self._active_sequence_task: asyncio.Task | None = None
         self._flows = FlowRunner(
@@ -53,18 +52,6 @@ class RuntimeEngine:
     @property
     def mode(self) -> str:
         return self._mode
-
-    @property
-    def last_flow(self) -> str | None:
-        return self._last_flow
-
-    @property
-    def flow_running(self) -> bool:
-        return self._flow_running
-
-    @property
-    def last_trigger(self) -> str | None:
-        return self._last_trigger
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -100,6 +87,12 @@ class RuntimeEngine:
             return "device-state"
         if t.startswith("startup"):
             return "startup"
+        if t.startswith("http.remote"):
+            return "web remote"
+        if t == "http.status":
+            return "status page"
+        if t == "http.ha":
+            return "home assistant"
         if t.startswith("http."):
             return "http"
         return t or "internal"
@@ -110,10 +103,7 @@ class RuntimeEngine:
     async def initialize_startup_mode(self) -> dict[str, Any]:
         self._note_trigger("startup_reconcile")
         logger.info("startup reconcile selected mode=power_off")
-        result = await self.set_mode("power_off", trigger="startup_reconcile")
-        if result.get("ok"):
-            self._startup_reconciled = True
-        return result
+        return await self.set_mode("power_off", trigger="startup_reconcile")
 
     async def start(self) -> None:
         await self.initialize_startup_mode()

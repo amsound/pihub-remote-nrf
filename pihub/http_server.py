@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import signal
 from pathlib import Path
 from typing import Any, Optional
 
@@ -23,9 +24,6 @@ logger = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).parent / "web"
 PAGES = {"/status": "status.html", "/remote": "remote.html", "/settings": "settings.html", "/history": "history.html"}
 
-# A key pressed from the web page is released automatically after this long if
-# its "up" never arrives (phone locked, network drop), so nothing can stick.
-WEB_KEY_MAX_HOLD_S = 8.0
 
 
 class HttpServer:
@@ -71,7 +69,6 @@ class HttpServer:
 
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
-        self._web_key_release: dict[str, asyncio.Task] = {}
 
     async def start(self) -> None:
         if self._runner is not None:
@@ -100,7 +97,6 @@ class HttpServer:
                 web.post("/api/flow/{name}", self._handle_flow_run),
                 web.post("/api/mode/{name}", self._handle_mode_set),
                 web.post("/api/command", self._handle_command),
-                web.post("/api/key/edge", self._handle_remote_edge),
                 web.post("/api/key/tap", self._handle_remote_tap),
                 web.post("/api/refresh/tv", self._handle_refresh_tv),
                 web.post("/api/refresh/speaker", self._handle_refresh_speaker),
@@ -114,10 +110,6 @@ class HttpServer:
         await self._site.start()
 
     async def stop(self) -> None:
-        for task in self._web_key_release.values():
-            task.cancel()
-        self._web_key_release.clear()
-
         runner, self._runner = self._runner, None
         self._site = None
         if runner is None:
@@ -227,46 +219,6 @@ class HttpServer:
         status = 200 if result.get("ok") else 409 if result.get("reason") == "runner_busy" else 400
         return web.json_response(result, status=status)
 
-    async def _handle_remote_edge(self, request: web.Request) -> web.Response:
-        if self._dispatcher is None:
-            return web.json_response({"ok": False, "error": "dispatcher unavailable"}, status=503)
-
-        payload = await _json_body(request)
-        if payload is None:
-            return web.json_response({"ok": False, "error": "json body required"}, status=400)
-
-        key = str(payload.get("key") or "").strip()
-        edge = str(payload.get("edge") or "").strip().lower()
-        key_error = self._validate_remote_key(key)
-        if key_error:
-            return web.json_response({"ok": False, "error": key_error}, status=400)
-        if edge not in {"down", "up"}:
-            return web.json_response({"ok": False, "error": "edge must be 'down' or 'up'"}, status=400)
-
-        pending = self._web_key_release.pop(key, None)
-        if pending is not None:
-            pending.cancel()
-
-        try:
-            await self._dispatcher.on_usb_edge(key, edge)
-        except Exception as exc:
-            return web.json_response({"ok": False, "error": str(exc), "key": key, "edge": edge}, status=500)
-
-        if edge == "down":
-            self._web_key_release[key] = asyncio.create_task(
-                self._release_web_key_later(key), name=f"web_key_release:{key}"
-            )
-
-        return web.json_response({"ok": True, "action": "remote_edge", "key": key, "edge": edge})
-
-    async def _release_web_key_later(self, key: str) -> None:
-        await asyncio.sleep(WEB_KEY_MAX_HOLD_S)
-        if self._web_key_release.get(key) is asyncio.current_task():
-            del self._web_key_release[key]
-            logger.info("web key %s released automatically (no key-up received)", key)
-            with contextlib.suppress(Exception):
-                await self._dispatcher.on_usb_edge(key, "up")
-
     async def _handle_remote_tap(self, request: web.Request) -> web.Response:
         if self._dispatcher is None:
             return web.json_response({"ok": False, "error": "dispatcher unavailable"}, status=503)
@@ -337,8 +289,12 @@ class HttpServer:
 
     async def _handle_restart(self, _: web.Request) -> web.Response:
         async def _delayed_exit() -> None:
-            await asyncio.sleep(0.25)
-            os._exit(0)  # Docker's restart policy brings the container back
+            await asyncio.sleep(0.25)   # let this reply go out first
+            # A normal shutdown (history saved, held keys released, connections
+            # closed); Docker's restart policy then brings the container back.
+            os.kill(os.getpid(), signal.SIGTERM)
+            await asyncio.sleep(10.0)
+            os._exit(0)                 # shutdown got stuck
 
         asyncio.create_task(_delayed_exit(), name="pihub_restart")
         return web.json_response({"ok": True, "action": "restart"})

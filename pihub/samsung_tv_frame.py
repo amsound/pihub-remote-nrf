@@ -327,14 +327,6 @@ class SamsungFrameTv:
         logger.info("token saved to %s", self.token_file)
         return token.strip()
 
-    async def request_access_token(self) -> str:
-        """Request and persist a new access token.
-
-        This can display an on-screen authorization prompt on the TV.
-        """
-        async with self._lock:
-            return await self._request_access_token_unlocked()
-
     async def refresh_presence(self, *, timeout_s: float = 2.0) -> None:
         """Read the TV's real power state (it answers even when off).
 
@@ -557,87 +549,3 @@ class SamsungFrameTv:
                 source="ip_control_power_off",
                 timeout_s=timeout_s,
             )
-
-    async def hdmi1(self) -> bool:
-        return await self.set_hdmi1()
-
-    async def set_hdmi1(self) -> bool:
-        async with self._lock:
-            if not await self._ensure_token():
-                return False
-
-            last_error = ""
-            for attempt in range(1, _COMMAND_RETRIES + 1):
-                try:
-                    data = await self._rpc(
-                        "inputSourceControl",
-                        {"inputSource": "HDMI1"},
-                    )
-                    ack_source = self._result(data).get("inputSource")
-                    if ack_source != "HDMI1":
-                        raise RuntimeError(f"source_ack_mismatch:{ack_source!r}!='HDMI1'")
-
-                    await asyncio.sleep(_VERIFY_DELAY_S)
-                    actual_source = await self._get_input_source()
-                    self._input_source = actual_source
-                    if actual_source == "HDMI1":
-                        logger.info("source command verified target=HDMI1 attempt=%d", attempt)
-                        return True
-
-                    raise RuntimeError(f"source_verify_mismatch:{actual_source!r}!='HDMI1'")
-                except Exception as exc:
-                    last_error = repr(exc)
-                    logger.debug(
-                        "source command attempt failed attempt=%d/%d error=%r",
-                        attempt,
-                        _COMMAND_RETRIES,
-                        exc,
-                        exc_info=True,
-                    )
-                    if attempt < _COMMAND_RETRIES:
-                        await asyncio.sleep(0.25 * attempt)
-
-            self._last_error = last_error or "source_command_failed"
-            logger.warning("source command failed error=%s", self._last_error)
-            return False
-
-    async def return_key(self) -> bool:
-        return await self.press(key="return")
-
-    async def press(self, *, key: str) -> bool:
-        key = (key or "").strip()
-        if not key:
-            return False
-        async with self._lock:
-            if not await self._ensure_token():
-                return False
-
-            last_error = ""
-            for attempt in range(1, _COMMAND_RETRIES + 1):
-                try:
-                    data = await self._rpc("remoteKeyControl", {"remoteKey": key})
-                    ack_key = self._result(data).get("remoteKey")
-                    if ack_key != key:
-                        raise RuntimeError(f"remote_key_ack_mismatch:{ack_key!r}!={key!r}")
-
-                    logger.info("remote key acknowledged key=%s attempt=%d", key, attempt)
-                    return True
-                except Exception as exc:
-                    last_error = repr(exc)
-                    logger.debug(
-                        "remote key attempt failed key=%s attempt=%d/%d error=%r",
-                        key,
-                        attempt,
-                        _COMMAND_RETRIES,
-                        exc,
-                        exc_info=True,
-                    )
-                    if attempt < _COMMAND_RETRIES:
-                        await asyncio.sleep(0.25 * attempt)
-
-            self._last_error = last_error or "remote_key_failed"
-            logger.warning("remote key failed key=%s error=%s", key, self._last_error)
-            return False
-
-    async def send_key(self, *, key: str) -> None:
-        await self.press(key=key)

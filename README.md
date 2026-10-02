@@ -212,7 +212,6 @@ Pages live at the top level; everything a program calls is under `/api/` (JSON).
 | `POST /api/mode/{name}` | Set the mode without running the flow. |
 | `POST /api/command` | Generic form: `{"domain": "flow", "action": "run", "args": {"name": "watch"}}`. |
 | `POST /api/key/tap` | Press and release a remote key: `{"key": "rem_vol_up", "hold_ms": 60}`. |
-| `POST /api/key/edge` | Raw key down/up; a key left down is released after 8 s. |
 | `POST /api/refresh/tv`, `/api/refresh/speaker` | Re-check that device now (e.g. the soundbar's Cast/AirPlay state after an outside change). |
 | `GET /api/history/flows`, `/api/history/events`; `POST /api/history/clear` | Flow history and warnings/errors. |
 | `GET`/`POST /api/settings` | Volumes, what Listen plays, stream slots. |

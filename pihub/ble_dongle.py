@@ -87,7 +87,7 @@ class BleDongleLink:
       - start/stop
       - key_down/key_up (edge-level, fire and forget)
       - run_macro and the Apple TV macros (power_on/power_off/return_home)
-      - ping/status_cmd/unpair
+      - ping/status_cmd
       - compile_ble_frames + compiled_key_down/up
       - status property
     """
@@ -122,7 +122,9 @@ class BleDongleLink:
         self._resync_delay_s: float = 0.15
 
         self._tx_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=int(tx_queue))
-        self._tx_lock = asyncio.Lock()
+        # Set while the serial port is closed; the reconnect loop sleeps on it.
+        self._link_down = asyncio.Event()
+        self._link_down.set()
 
         self._rx_buf = bytearray()
         self._rx_line_max = 512
@@ -199,11 +201,6 @@ class BleDongleLink:
     async def status_cmd(self) -> None:
         if self.is_open:
             await self._write_line("STATUS")
-
-    async def unpair(self) -> None:
-        self.release_all()
-        if self.is_open:
-            await self._write_line("UNPAIR")
 
     def release_all(self) -> None:
         """
@@ -714,10 +711,12 @@ class BleDongleLink:
                     self._reconnect_delay_s = 0.5
 
                     # start periodic ping/status if configured
-                    if self._poll_task is None or self._poll_task.done():
+                    polling = self._ping_interval_s > 0 or self._status_poll_s > 0
+                    if polling and (self._poll_task is None or self._poll_task.done()):
                         self._poll_task = asyncio.create_task(self._poll_loop(), name="ble-serial-poll")
 
-                await asyncio.sleep(0.5)
+                # Nothing to do while the port is open: sleep until it closes.
+                await self._link_down.wait()
 
             except asyncio.CancelledError:
                 raise
@@ -726,18 +725,19 @@ class BleDongleLink:
                 await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
 
     async def _poll_loop(self) -> None:
-        last_ping = 0.0
-        last_status = 0.0
+        """Optional periodic PING / STATUS (both off by default). Sleeps until the next one is due."""
+        next_ping = next_status = time.monotonic()
         while True:
             try:
                 now = time.monotonic()
-                if self._ping_interval_s > 0 and now - last_ping >= self._ping_interval_s:
-                    last_ping = now
+                if self._ping_interval_s > 0 and now >= next_ping:
+                    next_ping = now + self._ping_interval_s
                     await self.ping()
-                if self._status_poll_s > 0 and now - last_status >= self._status_poll_s:
-                    last_status = now
+                if self._status_poll_s > 0 and now >= next_status:
+                    next_status = now + self._status_poll_s
                     await self.status_cmd()
-                await asyncio.sleep(0.2)
+                due = [t for t, on in ((next_ping, self._ping_interval_s > 0), (next_status, self._status_poll_s > 0)) if on]
+                await asyncio.sleep(max(0.05, min(due) - time.monotonic()))
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -774,28 +774,20 @@ class BleDongleLink:
 
 
         try:
-            # pyserial's 'exclusive' is POSIX-only; keep best-effort compatibility.
-            try:
-                ser = serial.Serial(
-                    port=port,
-                    baudrate=self._baud,
-                    timeout=0,          # non-blocking reads
-                    write_timeout=0.5,
-                    exclusive=True,
-                )
-            except TypeError:
-                ser = serial.Serial(
-                    port=port,
-                    baudrate=self._baud,
-                    timeout=0,          # non-blocking reads
-                    write_timeout=0.5,
-                )
+            ser = serial.Serial(
+                port=port,
+                baudrate=self._baud,
+                timeout=0,          # non-blocking reads
+                write_timeout=0,    # writes go straight to the (non-blocking) port, see _writer_loop
+                exclusive=True,
+            )
         except SerialException as exc:
             logger.debug("open failed on %s: %r", port, exc)
             return False
 
         self._ser = ser
         self._port = port
+        self._link_down.clear()
         self._missing_dongle_logged = False
         self.state = DongleState()
         self._pong_counter = 0
@@ -896,6 +888,7 @@ class BleDongleLink:
         self._clear_tx_queue()
         ser, self._ser = self._ser, None
         self._port = None
+        self._link_down.set()
         if ser is None:
             return
         with contextlib.suppress(Exception):
@@ -912,11 +905,16 @@ class BleDongleLink:
         while True:
             try:
                 payload = await self._tx_q.get()
-                if self._ser is None:
+                ser = self._ser
+                if ser is None:
                     continue
-                loop = asyncio.get_running_loop()
-                async with self._tx_lock:
-                    n = await loop.run_in_executor(None, self._ser.write, payload)  # type: ignore[arg-type]
+                # Straight to the port. It is non-blocking and a frame is a few bytes,
+                # so this takes microseconds; a thread-pool hop cost ~0.4 ms per key
+                # edge, sometimes 10+ ms. A port that won't take a whole frame at once
+                # means the dongle has stopped reading: reconnect (handled below).
+                n = os.write(ser.fileno(), payload)
+                if n != len(payload):
+                    raise OSError(f"short write ({n} of {len(payload)} bytes)")
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug("serial wrote %s bytes", n)
             except asyncio.CancelledError:
