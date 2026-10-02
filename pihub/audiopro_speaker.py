@@ -13,6 +13,8 @@ from typing import Any, Awaitable, Callable
 
 import aiohttp
 
+from .initial_status import InitialStatus
+
 logger = logging.getLogger(__name__)
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
@@ -170,6 +172,7 @@ class AudioProSpeaker:
 
         # State change callback for external state change
         self._state_change_callback = state_change_callback
+        self.initial = InitialStatus(logger)
 
         self._pending_pinfget_task: asyncio.Task | None = None
         self._pending_multiroom_host_ip_task: asyncio.Task | None = None
@@ -392,6 +395,7 @@ class AudioProSpeaker:
                 break
             except Exception as e:
                 self._mark_down(str(e))
+                self.initial.mark_failed(str(e))
                 if not self._link_down_logged:
                     logger.warning(
                         "speaker unavailable err=%r; continuing without connection",
@@ -804,14 +808,24 @@ class AudioProSpeaker:
 
         self._emit_listen_edge(old_source, old_status)
 
-    def _emit_listen_edge(self, old_source: str | None, old_status: str | None) -> None:
-        def _active(source: str | None, status: str | None) -> bool:
-            src = (source or "").strip().lower()
-            st = (status or "").strip().lower()
-            return src in _NETWORK_SOURCES and st in {"load", "play"}
+    @staticmethod
+    def _listen_active(source: str | None, status: str | None) -> bool:
+        src = (source or "").strip().lower()
+        st = (status or "").strip().lower()
+        return src in _NETWORK_SOURCES and st in {"load", "play"}
 
-        old_active = _active(old_source, old_status)
-        new_active = _active(self._state.source, self._state.playback_status)
+    def listening(self) -> bool:
+        """Is a listen session in progress (playing from a network source)?"""
+        return self._listen_active(self._state.source, self._state.playback_status)
+
+    def _emit_listen_edge(self, old_source: str | None, old_status: str | None) -> None:
+        # A first reading during start-up is where things stand, not a change: it must
+        # not send a listen signal. (A device that only turns up later still does.)
+        if not self.initial.settled:
+            return
+
+        old_active = self._listen_active(old_source, old_status)
+        new_active = self.listening()
 
         if not old_active and new_active:
             self._emit_state_change(
@@ -1185,10 +1199,8 @@ class AudioProSpeaker:
             self._state.last_update_ts = _now()
 
         if not was_ready and self._state.ready:
-            logger.info(
-                "link ready speaker_ip=%s (initial status received)",
-                self._speaker_ip,
-            )
+            logger.info("link ready speaker_ip=%s", self._speaker_ip)
+            self.initial.mark_received(f"speaker source={source} playback={status} volume={vol_pct}")
 
     def _handle_unknown(self, payload: str) -> None:
         return

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import os
 import time
 from typing import Any
 
@@ -12,6 +14,12 @@ from .flows import FlowRunner, FlowStepFailures
 from .history import FlowRunReport, HistoryStore
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MODE_PATH = "/data/mode.json"
+# Used only when no mode has been remembered yet (first ever start, or the file is gone).
+FALLBACK_MODE = "power_off"
+# How long start-up waits for the TV and speaker to give their first reading.
+STARTUP_SETTLE_S = 5.0
 
 
 class RuntimeEngine:
@@ -26,11 +34,19 @@ class RuntimeEngine:
         ble: Any = None,
         settings: Any = None,
         history: HistoryStore | None = None,
-        initial_mode: str = "power_off",
         speaker_backend: str | None = None,
+        mode_path: str = DEFAULT_MODE_PATH,
     ) -> None:
         self._dispatcher = dispatcher
-        self._mode = initial_mode
+        self._tv = tv
+        self._speaker = speaker
+        self._mode_path = mode_path
+        self._mode = FALLBACK_MODE
+        # Set once a flow runs or a mode is set after start-up. From then on the
+        # user's intent stands and start-up must not second-guess it.
+        self._acted = False
+        self._startup_task: asyncio.Task | None = None
+        self._remember_failed = False
         self._last_flow: str | None = None
         self._flow_running = False
         self._last_trigger: str | None = None
@@ -100,13 +116,113 @@ class RuntimeEngine:
     def attach_dispatcher(self, dispatcher: Any) -> None:
         self._dispatcher = dispatcher
 
-    async def initialize_startup_mode(self) -> dict[str, Any]:
-        self._note_trigger("startup_reconcile")
-        logger.info("startup reconcile selected mode=power_off")
-        return await self.set_mode("power_off", trigger="startup_reconcile")
+    # ---- start-up: nothing is sent to any device ----
 
     async def start(self) -> None:
-        await self.initialize_startup_mode()
+        """Restore the remembered mode, then check it against the devices once they report."""
+        mode, last_flow = self._load_remembered()
+        valid = self._valid_modes()
+        if valid and mode not in valid:
+            mode, last_flow = FALLBACK_MODE, None
+        await self._dispatcher.set_mode_bindings(mode)
+        self._mode = mode
+        self._last_flow = last_flow
+        self._note_trigger("startup")
+        self._set_runtime_ok("ok")
+        logger.info("startup: mode %s (%s)", mode, "remembered" if last_flow is not None else "default")
+        self._startup_task = asyncio.create_task(self._correct_startup_mode(), name="runtime:startup")
+        self._startup_task.add_done_callback(self._startup_done)
+
+    @staticmethod
+    def _startup_done(task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("startup mode check failed; the remembered mode stands", exc_info=task.exception())
+
+    async def stop(self) -> None:
+        task, self._startup_task = self._startup_task, None
+        if task and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    def _valid_modes(self) -> set[str]:
+        fn = getattr(self._dispatcher, "available_modes", None)
+        return set(fn()) if callable(fn) else set()
+
+    def _load_remembered(self) -> tuple[str, str | None]:
+        try:
+            with open(self._mode_path, encoding="utf-8") as f:
+                raw = json.load(f)
+            mode = str(raw["mode"])
+            return mode, str(raw.get("last_flow") or mode)
+        except FileNotFoundError:
+            return FALLBACK_MODE, None
+        except Exception as exc:
+            logger.warning("startup: %s unreadable (%s); using %s", self._mode_path, exc, FALLBACK_MODE)
+            return FALLBACK_MODE, None
+
+    def _remember(self) -> None:
+        """Save the mode so the next start restores it.
+
+        Written in place: it is a few dozen bytes, only on a mode change, and
+        doing it here keeps saves in order.
+        """
+        try:
+            os.makedirs(os.path.dirname(self._mode_path) or ".", exist_ok=True)
+            tmp = f"{self._mode_path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"mode": self._mode, "last_flow": self._last_flow}) + "\n")
+            os.replace(tmp, self._mode_path)
+            self._remember_failed = False
+        except OSError as exc:
+            if not self._remember_failed:
+                self._remember_failed = True
+                logger.warning("could not save mode to %s: %s", self._mode_path, exc)
+
+    async def _correct_startup_mode(self) -> None:
+        """Once the TV and speaker have reported, make the mode match the room.
+
+        Mode only: key bindings and the last-flow marker. No flow runs and
+        nothing is sent to any device. Listening wins over the TV being on,
+        because a listen session is the active statement of intent. Skipped if
+        anyone has acted since start-up, and anything not known is left alone.
+        """
+        waits = [d.initial.wait(STARTUP_SETTLE_S) for d in (self._tv, self._speaker) if d is not None]
+        airplay = getattr(self._speaker, "airplay_initial", None)   # the soundbar senses AirPlay separately
+        if airplay is not None:
+            waits.append(airplay.wait(STARTUP_SETTLE_S))
+        if waits:
+            await asyncio.gather(*waits)
+        if self._acted or self._flow_running:
+            return
+
+        tv_on: bool | None = False
+        if self._tv is not None:
+            tv_on = self._tv.snapshot().presence_on if self._tv.initial.received else None
+        listening: bool | None = False
+        if self._speaker is not None:
+            listening = self._speaker.listening() if self._speaker.initial.received else None
+
+        if listening:
+            want = "listen"
+        elif tv_on:
+            want = "watch"
+        elif listening is None or tv_on is None:
+            return   # can't tell: the remembered mode stands
+        else:
+            want = "power_off"
+
+        valid = self._valid_modes()
+        if want == self._mode or (valid and want not in valid):
+            return
+        prior = self._mode
+        await self._dispatcher.set_mode_bindings(want)
+        self._mode = want
+        self._last_flow = want
+        self._remember()
+        logger.info(
+            "startup: tv %s, speaker %s: mode %s -> %s",
+            "on" if tv_on else "off", "listening" if listening else "idle", prior, want,
+        )
 
     async def _commit_mode_internal(self, name: str, *, trigger: str) -> dict[str, Any]:
         name = (name or "").strip()
@@ -185,6 +301,8 @@ class RuntimeEngine:
         await self._dispatcher.set_mode_bindings(name)
         self._note_trigger(trigger)
         self._mode = name
+        self._acted = True
+        self._remember()
 
         if prior != name:
             logger.info("mode %s -> %s", prior, name)
@@ -255,6 +373,7 @@ class RuntimeEngine:
 
         async with self._lock:
             self._flow_running = True
+            self._acted = True
             self._note_trigger(trigger)
 
             if self._history is not None:
@@ -314,6 +433,7 @@ class RuntimeEngine:
                     "listen_signal": "listen",
                     "watch_signal": "watch",
                 }.get(name, name)
+                self._remember()
 
                 self._set_runtime_ok("ok")
                 report.finish(result="ok")

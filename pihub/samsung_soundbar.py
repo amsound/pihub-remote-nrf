@@ -21,6 +21,8 @@ from pychromecast.const import CAST_TYPE_AUDIO
 from pychromecast.controllers import BaseController
 from pychromecast.models import CastInfo, HostServiceInfo
 
+from .initial_status import InitialStatus
+
 logger = logging.getLogger(__name__)
 logging.getLogger("pychromecast.discovery").setLevel(logging.ERROR)
 
@@ -68,6 +70,7 @@ CAST_PLAYING_STATES = ("PLAYING", "BUFFERING")
 HTTP_TIMEOUT_S = 3.0
 AIRPLAY_SERVICE_TYPE = "_airplay._tcp.local."
 AIRPLAY_MDNS_RESOLVE_TIMEOUT_MS = 2000
+AIRPLAY_INITIAL_WAIT_S = 5.0
 
 VOLUME_STEP = 0.01
 CAST_PORT = 8009
@@ -271,6 +274,10 @@ class SamsungSoundbar:
 
         self._tv = tv
         self._state_change_callback = state_change_callback
+        self.initial = InitialStatus(logger)
+        # AirPlay is sensed separately (the soundbar's own mDNS record), so it has its own first reading.
+        self.airplay_initial = InitialStatus(logger)
+        self._airplay_initial_task: asyncio.Task | None = None
 
     def set_state_change_callback(
         self, callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None
@@ -324,6 +331,9 @@ class SamsungSoundbar:
             self._session = aiohttp.ClientSession(timeout=timeout)
 
         self._start_airplay_mdns()
+        self._airplay_initial_task = asyncio.create_task(
+            self._airplay_initial_deadline(), name="samsung_soundbar:airplay_initial"
+        )
 
         logger.debug("started speaker_ip=%s", self._speaker_ip)
         self._task = asyncio.create_task(
@@ -337,6 +347,9 @@ class SamsungSoundbar:
         self._watchdog_wake_evt.set()
 
         self._stop_airplay_mdns()
+        if self._airplay_initial_task is not None:
+            self._airplay_initial_task.cancel()
+            self._airplay_initial_task = None
 
         if self._task:
             self._task.cancel()
@@ -369,11 +382,10 @@ class SamsungSoundbar:
 
     def _note_refresh_success(self) -> None:
         if not self._cast_ready_logged:
-            logger.info(
-                "link ready speaker_ip=%s (initial status received)",
-                self._speaker_ip,
-            )
+            logger.info("link ready speaker_ip=%s", self._speaker_ip)
             self._cast_ready_logged = True
+        st = self._state
+        self.initial.mark_received(f"speaker source={st.source} playback={st.playback_status} volume={None if st.volume is None else round(st.volume * 100)}")
 
         if self._availability_logged_down:
             logger.info(
@@ -422,6 +434,7 @@ class SamsungSoundbar:
                     ready=False,
                     last_error=str(exc),
                 )
+                self.initial.mark_failed(str(exc))
                 self._note_refresh_failure(exc)
 
             self._watchdog_wake_evt.clear()
@@ -672,6 +685,14 @@ class SamsungSoundbar:
             airplay_flags=flags,
             airplay_device=device,
         )
+        if flags is not None:
+            self.airplay_initial.mark_received(
+                f"soundbar airplay {'session active' if flags & AIRPLAY_ACTIVE_BIT else 'idle'}"
+            )
+
+    async def _airplay_initial_deadline(self) -> None:
+        await asyncio.sleep(AIRPLAY_INITIAL_WAIT_S)
+        self.airplay_initial.mark_failed(f"soundbar not seen on mDNS in {AIRPLAY_INITIAL_WAIT_S:g}s")
 
     def _handle_airplay_removed(self, raw_name: str) -> None:
         if raw_name != self._airplay_service_raw_name:
@@ -784,7 +805,6 @@ class SamsungSoundbar:
                 cast_player_state=cast_player_state,
             ),
             "power_on": True if (listen_active or cast_app_id) else None,
-            "raw_input_source": cast_app_id,
             "sound_from": sound_from,
         }
 
@@ -807,7 +827,7 @@ class SamsungSoundbar:
         )
 
         if changed:
-            self._maybe_emit_listen_edge(old_listen)
+            self._maybe_emit_listen_edge(old_listen, first_reading=not self.airplay_initial.settled)
 
     def _apply_cast_snapshot(self, cast_status: dict[str, Any]) -> None:
         old_listen = bool(self._state.listen_active)
@@ -856,7 +876,7 @@ class SamsungSoundbar:
         )
 
         if changed:
-            self._maybe_emit_listen_edge(old_listen)
+            self._maybe_emit_listen_edge(old_listen, first_reading=not self.initial.settled)
 
     def _cast_media_event_from_thread(self, cast: Any, status: Any) -> None:
         loop = self._loop
@@ -905,9 +925,17 @@ class SamsungSoundbar:
 
         if changed:
             logger.debug("cast media state=%s playback_status=%s", player_state, self._state.playback_status)
-            self._maybe_emit_listen_edge(old_listen)
+            self._maybe_emit_listen_edge(old_listen, first_reading=not self.initial.settled)
 
-    def _maybe_emit_listen_edge(self, old_listen: bool) -> None:
+    def listening(self) -> bool:
+        """Is a listen session in progress (AirPlay active, or our Cast stream playing)?"""
+        return bool(self._state.listen_active)
+
+    def _maybe_emit_listen_edge(self, old_listen: bool, *, first_reading: bool) -> None:
+        # A first reading during start-up is where things stand, not a change: it must
+        # not send a listen signal. (A device that only turns up later still does.)
+        if first_reading:
+            return
         if not old_listen and self._state.listen_active:
             self._emit_state_change(
                 "listen",

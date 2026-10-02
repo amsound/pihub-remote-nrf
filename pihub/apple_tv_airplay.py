@@ -30,7 +30,12 @@ from typing import Any, Awaitable, Callable
 from zeroconf import ServiceStateChange, Zeroconf
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
+from .initial_status import InitialStatus
+
 logger = logging.getLogger(__name__)
+
+# The Apple TV answers an mDNS query within a second or two when it is on the network.
+INITIAL_WAIT_S = 5.0
 
 AIRPLAY_SERVICE_TYPE = "_airplay._tcp.local."
 APPLE_TV_CONNECTED_SESSION_BIT = 0x20000
@@ -85,6 +90,8 @@ class AppleTvAirPlay:
         self._tasks: set[asyncio.Task[Any]] = set()
         self._pending_watch_task: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
+        # First reading: the Apple TV's AirPlay record seen on mDNS (session active or idle).
+        self.initial = InitialStatus(logger)
 
     @property
     def _now(self) -> float:
@@ -94,6 +101,7 @@ class AppleTvAirPlay:
         if not self.apple_tv_ip:
             self.state.last_error = "apple_tv_ip_missing"
             logger.info("disabled: docker compose field empty")
+            self.initial.mark_failed("not configured")
             return
 
         self._loop = asyncio.get_running_loop()
@@ -107,6 +115,7 @@ class AppleTvAirPlay:
         )
 
         self.state.ready = True
+        self._create_task(self._initial_deadline(), "apple_tv_airplay:initial")
         logger.info(
             "started ip=%s debounce_s=%s service=%s",
             self.apple_tv_ip,
@@ -213,6 +222,10 @@ class AppleTvAirPlay:
 
         task.add_done_callback(_done)
 
+    async def _initial_deadline(self) -> None:
+        await asyncio.sleep(INITIAL_WAIT_S)
+        self.initial.mark_failed(f"apple tv not seen on mDNS in {INITIAL_WAIT_S:g}s")
+
     async def _resolve_service(self, service_type: str, name: str) -> None:
         if self._aiozc is None or self._target_ip is None:
             return
@@ -239,6 +252,10 @@ class AppleTvAirPlay:
         self.state.connected_session = connected_session
         self.state.last_update_ts = self._now
         self.state.last_error = None
+        # A first reading during start-up is where things stand, not a change: it must
+        # not send a watch signal. (A device that only turns up later still does.)
+        first_reading = not self.initial.settled
+        self.initial.mark_received(f"apple tv airplay {'session active' if connected_session else 'idle'}")
 
         logger.debug(
             "update service=%s ip=%s flags=0x%x connected_session=%s",
@@ -248,10 +265,10 @@ class AppleTvAirPlay:
             connected_session,
         )
 
-        if connected_session:
-            self._schedule_watch_signal(flags=flags, service_name=name)
-        else:
+        if not connected_session:
             self._cancel_pending_watch_signal()
+        elif not first_reading:
+            self._schedule_watch_signal(flags=flags, service_name=name)
 
     async def _handle_service_removed(self, service_type: str, name: str) -> None:
         del service_type

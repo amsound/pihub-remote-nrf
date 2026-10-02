@@ -24,6 +24,7 @@ from typing import Any, Awaitable, Callable
 from .history import FlowRunReport, FlowStepReport
 from .settings import SettingsData
 from .slots import listen_slot, play_slot, resolve_slot
+from .tv import BACKEND_FRAME
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,8 @@ class FlowWaitTimeout(RuntimeError):
 _CONDITIONS: dict[str, Callable[[dict[str, Any]], bool]] = {
     "tv_is_on": lambda snap: snap["tv_is_on"],
     "tv_is_off": lambda snap: not snap["tv_is_on"],
+    # A Frame that this flow is about to switch on (its input can be set over IP control).
+    "frame_tv_is_off": lambda snap: snap["tv_is_frame"] and not snap["tv_is_on"],
     "speaker_is_on_listen_source": lambda snap: snap["speaker_source"] in LISTEN_SOURCES,
     "speaker_is_in_multiroom": lambda snap: (
         snap["speaker_source"] in LISTEN_SOURCES
@@ -257,6 +260,10 @@ class FlowContext:
         if not await self._require_tv().power_off():
             raise RuntimeError("tv_power_off_failed")
 
+    async def tv_input_hdmi1(self) -> None:
+        if not await self._require_tv().set_input_hdmi1():
+            raise RuntimeError("tv_set_input_failed")
+
     async def watch_volume(self) -> None:
         await self._require_speaker().set_volume(self._volume("watch"))
 
@@ -334,6 +341,9 @@ async def _audiopro_watch(ctx: FlowContext) -> None:
                    when="tv_is_off", background=True)
     await ctx.step("tv_power_on", "tv", "power_on", ctx.tv_on,
                    when="tv_is_off", timeout_s=TV_POWER_TIMEOUT_S)
+    # Frame only, and only when this flow switched it on: make sure it is on the Apple TV's input.
+    await ctx.step("tv_input_hdmi1", "tv", "set_input_hdmi1", ctx.tv_input_hdmi1,
+                   when="frame_tv_is_off", background=True)
     await ctx.step("speaker_watch_volume", "speaker", "set_volume", ctx.watch_volume,
                    background=True)
     await ctx.step("speaker_hdmi_source", "speaker", "set_source", ctx.speaker_hdmi)
@@ -350,6 +360,9 @@ async def _audiopro_watch_signal(ctx: FlowContext) -> None:
     await _audiopro_stop_speaker(ctx)
     await ctx.step("tv_power_on", "tv", "power_on", ctx.tv_on,
                    when="tv_is_off", timeout_s=TV_POWER_TIMEOUT_S)
+    # Frame only, and only when this flow switched it on: make sure it is on the Apple TV's input.
+    await ctx.step("tv_input_hdmi1", "tv", "set_input_hdmi1", ctx.tv_input_hdmi1,
+                   when="frame_tv_is_off", background=True)
     await ctx.step("speaker_watch_volume", "speaker", "set_volume", ctx.watch_volume,
                    background=True)
     await ctx.step("speaker_hdmi_source", "speaker", "set_source", ctx.speaker_hdmi)
@@ -511,10 +524,12 @@ class FlowRunner:
 
     def _snapshot(self) -> dict[str, Any]:
         speaker_snap = self._speaker.snapshot() if self._speaker is not None else {}
-        tv_is_on = self._tv is not None and self._tv.snapshot().presence_on is True
+        tv_snap = self._tv.snapshot() if self._tv is not None else None
+        tv_is_on = tv_snap is not None and tv_snap.presence_on is True
 
         return {
             "tv_is_on": tv_is_on,
+            "tv_is_frame": tv_snap is not None and tv_snap.backend == BACKEND_FRAME,
             "speaker_source": str(speaker_snap.get("source") or "").strip().lower(),
             "speaker_is_multiroom_guest": bool(speaker_snap.get("multiroom_guest_active")),
             "speaker_is_multiroom_host": bool(speaker_snap.get("multiroom_host_active")),

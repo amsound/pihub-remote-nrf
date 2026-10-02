@@ -231,7 +231,6 @@ async def main() -> None:
         ble=ble,
         settings=settings,
         history=history,
-        initial_mode="power_off",
         speaker_backend=cfg.speaker_backend,
     )
 
@@ -273,6 +272,7 @@ async def main() -> None:
     cleanup_hooks.append(("dispatcher", dispatcher.stop))
 
     await runtime.start()
+    cleanup_hooks.append(("runtime", runtime.stop))
 
     reader = UnifyingReader(
         scancode_map=dispatcher.scancode_map,

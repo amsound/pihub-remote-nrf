@@ -17,6 +17,9 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from .initial_status import InitialStatus
+from .tv import BACKEND_WS, TvSnapshot
+
 logger = logging.getLogger(__name__)
 
 TV_ON_SIGNAL_DEBOUNCE_S = 8.0
@@ -320,19 +323,6 @@ class TvWsClient:
 # --- Controller ---
 
 
-@dataclass
-class TvSnapshot:
-    initialised: bool
-    presence_on: bool | None
-    presence_source: str
-    last_change_age_s: int | None
-    ws_connected: bool
-    token_present: bool
-    last_error: str
-    changed_at: float | None = None  # wall clock of the last on/off change
-    backend: str = "samsung_ws"
-
-
 class TvController:
     def __init__(
         self,
@@ -366,7 +356,6 @@ class TvController:
         self._session: Optional[aiohttp.ClientSession] = None
         self._presence_cached: bool | None = None
         self._presence_source: str = "unknown"
-        self._presence_last_change_ts: float | None = None
         self._presence_changed_at: float | None = None
 
         # Fires immediately when any trusted presence path marks the TV on.
@@ -381,6 +370,7 @@ class TvController:
         self._power_on_attempt_id = 0
 
         self._state_change_callback = state_change_callback
+        self.initial = InitialStatus(logger)
 
         self._pending_watch_signal_task: Optional[asyncio.Task] = None
         self._ws_warm_task: Optional[asyncio.Task] = None
@@ -441,10 +431,13 @@ class TvController:
                 self._presence_on_event.clear()
             return False
 
-        now = asyncio.get_running_loop().time()
         self._presence_cached = on
         self._presence_source = source
-        self._presence_last_change_ts = now
+        # A first reading during start-up is where things stand, not a change: it must
+        # not send a watch signal. (A device that only turns up later still does.)
+        first_reading = not self.initial.settled
+        token = "" if self.ws.state.token_present else ", no token"
+        self.initial.mark_received(f"tv {'on' if on else 'off'} ({source}){token}")
         self._presence_changed_at = time.time()
 
         # Raw presence truth is immediate. The watch/listen mode promotion can still
@@ -459,7 +452,7 @@ class TvController:
         # Passive TV-on promotions are debounced before emitting a watch signal.
         # Raw presence remains immediate for health/control truth; only the
         # device-state signal is delayed/cancelled.
-        if not prev_on and curr_on:
+        if not prev_on and curr_on and not first_reading:
             self._schedule_watch_signal(source=source)
 
         # If TV falls back off before the debounce completes, cancel the pending
@@ -602,25 +595,15 @@ class TvController:
             logger.debug("tv reconcile http probe failed", exc_info=True)
             errors.append(f"http_probe_failed:{exc!r}")
 
-        # No positive signal established. Leave cached presence as-is.
-        logger.debug(
-            "tv reconcile complete tv_ip=%s presence_on=%s presence_source=%s",
-            self.tv_ip,
-            self._presence_cached,
-            self._presence_source,
-        )
-
-        if self._presence_cached is False:
-            outcome = "present_false"
-        elif self._presence_cached is True:
-            # Conservative fallback: truth is currently "on" from cache, but this refresh
-            # did not establish a fresh positive signal. Keep the cache truthful.
-            outcome = "present_true"
-        else:
-            outcome = "unknown"
+        # Neither the network search nor the /dmr probe found the TV: it is off.
+        # (Same test refresh_presence uses; an SSDP alive corrects it the moment
+        # the TV comes on.) This also gives a TV that is off at start-up a
+        # definite first reading instead of staying unknown.
+        self._commit_presence(False, source="probe_http_down")
+        logger.debug("tv reconcile complete tv_ip=%s: no reply, off", self.tv_ip)
 
         return {
-            "outcome": outcome,
+            "outcome": "present_false",
             "presence_on": self._presence_cached,
             "presence_source": self._presence_source,
             "changed": (
@@ -632,18 +615,14 @@ class TvController:
 
     def snapshot(self) -> TvSnapshot:
         st = self.ws.state
-        last_change_age_s: int | None = None
-        if self._presence_last_change_ts is not None:
-            last_change_age_s = int(asyncio.get_running_loop().time() - self._presence_last_change_ts)
         return TvSnapshot(
-            initialised=self._presence_cached is not None,
+            backend=BACKEND_WS,
             presence_on=self._presence_cached,
             presence_source=self._presence_source,
-            last_change_age_s=last_change_age_s,
+            changed_at=self._presence_changed_at,
             ws_connected=st.connected,
             token_present=st.token_present,
             last_error=st.last_error,
-            changed_at=self._presence_changed_at,
         )
 
     def _cancel_pending_watch_signal(self) -> None:

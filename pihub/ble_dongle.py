@@ -32,6 +32,8 @@ from importlib import resources as importlib_resources
 
 Usage = Literal["keyboard", "consumer"]
 
+from .initial_status import InitialStatus
+
 logger = logging.getLogger(__name__)
 
 
@@ -141,6 +143,8 @@ class BleDongleLink:
         self._log_min_interval_s: float = 0.10
 
         self._missing_dongle_logged = False
+        # First reading: the dongle's first STATUS reply (how its link to the Apple TV stands).
+        self.initial = InitialStatus(logger)
 
         # HID usage maps loaded from assets/hid_keymap.json
         self._hid_kb: Dict[str, int] = {}
@@ -705,6 +709,9 @@ class BleDongleLink:
                     if not ok:
                         if self._find_port() is None:
                             self._note_missing_dongle_once()
+                            self.initial.mark_failed("dongle not found")
+                        else:
+                            self.initial.mark_failed("dongle did not answer")
                         await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
                         self._reconnect_delay_s = min(self._reconnect_delay_max_s, self._reconnect_delay_s * 1.5)
                         continue
@@ -1214,6 +1221,8 @@ class BleDongleLink:
             new_label = self._state_label()
             if new_label != old_label:
                 self._log_state(source="STATUS")
+
+        self.initial.mark_received(f"apple tv link {self._state_label()}")
 
     def _sleep_with_jitter(self, base_s: float) -> float:
         return max(0.05, base_s + random.uniform(0.0, min(0.25, base_s)))

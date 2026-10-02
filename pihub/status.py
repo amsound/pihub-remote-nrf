@@ -13,6 +13,8 @@ import socket
 import time
 from typing import Any
 
+from .tv import BACKEND_FRAME
+
 THROTTLED_SYSFS = "/sys/devices/platform/soc/soc:firmware/get_throttled"
 HWMON_DIR = "/sys/class/hwmon"
 POWER_SUPPLY_DIR = "/sys/class/power_supply"
@@ -277,7 +279,7 @@ class StatusReporter:
             }, []
 
         s = self._tv.snapshot()
-        is_frame = s.backend == "samsung_frame_ip"
+        is_frame = s.backend == BACKEND_FRAME
         on = s.presence_on is True
         # Can PiHub send commands right now, whether or not the TV is on.
         # Legacy: the websocket is up (a key over it also wakes a TV that is

@@ -12,12 +12,13 @@ import itertools
 import logging
 import os
 import time
-from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 import aiohttp
 
+from .initial_status import InitialStatus
 from .samsung_tv import ssdp_listener
+from .tv import BACKEND_FRAME, TvSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -30,21 +31,6 @@ POWER_POLL_INTERVAL_S = 60.0
 # Let an announcement burst (a switch-on sends byebye then alive) settle into one read.
 ANNOUNCE_READ_DELAY_S = 0.5
 SSDP_RESTART_DELAY_S = 5.0
-
-
-@dataclass
-class TvFrameSnapshot:
-    initialised: bool
-    presence_on: bool | None
-    presence_source: str
-    last_change_age_s: int | None
-    ws_connected: bool
-    token_present: bool
-    last_error: str
-    backend: str = "samsung_frame_ip"
-    power: str | None = None
-    input_source: str | None = None
-    changed_at: float | None = None  # wall clock of the last on/off change
 
 
 class SamsungFrameTv:
@@ -68,15 +54,14 @@ class SamsungFrameTv:
         self._rpc_ids = itertools.count(1)
         self._lock = asyncio.Lock()
         self._state_change_callback = state_change_callback
+        self.initial = InitialStatus(logger)
 
         self._presence_cached: bool | None = None
         self._presence_source = "unknown"
-        self._presence_last_change_ts: float | None = None
         self._presence_changed_at: float | None = None
         self._power: str | None = None
         self._input_source: str | None = None
         self._last_error = ""
-        self._initial_status_logged = False
         self._token_request_logged = False
         self._poll_task: asyncio.Task | None = None
         self._ssdp_task: asyncio.Task | None = None
@@ -200,13 +185,18 @@ class SamsungFrameTv:
         else:
             next_on = self._presence_cached
 
+        # A first reading during start-up is where things stand, not a change: it must
+        # not send a watch signal. (A device that only turns up later still does.)
+        first_reading = not self.initial.settled
+        if next_on is not None:
+            self.initial.mark_received(f"tv {'on' if next_on else 'off'} ({source})")
+
         if self._presence_cached is not next_on:
             self._presence_cached = next_on
             self._presence_source = source
-            self._presence_last_change_ts = asyncio.get_running_loop().time()
             self._presence_changed_at = time.time()
 
-            if not previous_on and next_on is True:
+            if not previous_on and next_on is True and not first_reading:
                 self._emit_state_change(
                     "watch",
                     {
@@ -388,14 +378,8 @@ class SamsungFrameTv:
             else "unknown"
         )
 
-        if not self._initial_status_logged and not errors:
-            self._initial_status_logged = True
-            logger.info(
-                "initial status received power=%s input_source=%s presence_on=%s",
-                self._power,
-                self._input_source,
-                "true" if self._presence_cached is True else "false" if self._presence_cached is False else "unknown",
-            )
+        if not self.initial.received:
+            self.initial.mark_failed("; ".join(errors) or "tv gave no power state")
 
         return {
             "outcome": outcome,
@@ -407,23 +391,16 @@ class SamsungFrameTv:
             "errors": errors,
         }
 
-    def snapshot(self) -> TvFrameSnapshot:
-        last_change_age_s: int | None = None
-        if self._presence_last_change_ts is not None:
-            last_change_age_s = int(asyncio.get_running_loop().time() - self._presence_last_change_ts)
-
-        token_present = bool(self._read_token())
-        return TvFrameSnapshot(
-            initialised=self._presence_cached is not None,
+    def snapshot(self) -> TvSnapshot:
+        return TvSnapshot(
+            backend=BACKEND_FRAME,
             presence_on=self._presence_cached,
             presence_source=self._presence_source,
-            last_change_age_s=last_change_age_s,
-            ws_connected=False,
-            token_present=token_present,
-            last_error=self._last_error,
-            power=self._power,
-            input_source=self._input_source,
             changed_at=self._presence_changed_at,
+            ws_connected=False,
+            token_present=bool(self._read_token()),
+            last_error=self._last_error,
+            input_source=self._input_source,
         )
 
     async def _wait_for_power_state(
@@ -549,3 +526,44 @@ class SamsungFrameTv:
                 source="ip_control_power_off",
                 timeout_s=timeout_s,
             )
+
+    async def set_input_hdmi1(self) -> bool:
+        """Switch the TV to HDMI1 and confirm it took."""
+        async with self._lock:
+            if not await self._ensure_token():
+                return False
+
+            last_error = ""
+            for attempt in range(1, _COMMAND_RETRIES + 1):
+                try:
+                    data = await self._rpc(
+                        "inputSourceControl",
+                        {"inputSource": "HDMI1"},
+                    )
+                    ack_source = self._result(data).get("inputSource")
+                    if ack_source != "HDMI1":
+                        raise RuntimeError(f"source_ack_mismatch:{ack_source!r}!='HDMI1'")
+
+                    await asyncio.sleep(_VERIFY_DELAY_S)
+                    actual_source = await self._get_input_source()
+                    self._input_source = actual_source
+                    if actual_source == "HDMI1":
+                        logger.info("source command verified target=HDMI1 attempt=%d", attempt)
+                        return True
+
+                    raise RuntimeError(f"source_verify_mismatch:{actual_source!r}!='HDMI1'")
+                except Exception as exc:
+                    last_error = repr(exc)
+                    logger.debug(
+                        "source command attempt failed attempt=%d/%d error=%r",
+                        attempt,
+                        _COMMAND_RETRIES,
+                        exc,
+                        exc_info=True,
+                    )
+                    if attempt < _COMMAND_RETRIES:
+                        await asyncio.sleep(0.25 * attempt)
+
+            self._last_error = last_error or "source_command_failed"
+            logger.warning("source command failed error=%s", self._last_error)
+            return False

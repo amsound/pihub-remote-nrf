@@ -145,12 +145,16 @@ Keymap is bundled with the application and loaded from packaged assets in produc
 
 For newer Samsung Frame TVs exposing IP Remote on port `1516`, set `TV_FRAME_IP` instead of `TV_IP`/`TV_MAC`.
 
-The backend uses Samsung IP Control G2 over HTTPS JSON-RPC and currently exposes a deliberately narrow surface:
+The backend uses Samsung IP Control G2 over HTTPS JSON-RPC and keeps to a deliberately narrow surface:
 
-* discreet `powerControl` on/off
-* `inputSourceControl` for HDMI1
-* `remoteKeyControl` for `return`
-* boot/reconcile polling for power and active source
+* discrete `powerControl` on and off, each verified by reading the power back
+* reading the power state: at start-up, before every flow, whenever the TV announces itself on the network
+  (SSDP), and once a minute as a backstop
+* `inputSourceControl` to HDMI1, sent by the Watch flows straight after they switch the TV on (never when the
+  TV was already on), and verified by reading the input back
+* reading the active input source at start-up (reported by `POST /api/refresh/tv`)
+
+It sends no remote keys.
 
 Create the token once with the TV on and save it to `TV_FRAME_TOKEN_FILE`:
 
@@ -289,14 +293,18 @@ Keymap concepts:
 
 ### Startup
 
-Startup is intentionally conservative:
+Nothing is sent to any device at start-up, and no flow runs.
 
-* PiHub always starts in **`power_off`** mode
-* It does **not** run any flows on boot
-* It does **not** mutate device state on boot
-* `last_trigger` is set to `startup_reconcile`
-
-This avoids boot-time races and lets late device truth arrive safely.
+* PiHub **remembers its mode** (`/data/mode.json`) and restores it immediately, so the remote works in the
+  right mode from the first second. With nothing remembered (first ever start) it uses `power_off`.
+* Every backend reports its **first reading** once, in the same words: `initial status received: ...`, or
+  `no initial status yet: ...` if its first attempt failed (unreachable, no token, not plugged in).
+* Once the TV and speaker have reported (or after 5 s), the mode is **checked against the room, mode only**:
+  a listen session in progress → `listen`; otherwise TV on → `watch`; otherwise `power_off`. Anything not
+  known leaves the remembered mode alone, and the check is skipped if anyone has acted since start-up.
+* A first reading during start-up is where things stand, not a change, so it never sends a listen or watch
+  signal. Changes after that do, exactly as described below. A device that was unreachable at start-up and
+  turns up later counts as a change.
 
 ### TV discovery
 
@@ -437,7 +445,7 @@ A flow can return `ok: false` when important domain steps fail, for example if B
 * **No device-state flow action?** Check whether the same logical flow already ran recently, or whether another sequence was already active and the signal was skipped intentionally.
 * **Mode changed but `last_flow` is null?** That is expected when mode changed by startup reconcile or direct mode set rather than by a successfully completed flow.
 * **TV flow steps fail immediately with `tv_token_missing`?** That is expected. Explicit TV power commands inside flows now require a saved Samsung TV token. First-time pairing/bootstrap should be done separately with the TV on and correctly configured network details.
-* **TV already on at boot but mode stays `power_off`?** Check `/api/status` for `tv.on` and `tv.on_via`. Startup remains conservative until an explicit flow or later device-state signal acts.
+* **Mode wrong after a restart?** The log line `startup: mode ...` shows what was restored, and a second `startup: tv ..., speaker ...: mode a -> b` line appears if the devices disagreed. `/api/status` shows `tv.on` and the speaker's `source`.
 * **TV discovery confusion?** `presence_source` shows the most recent TV discovery source, not the current mode source of truth.
 * **Samsung soundbar state looks stale or blank?** `POST /api/refresh/speaker` wakes the Cast watchdog; `/api/status` shows the speaker state.
 * **Samsung soundbar AirPlay not detected?** Check the soundbar's `_airplay._tcp` mDNS announcement (for example `dns-sd -L "<name>" _airplay._tcp`) and that its `flags` change when AirPlay starts.

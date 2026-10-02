@@ -16,6 +16,8 @@ from evdev import InputDevice, ecodes
 EdgeCallback = Callable[[str, str], Awaitable[None]] | Callable[[str, str], None]
 DisconnectCallback = Callable[[], Awaitable[None]] | Callable[[], None]
 
+from .initial_status import InitialStatus
+
 logger = logging.getLogger(__name__)
 
 def _jittered(t: float) -> float:
@@ -61,6 +63,8 @@ class UnifyingReader:
         self._disconnect_notified = False
         self._last_error: Optional[str] = None
         self._missing_input_logged = False
+        # First reading: the remote's input device opened (or the first look found none).
+        self.initial = InitialStatus(logger)
 
     # ── Public API ───────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -162,6 +166,9 @@ class UnifyingReader:
                         logger.info("unifying receiver present; waiting for paired remote device")
                     else:
                         logger.info("unifying receiver not detected; continuing without USB input")
+                self.initial.mark_failed(
+                    "receiver present, no paired remote" if receiver_present else "receiver not detected"
+                )
 
                 await asyncio.sleep(sleep_for)
                 backoff = min(backoff * 2, 10.0)
@@ -173,6 +180,7 @@ class UnifyingReader:
             except Exception as exc:
                 self._input_open = False
                 self._last_error = f"open_failed: {exc}"
+                self.initial.mark_failed(self._last_error)
                 open_failures += 1
                 sleep_for = _jittered(backoff)
                 if open_failures == 1 or open_failures % warn_every == 0:
@@ -197,6 +205,7 @@ class UnifyingReader:
             if wait_state != "ready":
                 wait_state = "ready"
                 logger.info("input device opened: %s grabbed=%s", path, str(grabbed).lower())
+            self.initial.mark_received(f"remote input open, {'exclusive' if grabbed else 'not exclusive'}")
     
             # We have an open device; reset backoff
             backoff = 1.0
