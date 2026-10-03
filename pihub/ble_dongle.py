@@ -5,9 +5,11 @@ Serial transport to the nRF52840 dongle. Payloads are BLE HID reports:
 - Hot path binary frames (device parser expects):
     - b"\x01" + 8 bytes keyboard report
     - b"\x02" + 2 bytes consumer usage (little-endian)
-- Ops/control are ASCII lines: PING / STATUS / UNPAIR (newline terminated)
-- Control replies are ASCII lines: PONG / STATUS ... / INFO ... / OK / ERR ...
-- Async telemetry from dongle is ASCII lines: EVT ...
+- Control lines we send are ASCII: PING (handshake) / STATUS / INFO (newline terminated)
+- Replies are ASCII lines: PONG / STATUS ... / INFO ... / OK / ERR ...
+- The dongle announces every change itself as ASCII lines: EVT ...
+  We ask for its state only once, when the serial port opens (it may have been
+  running long before we arrived).
 - Hot-path binary frames are fire-and-forget on success
 
 This module is SERIAL ONLY (no USB HID host libraries).
@@ -22,9 +24,8 @@ import logging
 import os
 import random
 import re
-import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Literal, Optional
 
 import serial  # pyserial
 from serial import SerialException
@@ -59,24 +60,13 @@ class ConnParams:
 
 
 @dataclass
-class Phy:
-    tx: int = 0
-    rx: int = 0
-
-
-@dataclass
 class DongleState:
     ready: bool = False
     advertising: bool = False
     connected: bool = False
-    # protocol mode from dongle STATUS: proto=1 => report, proto=0 => boot
-    proto_report: bool = True
-    sec: int = 0
-    suspend: bool = False
-    notify: Optional[Dict[str, int]] = None
+    sec: int = 0   # link security level (2 = encrypted); for the debug log
     error: bool = False
     conn_params: Optional[ConnParams] = None
-    phy: Optional[Phy] = None
     last_disc_reason: Optional[str] = None
 
 
@@ -90,7 +80,6 @@ class BleDongleLink:
       - start/stop
       - key_down/key_up (edge-level, fire and forget)
       - run_macro and the Apple TV macros (power_on/power_off/return_home)
-      - ping/status_cmd
       - compile_ble_frames + compiled_key_down/up
       - status property
     """
@@ -101,13 +90,9 @@ class BleDongleLink:
         serial_port: str = "auto",
         baud: int = 115200,
         tx_queue: int = 512,
-        ping_interval_s: float = 0.0,
-        status_poll_s: float = 0.0,
     ) -> None:
         self._serial_port_cfg = (serial_port or "auto").strip()
         self._baud = int(baud)
-        self._ping_interval_s = float(ping_interval_s)
-        self._status_poll_s = float(status_poll_s)
 
         self._ser: Optional[serial.Serial] = None
         self._port: Optional[str] = None
@@ -119,11 +104,8 @@ class BleDongleLink:
 
         self._writer_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
-        self._poll_task: Optional[asyncio.Task] = None
 
-        self._resync_task: Optional[asyncio.Task] = None
         self._firmware: Optional[str] = None   # build stamp from the dongle's INFO reply
-        self._resync_delay_s: float = 0.15
 
         self._tx_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=int(tx_queue))
         # Set while the serial port is closed; the reconnect loop sleeps on it.
@@ -133,16 +115,13 @@ class BleDongleLink:
         self._rx_buf = bytearray()
         self._rx_line_max = 512
 
-        self._pong_counter = 0
-
         # reconnect knobs
         self._reconnect_delay_s = 0.5
         self._reconnect_delay_max_s = 8.0
 
-        # tidy state logging
-        self._last_log_sig: Optional[tuple] = None
-        self._last_log_ts: float = 0.0
-        self._log_min_interval_s: float = 0.10
+        # What the log last said about the link, so only changes are reported.
+        self._logged_label: Optional[str] = None
+        self._logged_params: Optional[tuple] = None
 
         self._missing_dongle_logged = False
         # First reading: the dongle's first STATUS reply (how its link to the Apple TV stands).
@@ -167,10 +146,10 @@ class BleDongleLink:
         self._reconnect_task = asyncio.create_task(self._reconnect_loop(), name="ble-serial-reconnect")
 
     async def stop(self) -> None:
-        for t in (self._poll_task, self._reconnect_task, self._writer_task):
+        for t in (self._reconnect_task, self._writer_task):
             if t and not t.done():
                 t.cancel()
-        for t in (self._poll_task, self._reconnect_task, self._writer_task):
+        for t in (self._reconnect_task, self._writer_task):
             if t:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await t
@@ -184,26 +163,16 @@ class BleDongleLink:
             "adapter_present": self.is_open,
             "firmware": self._firmware,
             "transport_open": self.is_open,
-            "active_port": self._port,
             "ready": self.state.ready,
             "advertising": self.state.advertising,
             "connected": self.state.connected,
-            "proto_report": self.state.proto_report,
-            "sec": self.state.sec,
-            "suspend": self.state.suspend,
-            "notify": dict(self.state.notify) if self.state.notify else None,
             "error": self.state.error,
             "last_error": self._last_error,
             "conn_params": vars(self.state.conn_params) if self.state.conn_params else None,
-            "phy": vars(self.state.phy) if self.state.phy else None,
             "last_disc_reason": self.state.last_disc_reason,
         }
 
     # ---------- ops/control ----------
-
-    async def ping(self) -> None:
-        if self.is_open:
-            await self._write_line("PING")
 
     async def status_cmd(self) -> None:
         if self.is_open:
@@ -421,186 +390,97 @@ class BleDongleLink:
         self._hid_kb = {str(k): int(v) for k, v in kb.items()} if isinstance(kb, dict) else {}
         self._hid_cc = {str(k): int(v) for k, v in cc.items()} if isinstance(cc, dict) else {}
 
-    @staticmethod
-    def _fmt_diff(changes: dict) -> str:
-        parts = []
-        for k in sorted(changes.keys()):
-            a, b = changes[k]
-            parts.append(f"{k}={a}->{b}")
-        return " ".join(parts)
-
     def _state_label(self) -> str:
         # canonical internal labels, lowercase for readability
-        if self.state.connected and self.state.ready:
-            return "ready"
-        if self.state.connected and not self.state.ready:
-            return "connected_not_ready"
-        if self.state.advertising and not self.state.connected:
-            return "advertising"
-        if not self.state.connected and not self.state.advertising:
-            return "disconnected"
-        return "state"
+        if self.state.connected:
+            return "ready" if self.state.ready else "connected_not_ready"
+        return "advertising" if self.state.advertising else "disconnected"
+
+    # Why the Bluetooth link ended, for the reasons seen in practice (HCI codes).
+    _DISCONNECT_REASONS = {
+        "8": "link lost",
+        "19": "closed by the apple tv",
+        "21": "apple tv powering off",
+        "22": "closed by the dongle",
+    }
+
+    def _link_params(self) -> Optional[tuple]:
+        """(interval_ms, latency, timeout_ms) of the live link, when the dongle has reported them."""
+        params = self.state.conn_params
+        if not (self.state.connected and params):
+            return None
+        return int(params.interval_ms), int(params.latency), int(params.timeout_ms)
 
     @staticmethod
-    def _label_for(*, advertising: bool, connected: bool, ready: bool) -> str:
-        if connected and ready:
-            return "ready"
-        if connected and not ready:
-            return "connected_not_ready"
-        if advertising and not connected:
-            return "advertising"
-        if not connected and not advertising:
-            return "disconnected"
-        return "state"
+    def _fmt_params(params: tuple) -> str:
+        return "interval_ms=%d latency=%d timeout_ms=%d" % params
 
+    def _link_summary(self) -> str:
+        """The link's state in plain words (the first reading at start-up)."""
+        label = self._state_label()
+        if label == "ready":
+            params = self._link_params()
+            return "apple tv link ready" + (f" ({self._fmt_params(params)})" if params else "")
+        return {
+            "connected_not_ready": "apple tv connected, link not ready yet",
+            "advertising": "advertising, waiting for the apple tv",
+        }.get(label, "apple tv not connected")
 
     def _log_state(self, *, source: str) -> None:
+        """Log a change in the link to the Apple TV, once, in plain words.
+
+        Only transitions are reported. The first reading after start-up is not a
+        change: it is reported by the initial status line instead.
         """
-        Emit a deduped, friendly INFO message for human-readable state transitions.
-        The 'source' (STATUS vs EVT) is only shown at DEBUG.
-        """
-        now = time.monotonic()
         label = self._state_label()
+        params = self._link_params()
+        prev_label, prev_params = self._logged_label, self._logged_params
+        self._logged_label, self._logged_params = label, params
 
-        # Convenience
-        port = self._port or "unknown"
-        err = 1 if self.state.error else 0
-
-        interval = latency = timeout = None
-        if self.state.connected and self.state.conn_params:
-            interval = int(self.state.conn_params.interval_ms)
-            latency = int(self.state.conn_params.latency)
-            timeout = int(self.state.conn_params.timeout_ms)
-
-        # notify flags are useful at "ready" boundary
-        kb_n = int(self.state.notify.get("kb", 0)) if self.state.notify else 0
-        cc_n = int(self.state.notify.get("cc", 0)) if self.state.notify else 0
-        batt_n = int(self.state.notify.get("batt", 0)) if self.state.notify else 0
-
-        # We want to log:
-        # - advertising started / stopped
-        # - connected to device
-        # - link now ready (...)
-        # - connected (interval/latency/timeout) (when params change while ready)
-        # - disconnected
-        #
-        # Use a signature that avoids spam but still logs meaningful changes.
-        sig = (
-            label,
-            bool(self.state.advertising),
-            bool(self.state.connected),
-            bool(self.state.ready),
-            int(self.state.sec),
-            bool(self.state.error),
-            interval,
-            latency,
-            timeout,
-            kb_n,
-            cc_n,
-            batt_n,
-            self.state.last_disc_reason,
-            port,
-        )
-
-        if self._last_log_sig == sig and (now - self._last_log_ts) < 2.0:
-            return
-        if (now - self._last_log_ts) < self._log_min_interval_s and self._last_log_sig == sig:
-            return
-
-        # Detect transition compared to previous signature (if any)
-        prev = self._last_log_sig
-        prev_label = prev[0] if isinstance(prev, tuple) and len(prev) > 0 else None
-        prev_adv = bool(prev[1]) if isinstance(prev, tuple) and len(prev) > 1 else None
-        prev_ready = bool(prev[3]) if isinstance(prev, tuple) and len(prev) > 3 else None
-        prev_params = (prev[6], prev[7], prev[8]) if isinstance(prev, tuple) and len(prev) > 8 else (None, None, None)
-
-        self._last_log_sig = sig
-        self._last_log_ts = now
-
-        # Debug: show source + full state line if you want it
         if logger.isEnabledFor(logging.DEBUG):
-            # keep it compact
             logger.debug(
-                "state change (%s): label=%s adv=%d conn=%d ready=%d sec=%d err=%d port=%s interval=%s latency=%s timeout=%s",
+                "state (%s): label=%s adv=%d conn=%d ready=%d sec=%d err=%d params=%s",
                 source,
                 label,
-                1 if self.state.advertising else 0,
-                1 if self.state.connected else 0,
-                1 if self.state.ready else 0,
+                self.state.advertising,
+                self.state.connected,
+                self.state.ready,
                 self.state.sec,
-                err,
-                port,
-                interval if interval is not None else "-",
-                latency if latency is not None else "-",
-                timeout if timeout is not None else "-",
+                self.state.error,
+                params,
             )
 
-        # --- Friendly INFO messages ---
-        # Advertising transitions
-        if label == "advertising":
-            if prev_adv is False:
-                logger.info("advertising started")
+        if not self.initial.received:
+            return
+
+        connected_labels = ("ready", "connected_not_ready")
+        was_connected = prev_label in connected_labels
+
+        if was_connected and label not in connected_labels:
+            reason = self.state.last_disc_reason
+            why = self._DISCONNECT_REASONS.get(str(reason))
+            if why:
+                logger.info("apple tv disconnected (%s, reason %s)", why, reason)
+            elif reason:
+                logger.info("apple tv disconnected (reason %s)", reason)
             else:
-                # only log "advertising started" once; skip repeats
-                logger.info("advertising started")
-            return
+                logger.info("apple tv disconnected")
 
-        if prev_adv is True and label != "advertising":
-            # We were advertising and we are no longer (usually because we connected)
-            logger.info("advertising stopped")
-            # don't return; allow connect/ready message in same transition
-
-        # Connected (not ready yet)
-        if label == "connected_not_ready":
-            # Only log this when we transition into it
-            if prev_label != "connected_not_ready":
-                logger.info("connected serial_port=%s", port)
-            return
-
-        # Ready boundary
-        if label == "ready":
-            # If we just became ready, say it once
-            if prev_ready is False or prev_label != "ready":
-                has_notifies = bool(self.state.notify) and (kb_n or cc_n or batt_n)
-                # The link's parameters as they stand now, when the dongle has reported them.
-                params = (
-                    f" interval_ms={interval} latency={latency} timeout_ms={timeout}"
-                    if interval is not None and latency is not None and timeout is not None
-                    else ""
-                )
-                if has_notifies:
-                    logger.info(
-                        "link ready (kb_notify=%d cc_notify=%d batt_notify=%d%s)",
-                        kb_n, cc_n, batt_n, params
-                    )
-                else:
-                    logger.info("link now ready%s", f" ({params.strip()})" if params else "")
-                return
-
-            # Already ready: if connection params changed, log as an update (not a second "connected")
-            cur_params = (interval, latency, timeout)
-            if (
-                prev_params != cur_params
-                and interval is not None
-                and latency is not None
-                and timeout is not None
-            ):
-                logger.info(
-                    "ble params updated (interval_ms=%d latency=%d timeout_ms=%d)",
-                    interval,
-                    latency,
-                    timeout,
-                )
-            return
-
-        # Disconnected
-        if label == "disconnected":
-            # Keep it clean; reason only at DEBUG (or show if you prefer)
-            logger.info("disconnected")
-            return
-
-        # Fallback
-        logger.info("state updated")
+        if label == "advertising":
+            if prev_label != "advertising":
+                logger.info("advertising, waiting for the apple tv")
+        elif label == "connected_not_ready":
+            if prev_label == "ready":
+                logger.info("apple tv link no longer ready")
+            elif not was_connected:
+                logger.info("apple tv connected")
+        elif label == "ready":
+            if prev_label != "ready":
+                logger.info("apple tv link ready%s", f" ({self._fmt_params(params)})" if params else "")
+            elif params and params != prev_params:
+                logger.info("link parameters changed (%s)", self._fmt_params(params))
+        # "disconnected" with nothing before it worth reporting (advertising has just
+        # stopped because a connection is arriving) says nothing.
 
     # ---------- TX/RX plumbing ----------
 
@@ -613,7 +493,7 @@ class BleDongleLink:
     def _drain_hid_frames(self) -> int:
         """
         Remove queued hot-path HID frames, preserving ASCII control lines
-        (PING/STATUS/UNPAIR/etc).
+        (STATUS/INFO).
         """
         kept: list[bytes] = []
         dropped = 0
@@ -726,11 +606,6 @@ class BleDongleLink:
                         continue
                     self._reconnect_delay_s = 0.5
 
-                    # start periodic ping/status if configured
-                    polling = self._ping_interval_s > 0 or self._status_poll_s > 0
-                    if polling and (self._poll_task is None or self._poll_task.done()):
-                        self._poll_task = asyncio.create_task(self._poll_loop(), name="ble-serial-poll")
-
                 # Nothing to do while the port is open: sleep until it closes.
                 await self._link_down.wait()
 
@@ -739,49 +614,6 @@ class BleDongleLink:
             except Exception as exc:
                 logger.warning("reconnect loop error: %r", exc)
                 await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
-
-    async def _poll_loop(self) -> None:
-        """Optional periodic PING / STATUS (both off by default). Sleeps until the next one is due."""
-        next_ping = next_status = time.monotonic()
-        while True:
-            try:
-                now = time.monotonic()
-                if self._ping_interval_s > 0 and now >= next_ping:
-                    next_ping = now + self._ping_interval_s
-                    await self.ping()
-                if self._status_poll_s > 0 and now >= next_status:
-                    next_status = now + self._status_poll_s
-                    await self.status_cmd()
-                due = [t for t, on in ((next_ping, self._ping_interval_s > 0), (next_status, self._status_poll_s > 0)) if on]
-                await asyncio.sleep(max(0.05, min(due) - time.monotonic()))
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("ping/status poll failed", exc_info=True)
-                await asyncio.sleep(0.5)
-
-
-    def _request_status_soon(self, *, delay_s: Optional[float] = None) -> None:
-        """Debounced STATUS request to resync state after transient EVT ordering."""
-        if not self.is_open:
-            return
-        if self._resync_task is not None and not self._resync_task.done():
-            return
-
-        d = self._resync_delay_s if delay_s is None else float(delay_s)
-
-        async def _runner() -> None:
-            try:
-                await asyncio.sleep(max(0.0, d))
-                await self.status_cmd()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("status resync failed", exc_info=True)
-            finally:
-                self._resync_task = None
-
-        self._resync_task = asyncio.create_task(_runner(), name="ble-serial-resync")
 
     async def _try_open_and_handshake(self) -> bool:
         port = self._find_port()
@@ -806,7 +638,7 @@ class BleDongleLink:
         self._link_down.clear()
         self._missing_dongle_logged = False
         self.state = DongleState()
-        self._pong_counter = 0
+        self._logged_label = self._logged_params = None
         self._transport_evt.clear()
         self._last_error = None
         # Avoid stale/fragmented telemetry across reconnects.
@@ -826,7 +658,7 @@ class BleDongleLink:
 
         ok = await self._handshake_once(timeout_s=1.2)
         if ok:
-            logger.info("connected serial_port=%s", port)
+            logger.info("dongle connected serial_port=%s", port)
             await self.status_cmd()
             await self._write_line("INFO")   # which firmware build the dongle runs
         else:
@@ -862,8 +694,6 @@ class BleDongleLink:
                     upper = name.upper()
                     if "ZEPHYR" in upper and "USB-DEV" in upper:
                         preferred.append(p)
-                    elif "ZEPHYR" in upper or "USB-DEV" in upper or "NORDIC" in upper or "NRF" in upper:
-                        fallback.append(p)
                     else:
                         fallback.append(p)
 
@@ -888,7 +718,7 @@ class BleDongleLink:
             await asyncio.wait_for(self._transport_evt.wait(), timeout=timeout_s)
             return True
         except asyncio.TimeoutError:
-            return self._pong_counter > 0
+            return self._transport_evt.is_set()
 
     async def _force_reconnect(self, reason: str) -> None:
         logger.debug("forcing serial reconnect (%s)", reason)
@@ -899,9 +729,6 @@ class BleDongleLink:
 
     async def _close_serial(self) -> None:
         self._stop_reading()
-        if self._resync_task and not self._resync_task.done():
-            self._resync_task.cancel()
-        self._resync_task = None
         self._clear_tx_queue()
         ser, self._ser = self._ser, None
         self._port = None
@@ -938,7 +765,7 @@ class BleDongleLink:
                 raise
             except Exception as exc:
                 self._last_error = f"writer_error: {exc}"
-                logger.warning("writer error, reconnecting: %r", exc)
+                logger.warning("dongle serial write failed (%s); reconnecting", exc)
                 await self._force_reconnect("writer_error")
                 await asyncio.sleep(self._sleep_with_jitter(self._reconnect_delay_s))
 
@@ -950,8 +777,10 @@ class BleDongleLink:
         try:
             data = ser.read(4096)  # non-blocking (timeout=0): whatever is waiting
         except Exception as exc:
+            # What an unplugged (or resetting) dongle looks like from here.
             self._last_error = f"reader_error: {exc}"
-            logger.warning("reader error, reconnecting: %r", exc)
+            logger.warning("dongle serial port lost (unplugged?); waiting for it to return")
+            logger.debug("serial read failed: %r", exc)
             self._stop_reading()
             asyncio.get_running_loop().create_task(self._force_reconnect("reader_error"))
             return
@@ -993,9 +822,7 @@ class BleDongleLink:
             logger.debug("rx: %s", line)
 
         if line == "PONG":
-            self._pong_counter += 1
-            if not self._transport_evt.is_set():
-                self._transport_evt.set()
+            self._transport_evt.set()
             return
 
         if line == "OK":
@@ -1032,7 +859,6 @@ class BleDongleLink:
         #  EVT ADV 1
         #  EVT CONN 0
         #  EVT READY 1
-        #  EVT PROTO 1
         #  EVT ERR 0
         #  EVT DISC reason=19
         #  EVT CONN_PARAMS interval_ms=15 latency=0 timeout_ms=3000
@@ -1041,18 +867,10 @@ class BleDongleLink:
             return
 
         src = parts[1]
-        before = (
-            self.state.advertising,
-            self.state.connected,
-            self.state.ready,
-            self.state.sec,
-            self.state.error,
-            self.state.proto_report,
-        )
+        before = (self.state.advertising, self.state.connected, self.state.ready, self.state.error)
 
         if src == "ADV" and len(parts) >= 3:
             self.state.advertising = parts[2] == "1"
-            self._request_status_soon()
 
         elif src == "CONN" and len(parts) >= 3:
             is_conn = parts[2] == "1"
@@ -1062,19 +880,13 @@ class BleDongleLink:
             if not is_conn:
                 self.state.ready = False
                 self.state.conn_params = None
-                self.state.phy = None
-                self.state.notify = None
-            self._request_status_soon()
 
         elif src == "READY" and len(parts) >= 3:
             self.state.ready = parts[2] == "1"
-            self._request_status_soon()
-
-        elif src == "PROTO" and len(parts) >= 3:
-            try:
-                self.state.proto_report = int(parts[2]) == 1
-            except ValueError:
-                pass
+            if self.state.ready:
+                # Ready means connected. Firmware older than October 2026 never
+                # announces the connection itself, so this is where we learn of it.
+                self.state.connected = True
 
         elif src == "ERR" and len(parts) >= 3:
             try:
@@ -1111,34 +923,12 @@ class BleDongleLink:
             except ValueError:
                 pass
 
-        elif src == "PHY":
-            # Firmware may emit either "EVT PHY 2 2" or "EVT PHY tx=1M rx=2M".
-            if len(parts) >= 4 and parts[2].isdigit() and parts[3].isdigit():
-                with contextlib.suppress(ValueError):
-                    self.state.phy = Phy(tx=int(parts[2]), rx=int(parts[3]))
-            else:
-                kv = {}
-                for tok in parts[2:]:
-                    if "=" in tok:
-                        k, v = tok.split("=", 1)
-                        kv[k] = v
-                if kv:
-                    self.state.phy = Phy(tx=0, rx=0)
-
-        after = (
-            self.state.advertising,
-            self.state.connected,
-            self.state.ready,
-            self.state.sec,
-            self.state.error,
-            self.state.proto_report,
-        )
-        if after != before:
+        if (self.state.advertising, self.state.connected, self.state.ready, self.state.error) != before:
             self._log_state(source=f"EVT {src}")
 
 
     def _handle_status(self, line: str) -> None:
-        # STATUS adv=0 conn=1 sec=2 ready=1 proto=1 err=0 kb_notify=1 boot_notify=0 cc_notify=1 ...
+        # STATUS adv=0 conn=1 sec=2 ready=1 proto=1 err=0 ... interval_ms=15 latency=0 timeout_ms=4000
         kv: Dict[str, str] = {}
         for tok in line.split()[1:]:
             if "=" in tok:
@@ -1151,39 +941,11 @@ class BleDongleLink:
             except ValueError:
                 return default
 
-        before = (
-            self.state.advertising,
-            self.state.connected,
-            self.state.ready,
-            self.state.sec,
-            self.state.error,
-            self.state.proto_report,
-            self.state.conn_params.interval_ms if self.state.conn_params else 0,
-            self.state.conn_params.latency if self.state.conn_params else 0,
-            self.state.conn_params.timeout_ms if self.state.conn_params else 0,
-        )
-
         self.state.advertising = _i("adv", 0) == 1
         self.state.connected = _i("conn", 0) == 1
-        self.state.ready = _i("ready", 0) == 1
-        if not self.state.connected:
-            self.state.ready = False
-            self.state.conn_params = None
-            self.state.phy = None
-            self.state.notify = None
+        self.state.ready = self.state.connected and _i("ready", 0) == 1
         self.state.sec = _i("sec", 0)
         self.state.error = _i("err", 0) == 1
-        proto = _i("proto", 1)
-        self.state.proto_report = (proto == 1)
-        self.state.suspend = _i("suspend", 0) == 1
-
-        notify = {
-            "kb": _i("kb_notify", 0),
-            "boot": _i("boot_notify", 0),
-            "cc": _i("cc_notify", 0),
-            "batt": _i("batt_notify", 0),
-        }
-        self.state.notify = notify
 
         interval_ms = _i("interval_ms", 0)
         latency = _i("latency", 0)
@@ -1193,55 +955,10 @@ class BleDongleLink:
         else:
             self.state.conn_params = None
 
-        phy_tx = _i("phy_tx", 0)
-        phy_rx = _i("phy_rx", 0)
-        self.state.phy = Phy(tx=phy_tx, rx=phy_rx)
+        # Logs only if the link's state or parameters differ from what was last reported.
+        self._log_state(source="STATUS")
 
-        after = (
-            self.state.advertising,
-            self.state.connected,
-            self.state.ready,
-            self.state.sec,
-            self.state.error,
-            self.state.proto_report,
-            self.state.conn_params.interval_ms if self.state.conn_params else 0,
-            self.state.conn_params.latency if self.state.conn_params else 0,
-            self.state.conn_params.timeout_ms if self.state.conn_params else 0,
-        )
-
-        if after != before:
-            # STATUS may be polled frequently; keep it quiet at INFO unless it causes a
-            # user-visible state transition. Always provide a DEBUG diff.
-            changes = {}
-
-            if before[0] != after[0]:
-                changes["adv"] = (int(before[0]), int(after[0]))
-            if before[1] != after[1]:
-                changes["conn"] = (int(before[1]), int(after[1]))
-            if before[2] != after[2]:
-                changes["ready"] = (int(before[2]), int(after[2]))
-            if before[3] != after[3]:
-                changes["sec"] = (before[3], after[3])
-            if before[4] != after[4]:
-                changes["err"] = (int(before[4]), int(after[4]))
-            if before[5] != after[5]:
-                changes["proto"] = ("report" if before[5] else "boot", "report" if after[5] else "boot")
-            if before[6] != after[6]:
-                changes["interval_ms"] = (before[6], after[6])
-            if before[7] != after[7]:
-                changes["latency"] = (before[7], after[7])
-            if before[8] != after[8]:
-                changes["timeout_ms"] = (before[8], after[8])
-
-            if changes and logger.isEnabledFor(logging.DEBUG):
-                logger.debug("ble: STATUS %s", self._fmt_diff(changes))
-
-            old_label = self._label_for(advertising=bool(before[0]), connected=bool(before[1]), ready=bool(before[2]))
-            new_label = self._state_label()
-            if new_label != old_label:
-                self._log_state(source="STATUS")
-
-        self.initial.mark_received(f"apple tv link {self._state_label()}")
+        self.initial.mark_received(self._link_summary())
 
     def _sleep_with_jitter(self, base_s: float) -> float:
         return max(0.05, base_s + random.uniform(0.0, min(0.25, base_s)))

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
+from zeroconf.asyncio import AsyncZeroconf
 
 import socket
 from urllib.parse import quote
@@ -346,7 +347,7 @@ class SamsungSoundbar:
         self._stop_evt.set()
         self._watchdog_wake_evt.set()
 
-        self._stop_airplay_mdns()
+        await self._stop_airplay_mdns()
         if self._airplay_initial_task is not None:
             self._airplay_initial_task.cancel()
             self._airplay_initial_task = None
@@ -594,7 +595,7 @@ class SamsungSoundbar:
             AIRPLAY_SERVICE_TYPE,
         )
 
-    def _stop_airplay_mdns(self) -> None:
+    async def _stop_airplay_mdns(self) -> None:
         browser = self._airplay_browser
         zc = self._airplay_zc
 
@@ -605,9 +606,11 @@ class SamsungSoundbar:
         with contextlib.suppress(Exception):
             if browser is not None:
                 browser.cancel()
-        with contextlib.suppress(Exception):
-            if zc is not None:
-                zc.close()
+        if zc is not None:
+            # This Zeroconf runs on our event loop, so it has to be closed the async
+            # way: its plain close() refuses part of the job there (and says so).
+            with contextlib.suppress(Exception):
+                await AsyncZeroconf(zc=zc).async_close()
 
     def _airplay_mdns_event_from_thread(
         self,

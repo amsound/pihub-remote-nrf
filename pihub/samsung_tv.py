@@ -415,6 +415,10 @@ class TvController:
 
         await self.ws.close()
 
+        session, self._session = self._session, None
+        if session is not None and not session.closed:
+            await session.close()
+
     # Presence cache is the local truth used for watch/listen logic and health.
     # Updating presence here must not implicitly tear down the websocket control
     # channel. Presence and websocket usability are related but not identical.

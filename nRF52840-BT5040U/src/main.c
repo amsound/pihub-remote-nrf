@@ -220,12 +220,27 @@ static uint8_t kb_report[8] = { 0 };      /* modifiers, reserved, 6 keys */
 static uint8_t cc_report[2] = { 0 };      /* 16-bit Consumer usage */
 static uint8_t boot_kb_report[8] = { 0 };
 
+/* What the link is asked for once it is encrypted. It follows the preferred
+ * parameters in prj.conf (15 ms, latency 0, timeout 4 s), so the request and the
+ * preference the dongle publishes cannot disagree.
+ *
+ * When prj.conf gives a range (MIN < MAX), the fastest interval is asked for
+ * first and the slowest is the fallback if the central will not grant it.
+ * With MIN == MAX, as shipped, the two are the same request.
+ */
 static const struct bt_le_conn_param low_latency_conn_params = {
-    .interval_min = 12,
-    .interval_max = 12,
-    .latency = 0,
-    .timeout = 400,
-}; /* 15 ms, latency 0, timeout 4 s */
+    .interval_min = CONFIG_BT_PERIPHERAL_PREF_MIN_INT,
+    .interval_max = CONFIG_BT_PERIPHERAL_PREF_MIN_INT,
+    .latency = CONFIG_BT_PERIPHERAL_PREF_LATENCY,
+    .timeout = CONFIG_BT_PERIPHERAL_PREF_TIMEOUT,
+};
+
+static const struct bt_le_conn_param fallback_conn_params = {
+    .interval_min = CONFIG_BT_PERIPHERAL_PREF_MAX_INT,
+    .interval_max = CONFIG_BT_PERIPHERAL_PREF_MAX_INT,
+    .latency = CONFIG_BT_PERIPHERAL_PREF_LATENCY,
+    .timeout = CONFIG_BT_PERIPHERAL_PREF_TIMEOUT,
+};
 
 
 /* Report Reference descriptor payload: [Report ID, Report Type (Input=1)] */
@@ -417,6 +432,8 @@ static void cmd_send_err_line(bool on)
 
 static void cmd_evt_err(bool on)
 {
+    bool changed = (error_state != on);
+
     error_state = on;
 
     if (on) {
@@ -434,7 +451,10 @@ static void cmd_evt_err(bool on)
         }
     }
 
-    cmd_send_err_line(on);
+    /* Announce the error flag only when it changes; the LEDs are refreshed either way. */
+    if (changed) {
+        cmd_send_err_line(on);
+    }
 }
 
 /* Local forward decls */
@@ -1622,7 +1642,10 @@ static void start_advertising(void)
  *  - asks again for the low-latency parameters if the link is on anything else.
  */
 #define LINK_UNENCRYPTED_LIMIT_MS 15000
-#define LINK_PARAM_RECHECK_MS     5000
+/* Longer than the 5 s the stack holds a request back after connecting, plus the
+ * time the central takes to answer it, so a request is judged only once it has landed.
+ */
+#define LINK_PARAM_RECHECK_MS     8000
 #define LINK_PARAM_MAX_REQUESTS   3
 
 static struct k_work_delayable link_secure_work;
@@ -1633,7 +1656,7 @@ static bool link_params_are_low_latency(void)
 {
     return have_conn_params &&
            (last_interval >= low_latency_conn_params.interval_min) &&
-           (last_interval <= low_latency_conn_params.interval_max) &&
+           (last_interval <= fallback_conn_params.interval_max) &&
            (last_latency == low_latency_conn_params.latency);
 }
 
@@ -1658,7 +1681,7 @@ static void link_param_work_handler(struct k_work *work)
     }
 
     link_param_requests++;
-    int perr = bt_conn_le_param_update(current_conn, &low_latency_conn_params);
+    int perr = bt_conn_le_param_update(current_conn, &fallback_conn_params);
     if (perr && perr != -EALREADY) {
         LOG_WRN("Conn param update failed: %d", perr);
     }
@@ -1705,6 +1728,9 @@ static void connected(struct bt_conn *conn, uint8_t err)
     current_sec_level = BT_SECURITY_L1;
     hid_suspended = false;
     link_param_requests = 0;
+
+    /* Tell PiHub the link is up, so it never has to ask. */
+    cmd_evt_conn(true);
 
     /* What the central opened the link with; later changes arrive in le_param_updated(). */
     struct bt_conn_info info;
