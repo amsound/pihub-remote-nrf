@@ -150,8 +150,9 @@ The backend uses Samsung IP Control G2 over HTTPS JSON-RPC and keeps to a delibe
 * discrete `powerControl` on and off, each verified by reading the power back
 * reading the power state: at start-up, before every flow, whenever the TV announces itself on the network
   (SSDP), and once a minute as a backstop
-* `inputSourceControl` to HDMI1, sent by the Watch flows straight after they switch the TV on (never when the
-  TV was already on), and verified by reading the input back
+* `inputSourceControl`: straight after a Watch flow switches the TV on (never when the TV was already on),
+  the input is read, and only if it is not HDMI1 is the TV told to switch, which is then verified by reading
+  it back. The TV shows its input banner on every switch command, even to the input it is already on
 * reading the active input source at start-up (reported by `POST /api/refresh/tv`)
 
 It sends no remote keys.

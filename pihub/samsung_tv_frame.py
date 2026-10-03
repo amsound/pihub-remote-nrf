@@ -528,7 +528,11 @@ class SamsungFrameTv:
             )
 
     async def set_input_hdmi1(self) -> bool:
-        """Switch the TV to HDMI1 and confirm it took."""
+        """Make sure the TV is on HDMI1: switch it only if it is on something else, and confirm.
+
+        The TV shows an input banner whenever it is told to switch, even to the
+        input it is already on, so the command is not sent when it isn't needed.
+        """
         async with self._lock:
             if not await self._ensure_token():
                 return False
@@ -536,6 +540,11 @@ class SamsungFrameTv:
             last_error = ""
             for attempt in range(1, _COMMAND_RETRIES + 1):
                 try:
+                    self._input_source = await self._get_input_source()
+                    if self._input_source == "HDMI1":
+                        logger.debug("tv already on HDMI1; source command not sent (attempt=%d)", attempt)
+                        return True
+
                     data = await self._rpc(
                         "inputSourceControl",
                         {"inputSource": "HDMI1"},
