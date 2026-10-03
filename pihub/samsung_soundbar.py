@@ -386,7 +386,10 @@ class SamsungSoundbar:
             logger.info("link ready speaker_ip=%s", self._speaker_ip)
             self._cast_ready_logged = True
         st = self._state
-        self.initial.mark_received(f"speaker source={st.source} playback={st.playback_status} volume={None if st.volume is None else round(st.volume * 100)}")
+        volume = "none" if st.volume is None else round(st.volume * 100)
+        self.initial.mark_received(
+            f"source={st.source or 'none'} playback={st.playback_status or 'none'} volume={volume}"
+        )
 
         if self._availability_logged_down:
             logger.info(

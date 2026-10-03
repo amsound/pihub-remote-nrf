@@ -176,7 +176,7 @@ class SamsungFrameTv:
         # not send a watch signal. (A device that only turns up later still does.)
         first_reading = not self.initial.settled
         if next_on is not None:
-            self.initial.mark_received(f"tv {'on' if next_on else 'off'} ({source})")
+            self.initial.mark_received(f"power={'on' if next_on else 'off'} via={source}")
 
         if self._presence_cached is not next_on:
             self._presence_cached = next_on

@@ -316,7 +316,8 @@ class StatusReporter:
         key_error = self._dispatcher.last_key_error if self._dispatcher is not None else None
         if self._speaker is None or not self._speaker.enabled:
             return {
-                "backend": None, "state": "disabled", "on": None, "source": None, "playback": None,
+                "backend": None, "state": "disabled", "on": None, "on_changed_at": None,
+                "source": None, "playback": None,
                 "volume": None, "muted": None, "detail": None, "changed_at": None, "error": None,
                 "key_error": key_error,
             }, []
@@ -340,6 +341,7 @@ class StatusReporter:
             "state": _state(reasons),
             # Powered on or off, where the speaker can tell us (Audio Pro); None otherwise.
             "on": snap.get("powered_on"),
+            "on_changed_at": snap.get("powered_changed_at"),
             "source": snap.get("source"),
             "playback": snap.get("playback_status"),
             "volume": snap.get("volume_pct"),

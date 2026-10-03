@@ -106,6 +106,7 @@ class SpeakerState:
     last_error: str | None = None
 
     powered_on: bool | None = None
+    powered_changed_at: float | None = None   # wall clock of the last on/off change (or first reading)
 
     playback_status: str | None = None  # play/pause/stop/load/... (wifi-ish only; physical inputs => None)
     volume: float | None = None         # 0..1
@@ -229,6 +230,7 @@ class AudioProSpeaker:
             "connected": bool(s.connected),
             "ready": bool(s.ready),
             "powered_on": s.powered_on,
+            "powered_changed_at": s.powered_changed_at,
             "playback_status": s.playback_status,
             "volume_pct": None if s.volume is None else int(round(s.volume * 100)),
             "muted": s.muted,
@@ -1009,12 +1011,18 @@ class AudioProSpeaker:
         code = payload.strip().split("+")[-1]
 
         if code == "000":
-            if self._state.powered_on is not True:
-                self._state.powered_on = True
-                self._state.last_update_ts = _now()
+            self._set_powered(True)
 
         if code in PINFGET_TRIGGER_PMS:
             self._request_pinfget(reason=f"pms:{code}")
+
+    def _set_powered(self, on: bool) -> None:
+        """Record the speaker's power state. Context only: nothing acts on it."""
+        if self._state.powered_on is on:
+            return
+        self._state.powered_on = on
+        self._state.powered_changed_at = _now()
+        self._state.last_update_ts = _now()
 
     def _handle_pow(self, payload: str) -> None:
         """
@@ -1026,9 +1034,7 @@ class AudioProSpeaker:
         code = payload.strip().split("+")[-1].strip()
 
         if code == "001":
-            if self._state.powered_on is not False:
-                self._state.powered_on = False
-                self._state.last_update_ts = _now()
+            self._set_powered(False)
 
     def _handle_pst(self, payload: str) -> None:
         """
@@ -1049,9 +1055,7 @@ class AudioProSpeaker:
         else:
             return
 
-        if self._state.powered_on != powered_on:
-            self._state.powered_on = powered_on
-            self._state.last_update_ts = _now()
+        self._set_powered(powered_on)
 
     def _handle_slv(self, payload: str) -> None:
         """
@@ -1160,8 +1164,14 @@ class AudioProSpeaker:
             self._state.last_update_ts = _now()
 
         if not was_ready and self._state.ready:
-            power = {True: "on ", False: "off "}.get(self._state.powered_on, "")
-            summary = f"speaker {power}source={source} playback={status} volume={vol_pct}"
+            parts = []
+            if self._state.powered_on is not None:
+                parts.append(f"power={'on' if self._state.powered_on else 'off'}")
+            parts.append(f"source={source}")
+            if status is not None:      # physical inputs have no playback state worth reporting
+                parts.append(f"playback={status}")
+            parts.append(f"volume={vol_pct}")
+            summary = " ".join(parts)
             if self.initial.received:
                 # A reconnect: say where things stand now. (The address is on the "connected" line.)
                 logger.info("link ready: %s", summary)

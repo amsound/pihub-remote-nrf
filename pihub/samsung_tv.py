@@ -447,8 +447,8 @@ class TvController:
         # A first reading during start-up is where things stand, not a change: it must
         # not send a watch signal. (A device that only turns up later still does.)
         first_reading = not self.initial.settled
-        token = "" if self.ws.state.token_present else ", no token"
-        self.initial.mark_received(f"tv {'on' if on else 'off'} ({source}){token}")
+        token = "" if self.ws.state.token_present else " token=missing"
+        self.initial.mark_received(f"power={'on' if on else 'off'} via={source}{token}")
         self._presence_changed_at = time.time()
 
         # Raw presence truth is immediate. The watch/listen mode promotion can still
