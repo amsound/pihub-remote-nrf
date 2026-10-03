@@ -23,6 +23,7 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/uart.h>
+#include <zephyr/drivers/watchdog.h>
 #include <zephyr/sys/printk.h>
 #include <ctype.h>
 
@@ -33,10 +34,8 @@ static void set_leds_adv(void);
 static void set_leds_conn(void);
 static void pihub_led_err_on(void);
 static void start_advertising(void);
-static const char *phy_to_str(uint8_t phy);
 static void update_link_ready(const char *why);
 static void bond_clear_work_handler(struct k_work *work);
-static void button_changed(uint32_t button_state, uint32_t has_changed);
 
 /* Optional USB CDC ACM console support (logs over USB). */
 #if IS_ENABLED(CONFIG_USB_DEVICE_STACK)
@@ -124,12 +123,11 @@ LOG_MODULE_REGISTER(pihub_hogp, LOG_LEVEL_INF);
 #define DEVICE_NAME CONFIG_BT_DEVICE_NAME
 #endif
 
+/* Build stamp reported by INFO: <UTC build time>-<git commit>[-dirty], set by CMakeLists.txt.
+ * (The Device Information Service strings the Apple TV reads are separate and fixed.)
+ */
 #ifndef FW_VERSION_STR
-#ifdef CONFIG_APP_VERSION
-#define FW_VERSION_STR CONFIG_APP_VERSION
-#else
-#define FW_VERSION_STR "1.0.0"
-#endif
+#define FW_VERSION_STR "unknown"
 #endif
 
 
@@ -206,15 +204,11 @@ static bool notify_cc_enabled;
 static bool hid_suspended;
 static bool notify_boot_enabled;
 static uint8_t current_sec_level;
-static bool hid_zero_sent;
 static bool link_ready;
 static bool have_conn_params;
 static uint16_t last_interval;
 static uint16_t last_latency;
 static uint16_t last_timeout;
-static bool have_phy;
-static uint8_t last_tx_phy;
-static uint8_t last_rx_phy;
 static struct k_work_delayable bond_clear_work;
 static struct k_timer blink_timer;
 static struct k_work_delayable adv_restart_work;
@@ -254,7 +248,6 @@ static const struct bt_le_conn_param low_latency_conn_params = {
  *   EVT CONN 0|1
  *   EVT PROTO 0|1
  *   EVT CONN_PARAMS interval_ms=<...> latency=<...> timeout_ms=<...>
- *   EVT PHY tx=<1M|2M|Coded> rx=<...>
  *   EVT DISC reason=<n>
  *   EVT ERR 0|1
  * -------------------------------------------------------------------------- */
@@ -275,6 +268,22 @@ static const struct bt_le_conn_param low_latency_conn_params = {
 
 static const struct device *cmd_uart;
 static atomic_t cmd_uart_ready;
+
+/* ---------------- Watchdog ----------------
+ * The hardware watchdog resets the dongle unless main() keeps feeding it, and
+ * main() only feeds while the command thread and the system work queue (which
+ * Bluetooth and the LEDs depend on) have both been seen alive recently.
+ */
+#define WDT_TIMEOUT_MS 8000
+#define WDT_STALE_MS   4000
+
+static atomic_t wdt_rx_alive;
+static atomic_t wdt_workq_alive;
+
+static void wdt_note_alive(atomic_t *stamp)
+{
+    atomic_set(stamp, (atomic_val_t)k_uptime_get_32());
+}
 
 /* ---------------- CMD UART non-blocking TX ----------------
  * Best-effort: enqueue and drain via UART TX IRQ.
@@ -313,12 +322,31 @@ static void cmd_tx_drop_oldest_until_space(uint32_t need)
     }
 }
 
+/* ---------------- CMD UART interrupt-driven RX ----------------
+ * The UART callback moves received bytes into a ring and wakes the command
+ * thread, which sleeps until there is something to read.
+ */
+#define CMD_RX_RB_SIZE 256
+RING_BUF_DECLARE(cmd_rx_rb, CMD_RX_RB_SIZE);
+static K_SEM_DEFINE(cmd_rx_sem, 0, 1);
+
 static void cmd_uart_isr(const struct device *dev, void *user_data)
 {
     ARG_UNUSED(user_data);
 
     if (!uart_irq_update(dev)) {
         return;
+    }
+
+    if (uart_irq_rx_ready(dev)) {
+        uint8_t buf[64];
+        int got;
+
+        /* Always drain the driver; bytes that do not fit in the ring are dropped. */
+        while ((got = uart_fifo_read(dev, buf, sizeof(buf))) > 0) {
+            (void)ring_buf_put(&cmd_rx_rb, buf, (uint32_t)got);
+        }
+        k_sem_give(&cmd_rx_sem);
     }
 
     while (uart_irq_tx_ready(dev)) {
@@ -380,6 +408,13 @@ static void cmd_evt_adv(bool on)      { adv_is_on = on; char b[24]; snprintk(b, 
 static void cmd_evt_conn(bool on)     { char b[24]; snprintk(b, sizeof(b), "EVT CONN %d", on ? 1 : 0); cmd_uart_send_line(b); }
 static void cmd_evt_ready(bool on)    { char b[32]; snprintk(b, sizeof(b), "EVT READY %d", on ? 1 : 0); cmd_uart_send_line(b); }
 static void cmd_evt_proto(uint8_t pm) { char b[24]; snprintk(b, sizeof(b), "EVT PROTO %u", (unsigned int)(pm ? 1 : 0)); cmd_uart_send_line(b); }
+static void cmd_send_err_line(bool on)
+{
+    char b[24];
+    snprintk(b, sizeof(b), "EVT ERR %d", on ? 1 : 0);
+    cmd_uart_send_line(b);
+}
+
 static void cmd_evt_err(bool on)
 {
     error_state = on;
@@ -399,9 +434,7 @@ static void cmd_evt_err(bool on)
         }
     }
 
-    char b[24];
-    snprintk(b, sizeof(b), "EVT ERR %d", on ? 1 : 0);
-    cmd_uart_send_line(b);
+    cmd_send_err_line(on);
 }
 
 /* Local forward decls */
@@ -431,16 +464,6 @@ static void cmd_evt_conn_params(uint16_t interval, uint16_t latency, uint16_t ti
 }
 
 
-static void cmd_evt_phy(uint8_t tx_phy, uint8_t rx_phy)
-{
-    have_phy = true;
-    last_tx_phy = tx_phy;
-    last_rx_phy = rx_phy;
-    char b[64];
-    snprintk(b, sizeof(b), "EVT PHY tx=%s rx=%s", phy_to_str(tx_phy), phy_to_str(rx_phy));
-    cmd_uart_send_line(b);
-}
-
 static bool compute_link_ready(void)
 {
     bool kb_path_ready = notify_kb_enabled || notify_boot_enabled;
@@ -469,14 +492,10 @@ static void cmd_emit_status_snapshot(void)
     cmd_evt_adv(adv_is_on);
     cmd_evt_conn(current_conn != NULL);
     cmd_evt_proto(protocol_mode);
-    cmd_evt_err(error_state ? 1 : 0);
+    cmd_send_err_line(error_state);
 
     if (have_conn_params) {
         cmd_evt_conn_params(last_interval, last_latency, last_timeout);
-    }
-
-    if (have_phy) {
-        cmd_evt_phy(last_tx_phy, last_rx_phy);
     }
 }
 
@@ -495,7 +514,7 @@ static void cmd_emit_status_line(void)
 
     snprintk(b, sizeof(b),
              "STATUS adv=%d conn=%d sec=%u ready=%d proto=%u err=%d kb_notify=%d boot_notify=%d cc_notify=%d batt_notify=%d "
-             "suspend=%d interval_ms=%u latency=%u timeout_ms=%u phy_tx=%u phy_rx=%u",
+             "suspend=%d interval_ms=%u latency=%u timeout_ms=%u",
              adv_is_on ? 1 : 0,
              current_conn ? 1 : 0,
              (unsigned)current_sec_level,
@@ -509,9 +528,7 @@ static void cmd_emit_status_line(void)
              hid_suspended ? 1 : 0,
              (unsigned)interval_ms,
              (unsigned)last_latency,
-             (unsigned)timeout_ms,
-             (unsigned)last_tx_phy,
-             (unsigned)last_rx_phy);
+             (unsigned)timeout_ms);
 
     cmd_uart_send_line(b);
 }
@@ -529,16 +546,6 @@ static void update_link_ready(const char *why)
 }
 
 
-
-static const char *phy_to_str(uint8_t phy)
-{
-    switch (phy) {
-    case BT_GAP_LE_PHY_1M: return "1M";
-    case BT_GAP_LE_PHY_2M: return "2M";
-    case BT_GAP_LE_PHY_CODED: return "Coded";
-    default: return "?";
-    }
-}
 
 static bool hex_nibble(char c, uint8_t *out)
 {
@@ -575,16 +582,26 @@ static void cmd_handle_line(char *line);
 #define CMD_BIN_READ_TIMEOUT_MS 30
 #define CMD_ASCII_MAX_LEN       95
 
+/* One received byte, sleeping until it arrives or the deadline passes. */
+static bool cmd_rx_get_byte(uint8_t *ch, k_timepoint_t deadline)
+{
+    while (ring_buf_get(&cmd_rx_rb, ch, 1) == 0) {
+        if (k_sem_take(&cmd_rx_sem, sys_timepoint_timeout(deadline)) != 0) {
+            /* Timed out; one last look in case the byte landed just now. */
+            return ring_buf_get(&cmd_rx_rb, ch, 1) == 1;
+        }
+    }
+
+    return true;
+}
+
 static bool cmd_uart_read_exact(uint8_t *dst, size_t n, uint32_t timeout_ms)
 {
-    int64_t deadline = k_uptime_get() + (int64_t)timeout_ms;
+    k_timepoint_t deadline = sys_timepoint_calc(K_MSEC(timeout_ms));
 
     for (size_t i = 0; i < n; i++) {
-        while (uart_poll_in(cmd_uart, &dst[i]) != 0) {
-            if (k_uptime_get() >= deadline) {
-                return false;
-            }
-            k_msleep(1);
+        if (!cmd_rx_get_byte(&dst[i], deadline)) {
+            return false;
         }
     }
 
@@ -658,15 +675,10 @@ static struct k_thread cmd_rx_thread;
 
 static void cmd_rx_resync_to_newline(void)
 {
-    int64_t deadline = k_uptime_get() + 50; /* short flush window */
+    k_timepoint_t deadline = sys_timepoint_calc(K_MSEC(50)); /* short flush window */
     uint8_t ch;
 
-    while (k_uptime_get() < deadline) {
-        if (uart_poll_in(cmd_uart, &ch) != 0) {
-            k_msleep(1);
-            continue;
-        }
-
+    while (cmd_rx_get_byte(&ch, deadline)) {
         if (ch == '\n') {
             break;
         }
@@ -693,10 +705,12 @@ static void cmd_rx_thread_fn(void *a, void *b, void *c)
         if (dtr) {
             break;
         }
+        wdt_note_alive(&wdt_rx_alive);
         k_msleep(50);
     }
 
     atomic_set(&cmd_uart_ready, 1);
+    uart_irq_rx_enable(cmd_uart);
 
     /* Identify this port for PiHub's auto-detect. */
     cmd_uart_send_line("EVT PORT CMD");
@@ -709,9 +723,10 @@ static void cmd_rx_thread_fn(void *a, void *b, void *c)
 
     while (1) {
         uint8_t ch;
-        int rc = uart_poll_in(cmd_uart, &ch);
-        if (rc != 0) {
-            k_msleep(2);
+
+        /* Sleep until a byte arrives; wake once a second only to tell the watchdog. */
+        wdt_note_alive(&wdt_rx_alive);
+        if (!cmd_rx_get_byte(&ch, sys_timepoint_calc(K_SECONDS(1)))) {
             continue;
         }
 
@@ -778,6 +793,7 @@ static void cmd_uart_init(void)
     k_work_init_delayable(&cmd_tx_kick, cmd_tx_kick_work_handler);
     (void)uart_irq_callback_set(cmd_uart, cmd_uart_isr);
     uart_irq_tx_disable(cmd_uart);
+    uart_irq_rx_disable(cmd_uart);
 
     atomic_set(&cmd_uart_ready, 0);
 
@@ -799,7 +815,7 @@ static void cmd_uart_init(void)
  * A small LED feedback worker runs while the button is held, and normal LED state
  * is restored from the actual link state when the hold ends.
  */
-/* Prefer direct GPIO for SW1: more reliable than dk_buttons on nrf52840dongle. */
+/* SW1 is read directly over GPIO (both edges); the DK button library is not used. */
 #define SW1_NODE DT_ALIAS(sw0)
 #if DT_NODE_HAS_STATUS(SW1_NODE, okay)
 static const struct gpio_dt_spec sw1 = GPIO_DT_SPEC_GET(SW1_NODE, gpios);
@@ -1000,12 +1016,6 @@ static void kb_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
     ARG_UNUSED(attr);
     notify_kb_enabled = (value == BT_GATT_CCC_NOTIFY);
     LOG_INF("KB notify %s", notify_kb_enabled ? "ENABLED" : "disabled");
-
-    if (notify_kb_enabled) {
-        hid_zero_sent = false;
-
-        /* Give Apple hosts a moment after enabling CCCD before the first input report. */
-    }
     update_link_ready("kb_ccc");
 }
 
@@ -1021,12 +1031,6 @@ static void boot_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
     ARG_UNUSED(attr);
     notify_boot_enabled = (value == BT_GATT_CCC_NOTIFY);
     LOG_INF("BOOT notify %s", notify_boot_enabled ? "ENABLED" : "disabled");
-
-    if (notify_boot_enabled) {
-        hid_zero_sent = false;
-
-        /* Give Apple hosts a moment after enabling CCCD before the first input report. */
-    }
     update_link_ready("boot_ccc");
 }
 
@@ -1254,6 +1258,11 @@ static void adv_restart_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
 
+    /* One link only: nothing to advertise for while it is up. */
+    if (current_conn) {
+        return;
+    }
+
     /* Idempotent restart: stop first (ignore errors), then start. */
     (void)bt_le_adv_stop();
 
@@ -1261,7 +1270,7 @@ static void adv_restart_work_handler(struct k_work *work)
     if (err) {
         /* Many start failures are transient; keep trying rather than going “dead”. */
         LOG_WRN("Adv start failed (err %d) - retrying", err);
-        k_work_schedule(&adv_restart_work, K_SECONDS(1));
+        k_work_schedule(&adv_restart_work, K_MSEC(100));
         return;
     }
 
@@ -1334,8 +1343,8 @@ static void sw1_gpio_isr(const struct device *dev, struct gpio_callback *cb, uin
     ARG_UNUSED(cb);
     ARG_UNUSED(pins);
 
-    int val = gpio_pin_get_dt(&sw1);
-    bool pressed = (val > 0) ? false : true; /* button is usually active-low */
+    /* Logical level: the devicetree marks the button active-low, so 1 means pressed. */
+    bool pressed = gpio_pin_get_dt(&sw1) > 0;
 
     if (pressed) {
         if (atomic_cas(&sw1_pressed, 0, 1)) {
@@ -1349,13 +1358,6 @@ static void sw1_gpio_isr(const struct device *dev, struct gpio_callback *cb, uin
 }
 #endif
 
-static void button_changed(uint32_t button_state, uint32_t has_changed)
-{
-    /* DK-library fallback (if enabled/working). SW1 maps to DK_BTN1_MSK. */
-    if (has_changed & DK_BTN1_MSK) {
-        sw1_schedule_or_cancel((button_state & DK_BTN1_MSK) != 0);
-    }
-}
 
 
 
@@ -1610,7 +1612,59 @@ static void blink_timer_handler(struct k_timer *timer)
 static void start_advertising(void)
 {
     /* Start (or restart) advertising via the work item so transient errors don’t leave us invisible. */
-    k_work_schedule(&adv_restart_work, K_NO_WAIT);
+    k_work_reschedule(&adv_restart_work, K_NO_WAIT);
+}
+
+/* ---------------- Link upkeep ----------------
+ * Runs a few seconds after connect and after every parameter change:
+ *  - drops a link that never became encrypted, so a device that is not the
+ *    paired one cannot sit on the only connection slot;
+ *  - asks again for the low-latency parameters if the link is on anything else.
+ */
+#define LINK_UNENCRYPTED_LIMIT_MS 15000
+#define LINK_PARAM_RECHECK_MS     5000
+#define LINK_PARAM_MAX_REQUESTS   3
+
+static struct k_work_delayable link_secure_work;
+static struct k_work_delayable link_param_work;
+static uint8_t link_param_requests;
+
+static bool link_params_are_low_latency(void)
+{
+    return have_conn_params &&
+           (last_interval >= low_latency_conn_params.interval_min) &&
+           (last_interval <= low_latency_conn_params.interval_max) &&
+           (last_latency == low_latency_conn_params.latency);
+}
+
+static void link_secure_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+
+    if (current_conn && (current_sec_level < BT_SECURITY_L2)) {
+        LOG_WRN("Link not encrypted in time - disconnecting");
+        (void)bt_conn_disconnect(current_conn, BT_HCI_ERR_AUTH_FAIL);
+    }
+}
+
+static void link_param_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+
+    if (!current_conn || (current_sec_level < BT_SECURITY_L2) ||
+        link_params_are_low_latency() ||
+        (link_param_requests >= LINK_PARAM_MAX_REQUESTS)) {
+        return;
+    }
+
+    link_param_requests++;
+    int perr = bt_conn_le_param_update(current_conn, &low_latency_conn_params);
+    if (perr && perr != -EALREADY) {
+        LOG_WRN("Conn param update failed: %d", perr);
+    }
+
+    /* A refusal is silent, so look again later. */
+    k_work_reschedule(&link_param_work, K_MSEC(LINK_PARAM_RECHECK_MS));
 }
 
 static void log_conn_params_cached(const char *tag)
@@ -1650,6 +1704,16 @@ static void connected(struct bt_conn *conn, uint8_t err)
     notify_boot_enabled = false;
     current_sec_level = BT_SECURITY_L1;
     hid_suspended = false;
+    link_param_requests = 0;
+
+    /* What the central opened the link with; later changes arrive in le_param_updated(). */
+    struct bt_conn_info info;
+    if ((bt_conn_get_info(conn, &info) == 0) && (info.type == BT_CONN_TYPE_LE)) {
+        cmd_evt_conn_params((uint16_t)(info.le.interval_us / 1250U), info.le.latency, info.le.timeout);
+    } else {
+        have_conn_params = false;
+    }
+    k_work_reschedule(&link_secure_work, K_MSEC(LINK_UNENCRYPTED_LIMIT_MS));
     cmd_evt_err(false);
     update_link_ready("connected");
 
@@ -1698,11 +1762,23 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     cmd_evt_err(false);
     update_link_ready("disconnected");
 
+    (void)k_work_cancel_delayable(&link_secure_work);
+    (void)k_work_cancel_delayable(&link_param_work);
+
     set_leds_adv();
     k_timer_start(&blink_timer, K_NO_WAIT, K_MSEC(500));
 
-    /* Re-advertise promptly so Apple devices can find us again after BT toggles. */
-    start_advertising();
+    /* Advertising restarts from recycled(), once the connection slot is free. */
+}
+
+/* The stack has released the connection object: with one slot, this is the
+ * earliest moment advertising can start again.
+ */
+static void recycled(void)
+{
+    if (!current_conn) {
+        start_advertising();
+    }
 }
 
 static void le_param_updated(struct bt_conn *conn, uint16_t interval,
@@ -1720,6 +1796,13 @@ static void le_param_updated(struct bt_conn *conn, uint16_t interval,
             (unsigned)interval_ms,
             (unsigned)latency,
             (unsigned)timeout_ms);
+
+    if (link_params_are_low_latency()) {
+        link_param_requests = 0;
+    } else {
+        /* Moved off the low-latency parameters: ask for them back shortly. */
+        k_work_reschedule(&link_param_work, K_MSEC(LINK_PARAM_RECHECK_MS));
+    }
 }
 
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err)
@@ -1736,12 +1819,16 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
     LOG_INF("Security changed: level %u", level);
 
     if (level >= BT_SECURITY_L2) {
+        (void)k_work_cancel_delayable(&link_secure_work);
+
         int perr = bt_conn_le_param_update(conn, &low_latency_conn_params);
         if (perr && perr != -EALREADY) {
             LOG_WRN("Conn param update failed: %d", perr);
         } else {
             LOG_INF("Requested low-latency conn params");
         }
+        link_param_requests = 1;
+        k_work_reschedule(&link_param_work, K_MSEC(LINK_PARAM_RECHECK_MS));
     }
 }
 
@@ -1750,6 +1837,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
     .disconnected = disconnected,
     .security_changed = security_changed,
     .le_param_updated = le_param_updated,
+    .recycled = recycled,
 };
 
 
@@ -1777,6 +1865,62 @@ static struct bt_conn_auth_cb auth_cb = {
     .cancel = auth_cancel,
 };
 
+static const struct device *const wdt_dev = DEVICE_DT_GET(DT_ALIAS(watchdog0));
+static int wdt_channel = -1;
+static struct k_work wdt_workq_ping;
+
+static void wdt_workq_ping_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    wdt_note_alive(&wdt_workq_alive);
+}
+
+static void wdt_start(void)
+{
+    k_work_init(&wdt_workq_ping, wdt_workq_ping_handler);
+    wdt_note_alive(&wdt_rx_alive);
+    wdt_note_alive(&wdt_workq_alive);
+
+    if (!device_is_ready(wdt_dev)) {
+        return;
+    }
+
+    const struct wdt_timeout_cfg cfg = {
+        .window.min = 0,
+        .window.max = WDT_TIMEOUT_MS,
+        .callback = NULL,
+        .flags = WDT_FLAG_RESET_SOC,
+    };
+
+    wdt_channel = wdt_install_timeout(wdt_dev, &cfg);
+    if (wdt_channel < 0) {
+        return;
+    }
+    if (wdt_setup(wdt_dev, WDT_OPT_PAUSE_HALTED_BY_DBG) != 0) {
+        wdt_channel = -1;
+    }
+}
+
+static bool wdt_seen_recently(atomic_t *stamp)
+{
+    return (k_uptime_get_32() - (uint32_t)atomic_get(stamp)) < WDT_STALE_MS;
+}
+
+static void wdt_feed_if_healthy(void)
+{
+    (void)k_work_submit(&wdt_workq_ping);
+
+#if PIHUB_CMD_UART_ENABLED
+    bool rx_ok = (cmd_uart == NULL) || wdt_seen_recently(&wdt_rx_alive);
+#else
+    bool rx_ok = true;
+#endif
+
+    if ((wdt_channel >= 0) && rx_ok && wdt_seen_recently(&wdt_workq_alive)) {
+        (void)wdt_feed(wdt_dev, wdt_channel);
+    }
+}
+
 /* Startup order
  *
  * 1) visible hardware bring-up
@@ -1789,6 +1933,9 @@ static struct bt_conn_auth_cb auth_cb = {
 int main(void)
 {
     int err;
+
+    /* First, so a hang anywhere in bring-up also ends in a reset. */
+    wdt_start();
 
     /* Short visible boot sequence so bring-up failures are obvious on bare hardware. */
     dk_leds_init();
@@ -1805,14 +1952,12 @@ int main(void)
     k_timer_init(&blink_timer, blink_timer_handler, NULL);
 
     k_work_init_delayable(&adv_restart_work, adv_restart_work_handler);
+    k_work_init_delayable(&link_secure_work, link_secure_work_handler);
+    k_work_init_delayable(&link_param_work, link_param_work_handler);
     k_work_init_delayable(&bond_clear_work, bond_clear_work_handler);
     k_work_init_delayable(&sw1_feedback_work, sw1_feedback_work_fn);
 
     /* Buttons: SW1 long-hold clears bonds */
-    err = dk_buttons_init(button_changed);
-    if (err) {
-        LOG_WRN("dk_buttons_init failed (err %d) - will try direct GPIO sw0", err);
-    }
 #if DT_NODE_HAS_STATUS(SW1_NODE, okay)
     if (device_is_ready(sw1.port)) {
         int gerr = gpio_pin_configure_dt(&sw1, GPIO_INPUT | GPIO_PULL_UP);
@@ -1880,6 +2025,7 @@ int main(void)
     start_advertising();
 
     for (;;) {
+        wdt_feed_if_healthy();
         k_sleep(K_SECONDS(1));
     }
 }

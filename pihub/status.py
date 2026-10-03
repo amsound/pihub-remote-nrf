@@ -238,7 +238,7 @@ class StatusReporter:
         if self._ble is None:
             return {
                 "state": "disabled", "connected": False, "advertising": False, "dongle": False,
-                "interval_ms": None, "last_disconnect_reason": None,
+                "interval_ms": None, "last_disconnect_reason": None, "dongle_firmware": None,
             }, []
 
         raw = self._ble.status
@@ -269,6 +269,7 @@ class StatusReporter:
             "dongle": dongle,
             "interval_ms": (raw.get("conn_params") or {}).get("interval_ms"),
             "last_disconnect_reason": raw.get("last_disc_reason"),
+            "dongle_firmware": raw.get("firmware"),
         }, reasons
 
     def _tv_block(self) -> tuple[dict[str, Any], list[str]]:

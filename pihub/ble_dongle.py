@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Literal
@@ -121,6 +122,7 @@ class BleDongleLink:
         self._poll_task: Optional[asyncio.Task] = None
 
         self._resync_task: Optional[asyncio.Task] = None
+        self._firmware: Optional[str] = None   # build stamp from the dongle's INFO reply
         self._resync_delay_s: float = 0.15
 
         self._tx_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=int(tx_queue))
@@ -180,6 +182,7 @@ class BleDongleLink:
     def status(self) -> dict:
         return {
             "adapter_present": self.is_open,
+            "firmware": self._firmware,
             "transport_open": self.is_open,
             "active_port": self._port,
             "ready": self.state.ready,
@@ -559,13 +562,19 @@ class BleDongleLink:
             # If we just became ready, say it once
             if prev_ready is False or prev_label != "ready":
                 has_notifies = bool(self.state.notify) and (kb_n or cc_n or batt_n)
+                # The link's parameters as they stand now, when the dongle has reported them.
+                params = (
+                    f" interval_ms={interval} latency={latency} timeout_ms={timeout}"
+                    if interval is not None and latency is not None and timeout is not None
+                    else ""
+                )
                 if has_notifies:
                     logger.info(
-                        "link ready (kb_notify=%d cc_notify=%d batt_notify=%d)",
-                        kb_n, cc_n, batt_n
+                        "link ready (kb_notify=%d cc_notify=%d batt_notify=%d%s)",
+                        kb_n, cc_n, batt_n, params
                     )
                 else:
-                    logger.info("link now ready")
+                    logger.info("link now ready%s", f" ({params.strip()})" if params else "")
                 return
 
             # Already ready: if connection params changed, log as an update (not a second "connected")
@@ -819,6 +828,7 @@ class BleDongleLink:
         if ok:
             logger.info("connected serial_port=%s", port)
             await self.status_cmd()
+            await self._write_line("INFO")   # which firmware build the dongle runs
         else:
             await self._force_reconnect("handshake_timeout")
         return ok
@@ -1006,6 +1016,15 @@ class BleDongleLink:
 
         if line.startswith("STATUS "):
             self._handle_status(line)
+            return
+
+        if line.startswith("INFO "):
+            # INFO name=PiHub nrf Remote fw=20261002-2105-c56824c addr=...
+            match = re.search(r"\bfw=(\S+)", line)
+            firmware = match.group(1) if match else None
+            if firmware and firmware != self._firmware:
+                logger.info("dongle firmware %s", firmware)
+            self._firmware = firmware or self._firmware
             return
 
     def _handle_evt(self, line: str) -> None:
