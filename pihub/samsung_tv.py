@@ -23,6 +23,12 @@ from .tv import BACKEND_WS, TvSnapshot
 logger = logging.getLogger(__name__)
 
 TV_ON_SIGNAL_DEBOUNCE_S = 8.0
+# During a power-on the TV's own "alive" announcement is the preferred sign that it
+# is up (about a second after it wakes). Only if none has arrived is the TV asked
+# directly, and only at these moments after the attempt began: once in case the
+# announcement was lost, and once more just before a flow's power-on step gives up.
+POWER_ON_DIRECT_CHECKS_S = (3.0, 7.0)
+POWER_ON_DIRECT_CHECK_TIMEOUT_S = 0.8
 
 # --- Presence fallback probe ---
 
@@ -31,6 +37,7 @@ async def presence_probe_up(
     session: aiohttp.ClientSession,
     tv_ip: str,
     timeout_s: float = 1.5,
+    attempts: int = 2,
 ) -> bool:
     """
     Lightweight HTTP fallback probe for Samsung's renderer endpoint.
@@ -41,7 +48,7 @@ async def presence_probe_up(
     url = f"http://{tv_ip}:9197/dmr"
     timeout = aiohttp.ClientTimeout(total=timeout_s)
 
-    for _ in range(2):
+    for _ in range(max(1, attempts)):
         try:
             async with session.get(url, timeout=timeout) as resp:
                 return 200 <= resp.status < 300
@@ -878,34 +885,42 @@ class TvController:
                 except asyncio.TimeoutError:
                     pass
 
-        async def probe_worker() -> None:
-            # Fallback detection only (does not wake the TV). SSDP alive normally
-            # marks the TV on ~1 s after it wakes; the /dmr probe covers a missed one.
-            PROBE_INTERVAL_S = 1.0
+        async def direct_check_worker() -> None:
+            # Does not wake the TV. It only covers a lost "alive": the TV is asked
+            # directly at fixed moments, never continuously.
+            loop = asyncio.get_running_loop()
+            began = loop.time()
 
-            while not stop_event.is_set() and self._presence_cached is not True:
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(stop_event.wait(), timeout=PROBE_INTERVAL_S)
+            for at_s in POWER_ON_DIRECT_CHECKS_S:
+                wait = began + at_s - loop.time()
+                if wait > 0:
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(stop_event.wait(), timeout=wait)
                 if stop_event.is_set() or self._presence_cached is True:
                     return
                 try:
-                    if await presence_probe_up(self._session, self.tv_ip, timeout_s=0.8):
+                    if await presence_probe_up(
+                        self._session,
+                        self.tv_ip,
+                        timeout_s=POWER_ON_DIRECT_CHECK_TIMEOUT_S,
+                        attempts=1,
+                    ):
                         self._commit_presence(True, source="probe_http_up")
                         return
                 except Exception:
-                    logger.debug("tv power_on http presence probe failed", exc_info=True)
+                    logger.debug("tv power_on direct check failed", exc_info=True)
 
         try:
             wol_task = asyncio.create_task(wol_worker(), name="tv:power_on_wol")
             key_task = asyncio.create_task(key_worker(), name="tv:power_on_key")
-            probe_task = asyncio.create_task(probe_worker(), name="tv:power_on_probe")
+            probe_task = asyncio.create_task(direct_check_worker(), name="tv:power_on_direct_check")
 
             try:
                 powered_on = await self._wait_for_presence_true(timeout_s=timeout_s)
                 return powered_on
             finally:
                 # The moment presence is true, or the attempt times out, stop all
-                # power-on behaviour. This cancels WoL, the probe, and any
+                # power-on behaviour. This cancels WoL, the direct check, and any
                 # in-flight websocket key path that has not sent yet.
                 stop_event.set()
 

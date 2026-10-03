@@ -74,12 +74,14 @@ function render(d) {
   const playback = PLAYBACK[sp.playback] || cap(sp.playback);
   const spState = sp.state === "disabled" ? "Not configured"
     : sp.state !== "ok" ? "Unavailable"
+    : sp.on === false ? "Off"
     : sp.source ? (SPEAKER_SOURCE[sp.source] || cap(title(sp.source))) + (playback ? ` · ${playback}` : "")
     : "Idle";
   $("speaker").innerHTML = `
     <div class="dev-head">${ICONS.speaker}<h2>Speaker</h2><span class="tag">${SPEAKER_BACKEND[sp.backend] || esc(sp.backend || "")}</span></div>
     <div class="dev-body">
-      <div class="state"><span class="dot ${dotClass(sp.state)}"></span>${spState}<span class="since">${since(sp.changed_at)}</span></div>
+      <div class="state"><span class="dot ${sp.on === false ? "" : dotClass(sp.state)}"></span>${spState}<span class="since">${since(sp.changed_at)}</span></div>
+      ${sp.on == null ? "" : `<dl class="kv"><dt>Power</dt><dd>${sp.on ? "On" : "Off"}</dd></dl>`}
       <div class="vol"><span class="bar"><i style="width:${sp.volume ?? 0}%"></i></span><span>${sp.muted ? "Muted" : sp.volume != null ? sp.volume + "%" : ""}</span></div>
       ${sp.error ? `<div class="err">${esc(sp.error)}</div>` : ""}
       ${sp.key_error ? `<div class="keyerr">Last key press failed. ${esc(keyErrorText(sp.key_error))}</div>` : ""}

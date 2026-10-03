@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import socket
 import struct
 import time
 from dataclasses import dataclass
@@ -33,10 +34,23 @@ VOLUME_STEP_PCT = 2
 
 HDMI_SOFT_MUTE_RESTORE_DEFAULT_PCT = 30
 
-PINFGET_MIN_GAP_S = 1.0
-PINFGET_HINT_DELAY_S = 1.0
+# The speaker is never polled. It announces every change itself, but mostly as a
+# hint ("something happened") rather than the detail, so each hint is followed by
+# one request for the full status (MCU+PINFGET). Hints arrive in bursts; the
+# request waits until they have gone quiet, so a burst costs one question, not one each.
+PINFGET_MIN_GAP_S = 1.0          # never ask more often than this
+PINFGET_HINT_DELAY_S = 1.0       # how long after a hint the status is trustworthy
+PINFGET_MAX_WAIT_S = 2.0         # a constant stream of hints cannot put the question off for longer
+# A connection that has gone silent is checked by the operating system (TCP
+# keepalive), so a speaker that vanishes without closing it is noticed in about a minute.
+KEEPALIVE_IDLE_S = 30
+KEEPALIVE_INTERVAL_S = 10
+KEEPALIVE_PROBES = 3
+# The speaker pushes AXX+PLY+001 / +000 the moment audio starts or stops (play,
+# pause, resume, stop, between tracks). The full status is right within a few
+# tenths of a second of it.
+PLY_HINT_DELAY_S = 0.3
 PINFGET_TRIGGER_PMS = {"000", "001"}
-PINFGET_TRIGGER_KEYS = {"FFF"}  # only these KEY values trigger PINFGET
 
 _PLM_TO_SOURCE = {
     "000": "idle",
@@ -106,7 +120,6 @@ class SpeakerState:
     multiroom_host_ip: str | None = None
 
     last_update_ts: float | None = None
-    last_play_ts: float | None = None
     changed_at: float | None = None     # last source/playback change (wall clock)
 
 
@@ -118,9 +131,18 @@ class AudioProSpeaker:
       - set volume/volume_up/volume_down/mute_toggle (+ set_muted)
       - play/pause/stop_playback/next_track/previous_track/play_pause
       - set preset/next_preset/previous_preset
-      - play_url (uses httpapi.asp with cmd "setURL:{url}")
-      - set_source 
+      - play_url (uses httpapi.asp with cmd "setPlayerCmd:play:{url}")
+      - set_source
       - power_off (uses httpapi.asp with default cmd "setShutdown:0")
+
+    Power, as measured on an A28 (firmware Linkplay.5.2.818333):
+      - MCU+PST+GET is the status question. It answers AXX+PST+003 while the
+        speaker is off and does not wake it; 000 is on and just woken or busy,
+        001 is on and settled.
+      - Pushed without being asked: AXX+PMS+000 on every wake (TV over HDMI,
+        AirPlay, an app); AXX+PMS+001/002/003 then AXX+POW+001 as it powers down.
+      - NEVER send MCU+PMS+GET: it is not a question, it switches the speaker on.
+      - PINFGET and the HTTP status calls answer the same whether it is on or off.
     """
 
     def __init__(
@@ -161,8 +183,6 @@ class AudioProSpeaker:
 
         self._session: aiohttp.ClientSession | None = None
 
-        self._poll_task: asyncio.Task | None = None
-        self._poll_wake_evt = asyncio.Event()
         self._log_drop_once = False
         self._log_http_drop_once = False
         self._link_down_logged = False
@@ -175,6 +195,9 @@ class AudioProSpeaker:
         self.initial = InitialStatus(logger)
 
         self._pending_pinfget_task: asyncio.Task | None = None
+        self._pinfget_due = 0.0         # when the pending status request should go (monotonic)
+        self._pinfget_first_hint = 0.0  # when the first hint of the current burst arrived
+        self._pinfget_last_hint = 0.0   # when the latest hint arrived
         self._pending_multiroom_host_ip_task: asyncio.Task | None = None
         self._last_pinfget_monotonic = 0.0
 
@@ -222,9 +245,6 @@ class AudioProSpeaker:
             "changed_at": s.changed_at,
         }
 
-    def _wake_poll_loop(self) -> None:
-        self._poll_wake_evt.set()
-
     # ---------- lifecycle ----------
 
     async def start(self) -> None:
@@ -232,7 +252,6 @@ class AudioProSpeaker:
             return
         self._enabled = True
         self._stop_evt.clear()
-        self._poll_wake_evt.clear()
 
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
@@ -247,13 +266,8 @@ class AudioProSpeaker:
         self._cancel_pending_pinfget()
         self._cancel_pending_multiroom_host_ip_refresh()
 
-        self._poll_wake_evt.set()
-
         await self._cancel_task(self._task, name="runner_task")
         self._task = None
-
-        await self._cancel_task(self._poll_task, name="poll_task")
-        self._poll_task = None
 
         await self._disconnect()
 
@@ -285,12 +299,6 @@ class AudioProSpeaker:
         slvget_sent = False
         pstget_sent = False
         guest_host_refreshed = False
-
-        try:
-            self._wake_poll_loop()
-        except Exception as exc:
-            logger.debug("speaker request_refresh wake failed", exc_info=True)
-            errors.append(f"wake_failed:{exc!r}")
 
         if self._state.connected:
             try:
@@ -347,7 +355,6 @@ class AudioProSpeaker:
 
         while self._enabled and not self._stop_evt.is_set():
             read_task: asyncio.Task | None = None
-            poll_task: asyncio.Task | None = None
 
             try:
                 attempt += 1
@@ -360,35 +367,22 @@ class AudioProSpeaker:
 
                 await self._connect()
 
-                poll_task = asyncio.create_task(
-                    self._poll_loop(),
-                    name=f"linkplay_poll[{self._speaker_ip}]",
-                )
-                self._poll_task = poll_task
-
                 read_task = asyncio.create_task(
                     self._read_loop(),
                     name=f"linkplay_read[{self._speaker_ip}]",
                 )
 
-                # Initial truth pull / readiness gate.
+                # Initial truth pull / readiness gate. Power first, so it is known
+                # by the time the first status reading is reported.
+                await self._pstget()
                 await self._pinfget()
                 await self._slvget()
-                await self._pstget()
                 await self._wait_ready()
                 attempt = 0
 
-                # Either background task dying means this connection cycle is over.
-                done, _ = await asyncio.wait(
-                    {read_task, poll_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-
-                for task in done:
-                    exc = task.exception()
-                    if exc is not None:
-                        raise exc
-
+                # From here everything is driven by what the speaker sends. The
+                # reader ending (closed, reset, or keepalive giving up) ends this cycle.
+                await read_task
                 raise ConnectionError("speaker task exited unexpectedly")
 
             except asyncio.CancelledError:
@@ -407,8 +401,6 @@ class AudioProSpeaker:
                 await self._disconnect()
 
                 await self._cancel_task(read_task, name="read_task")
-                await self._cancel_task(poll_task, name="poll_task")
-                self._poll_task = None
 
             if self._enabled and not self._stop_evt.is_set():
                 await asyncio.sleep(self._reconnect_s)
@@ -420,7 +412,6 @@ class AudioProSpeaker:
         self._state.ready = False
         self._log_drop_once = False
         self._log_http_drop_once = False
-        self._poll_wake_evt.clear()
 
         try:
             reader, writer = await asyncio.wait_for(
@@ -437,8 +428,25 @@ class AudioProSpeaker:
         self._state.connected = True
         self._state.last_update_ts = _now()
         self._link_down_logged = False
-        self._wake_poll_loop()
+        self._enable_keepalive(writer)
         logger.info("connected speaker_ip=%s port=%s", self._speaker_ip, self._tcp_port)
+
+    @staticmethod
+    def _enable_keepalive(writer: asyncio.StreamWriter) -> None:
+        """Have the OS check a silent connection, so a dead one does not look alive."""
+        sock = writer.get_extra_info("socket")
+        if sock is None:
+            return
+        with contextlib.suppress(OSError):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            # Linux names; macOS calls the idle time TCP_KEEPALIVE.
+            idle = getattr(socket, "TCP_KEEPIDLE", getattr(socket, "TCP_KEEPALIVE", None))
+            if idle is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, idle, KEEPALIVE_IDLE_S)
+            if hasattr(socket, "TCP_KEEPINTVL"):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, KEEPALIVE_INTERVAL_S)
+            if hasattr(socket, "TCP_KEEPCNT"):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, KEEPALIVE_PROBES)
 
     async def _disconnect(self) -> None:
         self._cancel_pending_pinfget()
@@ -447,7 +455,6 @@ class AudioProSpeaker:
         self._state.connected = False
         self._state.ready = False
         self._state.last_update_ts = _now()
-        self._wake_poll_loop()
 
         writer = self._writer
         self._reader, self._writer = None, None
@@ -463,7 +470,6 @@ class AudioProSpeaker:
         self._state.ready = False
         self._state.last_error = err
         self._state.last_update_ts = _now()
-        self._wake_poll_loop()
 
     async def _fail_link(self, reason: str) -> None:
         self._mark_down(reason)
@@ -615,7 +621,8 @@ class AudioProSpeaker:
                 # resync to header
                 hpos = buf.find(_TCP_HEADER)
                 if hpos == -1:
-                    buf.clear()
+                    # Keep the tail: a header can arrive split across two reads.
+                    del buf[:-(len(_TCP_HEADER) - 1)]
                     break
                 if hpos > 0:
                     del buf[:hpos]
@@ -684,47 +691,17 @@ class AudioProSpeaker:
             self._handle_key(p)
             return
 
+        if p.startswith("AXX+PLY+"):
+            # The bare play state (INF and NEW are handled above).
+            self._handle_ply(p)
+            return
+
+        if p.startswith(("AXX+I2S+", "AXX+BT+")):
+            # Audio has started arriving on HDMI / a Bluetooth device has come or gone.
+            self._request_pinfget(reason=f"push:{p[4:7]}")
+            return
+
         self._handle_unknown(p)
-
-    def _compute_poll_interval(self) -> float:
-        src = (self._state.source or "unknown").strip().lower()
-        st = (self._state.playback_status or "").strip().lower()
-
-        if src in _PHYSICAL_SOURCES:
-            return 10.0
-
-        if src in _NETWORK_SOURCES:
-            if st == "load":
-                return 2.0
-            if st == "play":
-                return 5.0
-            if st == "stop":
-                if self._state.last_play_ts is not None:
-                    age = _now() - self._state.last_play_ts
-                    if age < 60.0:
-                        return 10.0
-                return 15.0
-            return 10.0
-
-        return 15.0
-    
-    async def _poll_loop(self) -> None:
-        while self._enabled and not self._stop_evt.is_set():
-            interval = self._compute_poll_interval()
-
-            self._poll_wake_evt.clear()
-
-            try:
-                await asyncio.wait_for(
-                    self._poll_wake_evt.wait(),
-                    timeout=float(interval),
-                )
-                continue
-            except asyncio.TimeoutError:
-                pass
-
-            await self._pinfget()
-            self._last_pinfget_monotonic = time.monotonic()
 
     def _spawn_state_change_callback(self, name: str, payload: dict[str, Any]) -> None:
         cb = self._state_change_callback
@@ -761,7 +738,6 @@ class AudioProSpeaker:
     ) -> None:
         old_source = self._state.source
         old_status = self._state.playback_status
-        old_ready = self._state.ready
 
         changed = False
 
@@ -776,8 +752,6 @@ class AudioProSpeaker:
         if playback_status is not _UNSET and playback_status != self._state.playback_status:
             self._state.playback_status = playback_status
             changed = True
-            if playback_status == "play":
-                self._state.last_play_ts = _now()
 
         if volume_pct is not None:
             v = _clamp_int(int(volume_pct), 0, 100) / 100.0
@@ -798,13 +772,6 @@ class AudioProSpeaker:
 
         if self._state.source != old_source or self._state.playback_status != old_status:
             self._state.changed_at = _now()
-
-        if (
-            self._state.source != old_source
-            or self._state.playback_status != old_status
-            or self._state.ready != old_ready
-        ):
-            self._wake_poll_loop()
 
         self._emit_listen_edge(old_source, old_status)
 
@@ -838,15 +805,28 @@ class AudioProSpeaker:
             )
 
     def _request_pinfget(self, *, reason: str, delay_s: float = PINFGET_HINT_DELAY_S) -> None:
+        """Ask for the full status once this change has settled.
+
+        Every hint funnels through here. While a request is already waiting, a new
+        hint only pushes it back (so it is asked after the latest change, within
+        PINFGET_MAX_WAIT_S of the first): a burst of hints costs one question.
+        """
         if not self._enabled or self._stop_evt.is_set():
             return
 
+        now = time.monotonic()
+        self._pinfget_last_hint = now
+
         task = self._pending_pinfget_task
         if task is not None and not task.done():
+            latest = self._pinfget_first_hint + PINFGET_MAX_WAIT_S
+            self._pinfget_due = min(max(self._pinfget_due, now + delay_s), latest)
             return
 
+        self._pinfget_first_hint = now
+        self._pinfget_due = now + delay_s
         self._pending_pinfget_task = asyncio.create_task(
-            self._run_scheduled_pinfget(delay_s=delay_s, reason=reason),
+            self._run_scheduled_pinfget(reason=reason),
             name=f"speaker_pinfget[{self._speaker_ip}]",
         )
         self._pending_pinfget_task.add_done_callback(self._clear_pending_pinfget)
@@ -858,55 +838,31 @@ class AudioProSpeaker:
             task.result()
         except asyncio.CancelledError:
             logger.debug("speaker scheduled PINFGET cancelled speaker_ip=%s", self._speaker_ip)
+            return
         except Exception as e:
             logger.debug("speaker scheduled PINFGET failed speaker_ip=%s error=%s", self._speaker_ip, e)
-
-    async def _run_scheduled_pinfget(self, *, delay_s: float, reason: str) -> None:
-        logger.debug(
-            "speaker scheduling PINFGET speaker_ip=%s delay_s=%.2f reason=%s",
-            self._speaker_ip,
-            delay_s,
-            reason,
-        )
-
-        if delay_s > 0:
-            await asyncio.sleep(delay_s)
-
-        if not self._enabled or self._stop_evt.is_set():
-            logger.debug(
-                "speaker scheduled PINFGET skipped speaker_ip=%s reason=%s state=disabled_or_stopped",
-                self._speaker_ip,
-                reason,
-            )
             return
 
-        now_mono = time.monotonic()
-        since_last = now_mono - self._last_pinfget_monotonic
-        if since_last < PINFGET_MIN_GAP_S:
-            extra = PINFGET_MIN_GAP_S - since_last
-            logger.debug(
-                "speaker delaying PINFGET for min gap speaker_ip=%s extra_s=%.2f reason=%s",
-                self._speaker_ip,
-                extra,
-                reason,
-            )
-            await asyncio.sleep(extra)
+        # A hint that landed as the question was going out has not been answered by it.
+        if self._pinfget_last_hint > self._last_pinfget_monotonic and self._pending_pinfget_task is None:
+            self._request_pinfget(reason="hint_as_sent", delay_s=0.0)
+
+    async def _run_scheduled_pinfget(self, *, reason: str) -> None:
+        logger.debug("speaker scheduling PINFGET speaker_ip=%s reason=%s", self._speaker_ip, reason)
+
+        # The due time can move while we wait (more hints), so look again after each sleep.
+        while True:
+            due = max(self._pinfget_due, self._last_pinfget_monotonic + PINFGET_MIN_GAP_S)
+            wait = due - time.monotonic()
+            if wait <= 0:
+                break
+            await asyncio.sleep(wait)
 
         if not self._enabled or self._stop_evt.is_set():
-            logger.debug(
-                "speaker scheduled PINFGET aborted speaker_ip=%s reason=%s state=disabled_or_stopped",
-                self._speaker_ip,
-                reason,
-            )
             return
 
-        logger.debug(
-            "speaker running scheduled PINFGET speaker_ip=%s reason=%s",
-            self._speaker_ip,
-            reason,
-        )
-        await self._pinfget()
         self._last_pinfget_monotonic = time.monotonic()
+        await self._pinfget()
 
     def _cancel_pending_pinfget(self) -> None:
         task = self._pending_pinfget_task
@@ -1025,9 +981,9 @@ class AudioProSpeaker:
         self._apply_updates(volume_pct=vol)
 
     def _handle_mut(self, payload: str) -> None:
-        # AXX+MUT+XXX is not reliable across all inputs/modes.
-        # Treat PINFGET["mute"] as authoritative.
-        return
+        # The value in AXX+MUT+XXX is not reliable across all inputs/modes, so it is
+        # only taken as a hint that mute may have changed: PINFGET["mute"] is the truth.
+        self._request_pinfget(reason="mut")
 
     def _handle_plm(self, payload: str) -> None:
         mode = payload.strip().split("+")[-1].strip().zfill(3)
@@ -1040,14 +996,22 @@ class AudioProSpeaker:
 
         self._request_pinfget(reason=f"plm:{mode}")
 
+    def _handle_ply(self, payload: str) -> None:
+        """AXX+PLY+001 (audio started) / AXX+PLY+000 (stopped or paused): go and ask."""
+        code = payload.strip().split("+")[-1].strip()
+        if code in {"000", "001"}:
+            self._request_pinfget(reason=f"ply:{code}", delay_s=PLY_HINT_DELAY_S)
+
     def _handle_pms(self, payload: str) -> None:
+        """AXX+PMS+000: the speaker has woken or become active again (it is on).
+        001 on its own: it has settled. 001, 002, 003 a second apart: it is
+        powering down, and AXX+POW+001 follows."""
         code = payload.strip().split("+")[-1]
 
         if code == "000":
             if self._state.powered_on is not True:
                 self._state.powered_on = True
                 self._state.last_update_ts = _now()
-                self._wake_poll_loop()
 
         if code in PINFGET_TRIGGER_PMS:
             self._request_pinfget(reason=f"pms:{code}")
@@ -1065,16 +1029,15 @@ class AudioProSpeaker:
             if self._state.powered_on is not False:
                 self._state.powered_on = False
                 self._state.last_update_ts = _now()
-                self._wake_poll_loop()
 
     def _handle_pst(self, payload: str) -> None:
         """
-        Handle explicit power-state truth.
+        Handle explicit power-state truth (the answer to MCU+PST+GET).
 
         Observed:
-        AXX+PST+000 -> on
-        AXX+PST+001 -> on
-        AXX+PST+003 -> off
+        AXX+PST+000 -> on (just woken, or busy)
+        AXX+PST+001 -> on (settled)
+        AXX+PST+003 -> off, for as long as it is off
         """
         code = payload.strip().split("+")[-1].strip()
 
@@ -1089,7 +1052,6 @@ class AudioProSpeaker:
         if self._state.powered_on != powered_on:
             self._state.powered_on = powered_on
             self._state.last_update_ts = _now()
-            self._wake_poll_loop()
 
     def _handle_slv(self, payload: str) -> None:
         """
@@ -1124,7 +1086,6 @@ class AudioProSpeaker:
 
             if changed:
                 self._state.last_update_ts = _now()
-                self._wake_poll_loop()
             return
 
         # YES/NOT are useful hints, but guest truth still comes from PINFGET type.
@@ -1138,9 +1099,9 @@ class AudioProSpeaker:
         self._request_pinfget(reason="ply_new")
 
     def _handle_key(self, payload: str) -> None:
+        # A preset or station was chosen (001.., FFF, RDY): playback is about to change.
         code = payload.strip().split("+")[-1]
-        if code in PINFGET_TRIGGER_KEYS:
-            self._request_pinfget(reason=f"key:{code}")
+        self._request_pinfget(reason=f"key:{code}")
 
     def _handle_ply_inf(self, payload: str) -> None:
         info = self._parse_ply_inf_json(payload)
@@ -1199,8 +1160,12 @@ class AudioProSpeaker:
             self._state.last_update_ts = _now()
 
         if not was_ready and self._state.ready:
-            logger.info("link ready speaker_ip=%s", self._speaker_ip)
-            self.initial.mark_received(f"speaker source={source} playback={status} volume={vol_pct}")
+            power = {True: "on ", False: "off "}.get(self._state.powered_on, "")
+            summary = f"speaker {power}source={source} playback={status} volume={vol_pct}"
+            if self.initial.received:
+                # A reconnect: say where things stand now. (The address is on the "connected" line.)
+                logger.info("link ready: %s", summary)
+            self.initial.mark_received(summary)
 
     def _handle_unknown(self, payload: str) -> None:
         return

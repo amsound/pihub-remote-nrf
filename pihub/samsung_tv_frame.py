@@ -26,8 +26,7 @@ _COMMAND_RETRIES = 3
 _VERIFY_DELAY_S = 0.35
 _VERIFY_POLL_INTERVAL_S = 0.5
 # Power is read when the TV announces its media renderer (SSDP), which it does
-# in the same second as every on/off. The poll is only a backstop for a missed one.
-POWER_POLL_INTERVAL_S = 60.0
+# in the same second as every on/off, and before every flow. It is never polled.
 # Let an announcement burst (a switch-on sends byebye then alive) settle into one read.
 ANNOUNCE_READ_DELAY_S = 0.5
 SSDP_RESTART_DELAY_S = 5.0
@@ -63,7 +62,6 @@ class SamsungFrameTv:
         self._input_source: str | None = None
         self._last_error = ""
         self._token_request_logged = False
-        self._poll_task: asyncio.Task | None = None
         self._ssdp_task: asyncio.Task | None = None
         self._announce_read_task: asyncio.Task | None = None
 
@@ -83,14 +81,12 @@ class SamsungFrameTv:
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=8)
             self._session = aiohttp.ClientSession(timeout=timeout)
-        if self._poll_task is None or self._poll_task.done():
-            self._poll_task = asyncio.create_task(self._poll_power(), name="frame_tv:power_poll")
         if self._ssdp_task is None or self._ssdp_task.done():
             self._ssdp_task = asyncio.create_task(self._listen_ssdp(), name="frame_tv:ssdp")
 
     async def stop(self) -> None:
-        tasks = [t for t in (self._poll_task, self._ssdp_task, self._announce_read_task) if t and not t.done()]
-        self._poll_task = self._ssdp_task = self._announce_read_task = None
+        tasks = [t for t in (self._ssdp_task, self._announce_read_task) if t and not t.done()]
+        self._ssdp_task = self._announce_read_task = None
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -138,15 +134,6 @@ class SamsungFrameTv:
             await self.refresh_presence()
         except Exception:
             logger.debug("power read after announcement failed", exc_info=True)
-
-    async def _poll_power(self) -> None:
-        """Backstop for a missed announcement. Flows re-read power before acting anyway."""
-        while True:
-            await asyncio.sleep(POWER_POLL_INTERVAL_S)
-            try:
-                await self.refresh_presence()
-            except Exception:
-                logger.debug("power poll failed", exc_info=True)
 
     def _read_token(self) -> str:
         try:
@@ -320,8 +307,8 @@ class SamsungFrameTv:
     async def refresh_presence(self, *, timeout_s: float = 2.0) -> None:
         """Read the TV's real power state (it answers even when off).
 
-        Called before every flow, on each media-renderer announcement, and by
-        the backstop poll, so a change made with the TV's own remote is picked up.
+        Called before every flow and on each media-renderer announcement, so a
+        change made with the TV's own remote is picked up.
         """
         async with self._lock:
             if not self._read_token():

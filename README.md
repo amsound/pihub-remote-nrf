@@ -148,8 +148,8 @@ For newer Samsung Frame TVs exposing IP Remote on port `1516`, set `TV_FRAME_IP`
 The backend uses Samsung IP Control G2 over HTTPS JSON-RPC and keeps to a deliberately narrow surface:
 
 * discrete `powerControl` on and off, each verified by reading the power back
-* reading the power state: at start-up, before every flow, whenever the TV announces itself on the network
-  (SSDP), and once a minute as a backstop
+* reading the power state: at start-up, before every flow, and whenever the TV announces itself on the network
+  (SSDP). It is not polled
 * `inputSourceControl`: straight after a Watch flow switches the TV on (never when the TV was already on),
   the input is read, and only if it is not HDMI1 is the TV told to switch, which is then verified by reading
   it back. The TV shows its input banner on every switch command, even to the input it is already on
