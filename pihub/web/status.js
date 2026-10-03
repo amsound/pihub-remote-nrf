@@ -101,8 +101,8 @@ function render(d) {
     : !r.paired ? "Receiver found, remote not paired"
     : `Paired${r.grabbed ? "" : ", input not exclusive"}${r.battery ? `, battery ${esc(r.battery)}` : ""}`;
   $("connections").innerHTML = `
-    <div class="conn">${ICONS.bluetooth}<span class="n">Apple TV</span><span class="dot ${dotClass(a.state)}"></span><span class="d">${atv}${drop}</span></div>
-    <div class="conn">${ICONS.remote}<span class="n">Harmony remote</span><span class="dot ${dotClass(r.state)}"></span><span class="d">${rem}</span></div>`;
+    <div class="conn"><span class="dot ${dotClass(a.state)}"></span><span class="n">Apple TV</span>${ICONS.bluetooth}<span class="d">${atv}${drop}</span></div>
+    <div class="conn"><span class="dot ${dotClass(r.state)}"></span><span class="n">Harmony remote</span>${ICONS.remote}<span class="d">${rem}</span></div>`;
 
   if (!pendingFlow) $("seg").dataset.current = d.mode || "";
   renderFooter(document.querySelector(".foot"), d);
@@ -111,7 +111,7 @@ function render(d) {
 
 // ---- Recent flows, with what triggered each ----
 async function refreshFlows() {
-  const { flows = [] } = await getJSON("/api/history/flows?limit=6");
+  const { flows = [] } = await getJSON("/api/history/flows?limit=5");
   $("flows").innerHTML = flows.length ? flows.map((f) => {
     const secs = f.duration_ms != null ? (f.duration_ms / 1000).toFixed(1) + "s" : "";
     const dot = f.result === "running" ? "" : f.result === "ok" ? "ok" : "bad";
@@ -127,6 +127,7 @@ poll(refreshFlows, 10000);
 function note(text, cls = "") {
   $("action-note").className = "note " + cls;
   $("action-note").textContent = text;
+  $("action-note").title = text;   // the full message, if the line had to be cut short
 }
 
 document.querySelectorAll("#seg button").forEach((btn) => {

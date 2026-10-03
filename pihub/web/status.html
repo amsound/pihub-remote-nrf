@@ -33,13 +33,18 @@
 .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; }
 .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }
 
-.conn { display: grid; grid-template-columns: 20px 1fr auto; gap: 2px 10px; align-items: center; }
-.conn + .conn { border-top: 1px solid var(--hair); margin-top: 12px; padding-top: 12px; }
-.conn svg { width: 20px; height: 20px; color: var(--muted); }
+/* Dot first, like the On/Off line on the device cards; the icon sits at the right edge. */
+.conn { display: grid; grid-template-columns: 10px 1fr auto; gap: 2px 10px; align-items: center; }
+/* .dev-body's own 10px gap is already above the line: 2 + 10 above, 12 below. */
+.conn + .conn { border-top: 1px solid var(--hair); margin-top: 2px; padding-top: 12px; }
+.conn .dot { width: 10px; height: 10px; }
+.conn svg { width: 18px; height: 18px; color: var(--muted); }
 .conn .n { font-weight: 600; }
 .conn .d { grid-column: 2 / -1; color: var(--muted); font-size: 12px; }
 
 .bottom { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; }
+/* A little more room under the last row than the card's usual padding. */
+.bottom .card { padding-bottom: 18px; }
 .flow { display: grid; grid-template-columns: 110px 90px 1fr auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--hair); }
 .flow:first-child { border-top: 0; }
 .flow .when, .flow .ms { color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -63,7 +68,9 @@
 .row .seg { grid-column: 2 / -1; }
 .row + .row.first-of-set { margin-top: 6px; }
 .btn.sm { padding: 6px 0; font-size: 12px; width: 100%; }
-#action-note { margin-top: 10px; min-height: 16px; }
+/* The result of the last button press sits on the heading line, so it takes no height of its own. */
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+#action-note { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 @media (max-width: 1000px) {
   .strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -110,7 +117,7 @@
       <div id="flows"></div>
     </div>
     <div class="card">
-      <h2>Control</h2>
+      <div class="card-head"><h2>Control</h2><span class="note" id="action-note"></span></div>
       <div class="rows">
         <div class="row"><span class="k">Run flow</span>
           <div class="seg" id="seg" data-current="">
@@ -127,7 +134,6 @@
         <div class="row"><span class="k">PiHub</span>
           <button class="btn sm danger" data-post="/api/restart" data-confirm="Restart PiHub?">Restart</button></div>
       </div>
-      <div class="note" id="action-note"></div>
     </div>
   </section>
   <footer class="foot"><span class="info"></span><div class="theme"></div></footer>
