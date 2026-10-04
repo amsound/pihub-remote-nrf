@@ -26,6 +26,10 @@ _TCP_HEADER = b"\x18\x96\x18\x20"  # 0x18 0x96 0x18 0x20
 
 _HTTPAPI_PATH = "/httpapi.asp"
 _HTTP_TIMEOUT_S = 2.0
+# Commands the speaker only answers once it has done the work (switching input,
+# starting a stream). Leaving network playback for HDMI has been seen to take
+# longer than the default timeout, with the switch itself succeeding.
+_HTTP_SLOW_COMMAND_TIMEOUT_S = 6.0
 SEND_TIMEOUT_S = 2.0        # fail fast if a TCP send/drain stalls
 DEFAULT_HTTP_POWEROFF_CMD = "setShutdown:0"
 HTTP_SCHEME = "https"
@@ -559,13 +563,14 @@ class AudioProSpeaker:
             return False
         try:
             await self._send(payload)
+            self._state.last_error = None      # a command that goes through clears an old failure
             return True
         except Exception as e:
-            self._state.last_error = str(e)
+            self._state.last_error = str(e) or type(e).__name__
             self._state.last_update_ts = _now()
             return False
 
-    async def _http_control(self, cmd: str) -> bool:
+    async def _http_control(self, cmd: str, *, timeout_s: float | None = None) -> bool:
         """
         HTTP control-plane sends. Use the same front-door policy as TCP:
         drop unless ready=True.
@@ -580,10 +585,13 @@ class AudioProSpeaker:
             return False
 
         try:
-            await self._http_cmd(cmd)
+            await self._http_cmd_text(cmd, timeout_s=timeout_s)
+            self._state.last_error = None      # a command that goes through clears an old failure
             return True
         except Exception as e:
-            self._state.last_error = f"httpapi failed: {e}"
+            # A timeout has no text of its own, so name the kind of failure too.
+            detail = "timed out" if isinstance(e, asyncio.TimeoutError) else (str(e) or type(e).__name__)
+            self._state.last_error = f"httpapi failed: {detail}"
             self._state.last_update_ts = _now()
             return False
 
@@ -1213,8 +1221,9 @@ class AudioProSpeaker:
         action: str,
         refresh: bool = False,
         delayed_refresh: bool = False,
+        timeout_s: float | None = None,
     ) -> None:
-        ok = await self._http_control(cmd)
+        ok = await self._http_control(cmd, timeout_s=timeout_s)
         await self._require_control_sent(ok, action=action)
 
         if refresh:
@@ -1485,7 +1494,7 @@ class AudioProSpeaker:
             raise RuntimeError("play_url_missing")
 
         cmd = f"setPlayerCmd:play:{url}"
-        await self._http_command(cmd, action="play_url", refresh=True)
+        await self._http_command(cmd, action="play_url", refresh=True, timeout_s=_HTTP_SLOW_COMMAND_TIMEOUT_S)
 
     async def set_source(self, source: str) -> None:
         src = (source or "").strip().lower()
@@ -1507,9 +1516,12 @@ class AudioProSpeaker:
             action="set_source",
             refresh=True,
             delayed_refresh=True,
+            timeout_s=_HTTP_SLOW_COMMAND_TIMEOUT_S,
         )
 
-    async def _http_cmd_text(self, cmd: str, *, target_ip: str | None = None) -> str:
+    async def _http_cmd_text(
+        self, cmd: str, *, target_ip: str | None = None, timeout_s: float | None = None
+    ) -> str:
         if not self._session:
             timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
             self._session = aiohttp.ClientSession(timeout=timeout)
@@ -1518,7 +1530,9 @@ class AudioProSpeaker:
         endpoint = f"{HTTP_SCHEME}://{ip}{_HTTPAPI_PATH}"
         params = {"command": cmd}
 
-        async with self._session.get(endpoint, params=params, ssl=False) as resp:
+        timeout = aiohttp.ClientTimeout(total=timeout_s) if timeout_s else None
+        kwargs = {"timeout": timeout} if timeout else {}
+        async with self._session.get(endpoint, params=params, ssl=False, **kwargs) as resp:
             body = await resp.text(errors="replace")
             if resp.status >= 400:
                 raise RuntimeError(f"httpapi status {resp.status}")
@@ -1534,6 +1548,3 @@ class AudioProSpeaker:
         if not isinstance(data, dict):
             raise RuntimeError(f"httpapi unexpected json for {cmd}: {data!r}")
         return data
-
-    async def _http_cmd(self, cmd: str) -> None:
-        _ = await self._http_cmd_text(cmd)
