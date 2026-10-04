@@ -181,10 +181,14 @@ For `SPEAKER_BACKEND=samsung_soundbar`. Everything is local; no SmartThings or c
   the Settings page. The Listen flow plays one of them. TuneIn stations and HLS
   playlists go through the local [restreamer](https://github.com/amsound/restreamer)
   (tick **Restream**); it must run on the same host as pihub, on port 8000.
-* **Stopping:** our own Cast radio is stopped and the Cast app closed. Anything else
-  (AirPlay) is interrupted by launching the default Cast receiver.
-* **Watch:** Cast is closed first (`leave_cast`), because while a Cast app is open the
-  soundbar ignores HDMI-CEC and won't switch to the TV.
+* **Wiring:** the TV's sound reaches the soundbar over **optical**, with no HDMI between
+  them. The soundbar has no input command: it plays the TV (D.IN) whenever nothing is
+  using its network input.
+* **Handing the soundbar to the TV** (`release_to_tv`, used by Watch, Power off and the
+  stop key): a Cast app that is open is stopped and quit, and the bar drops to D.IN.
+  AirPlay cannot be told to stop, so the default Cast receiver is opened, which takes
+  the audio from it, and then quit. With neither, nothing is sent.
+* **Source shown:** AirPlay, Wi-Fi (a Cast app is open) or Optical (neither).
 
 ---
 
@@ -351,9 +355,9 @@ Logical activity normalisation:
 
 ### Apple TV AirPlay watch signal
 
-For Audio Pro installs, PiHub can optionally listen for Apple TV AirPlay
-receiver-session activity over mDNS and emit a debounced `watch` device-state
-signal.
+PiHub can listen for Apple TV AirPlay receiver-session activity over mDNS and emit
+a debounced `watch` device-state signal. This is the only source of the watch
+signal, in every room: a TV switching on or off never triggers anything.
 
 This is intended for rooms where the Apple TV no longer wakes the display via
 CEC, and PiHub should run the `watch_signal` flow when AirPlay mirroring or
@@ -364,10 +368,8 @@ The detector uses the Apple TV AirPlay TXT `flags` value. PiHub treats
 require a playback bit, because AirPlay mirroring/video sessions may show an
 active receiver session without reporting separate playback activity.
 
-The Apple TV AirPlay detector is only loaded for `SPEAKER_BACKEND=audiopro`.
-For `SPEAKER_BACKEND=samsung_soundbar`, the TV domain remains the source of the
-automatic `watch` device-state signal and no Apple TV AirPlay mDNS checks are
-started.
+The detector runs for either speaker backend whenever `APPLE_TV_IP` is set (and
+`APPLE_TV_AIRPLAY_ENABLED` is not turned off). Without an address it is not started.
 
 ---
 
@@ -375,7 +377,7 @@ started.
 
 * **mode** = current active keymap / button behavior set
 * **flow** = named local sequence of ordered steps; some steps block, while dispatch steps send work at a specific point in the sequence and settle later before final flow completion
-* **device-state signal** = a live edge emitted by a domain (for example TV on, or speaker entering a listen-capable source/playback state)
+* **device-state signal** = a live edge emitted by a domain: the speaker entering a listen-capable source/playback state (`listen`), or the Apple TV's AirPlay session starting (`watch`). TV power is never one
 * **device-state flow** = a flow triggered from a device-state signal rather than an explicit remote intent
 * **last_trigger** = sticky record of the most recent runtime trigger source
 
@@ -423,16 +425,21 @@ Speaker stop / group handling is based on the speaker state snapshot taken at th
 
 ### Samsung soundbar flow profile
 
-When `SPEAKER_BACKEND=samsung_soundbar`, PiHub uses a CEC-friendly profile: the Apple
-TV (over BLE) and HDMI-CEC switch the TV and soundbar; PiHub never sends TV power
-commands.
+When `SPEAKER_BACKEND=samsung_soundbar`, the flows mirror the Audio Pro ones: PiHub
+powers the TV itself (a wake packet on, the websocket off) and drives the Apple TV
+over BLE. The only difference is the speaker step, where "switch to HDMI" becomes
+"hand the soundbar to the TV" (see the soundbar backend above).
 
-* `watch`: close Cast; if the TV is off, wake the Apple TV, wait for the TV (up to
-  30 s) and let ARC settle (5 s); then set the watch volume.
-* `listen`: Apple TV off (if the TV is on), set the listen volume, play the listen slot.
-* `power_off`: Apple TV off (if the TV is on); stop the soundbar if it was playing.
-* `watch_signal` / `listen_signal`: the lighter versions run when the TV comes on, or
-  AirPlay/Cast starts, by other means.
+* `watch`: hand the soundbar to the TV; if the TV is off, Apple TV on and TV on; set
+  the watch volume.
+* `listen`: if the TV is on, Apple TV home and TV off; set the listen volume; play the
+  listen slot.
+* `power_off`: if the TV is on, Apple TV home and TV off; hand the soundbar to the TV
+  if it was on a network source.
+* `listen_signal` (AirPlay or Cast started on the soundbar by other means): if the TV
+  is on, TV off and Apple TV home.
+* `watch_signal` (the Apple TV's AirPlay session): hand the soundbar to the TV; TV on
+  if it is off; set the watch volume.
 
 Every flow re-checks the TV's real state first, so "is the TV on?" is never stale.
 

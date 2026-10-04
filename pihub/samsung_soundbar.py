@@ -63,6 +63,9 @@ _PLAYLIST_CONTENT_TYPES = {
     "audio/x-scpls",
 }
 AIRPLAY_ACTIVE_BIT = 0x800
+# AirPlay cannot be told to stop. Opening the Cast app takes the audio from it;
+# this is how long the app is left open before it is quit again.
+AIRPLAY_TAKEOVER_SETTLE_S = 1.0
 
 # Buffering is part of playing a live stream; reporting it separately would make
 # automations flap every time the receiver tops up its buffer.
@@ -236,7 +239,6 @@ class SamsungSoundbar:
         *,
         speaker_ip: str,
         command_interval_s: float = 0.10,
-        tv: Any = None,
         state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._speaker_ip = (speaker_ip or "").strip()
@@ -273,7 +275,6 @@ class SamsungSoundbar:
         self._cast_connected_logged = False
         self._cast_ready_logged = False
 
-        self._tv = tv
         self._state_change_callback = state_change_callback
         self.initial = InitialStatus(logger)
         # AirPlay is sensed separately (the soundbar's own mDNS record), so it has its own first reading.
@@ -959,18 +960,16 @@ class SamsungSoundbar:
         text = str(value).strip()
         return text or None
 
-    def _derive_source(self, *, airplay_active: bool, cast_app_id: str | None) -> str | None:
+    @staticmethod
+    def _derive_source(*, airplay_active: bool, cast_app_id: str | None) -> str:
         if airplay_active:
             return "airplay"
 
         if cast_app_id:
             return "wifi"
 
-        # Optional weak hint from TV presence only.
-        if self._tv is not None and self._tv.snapshot().presence_on is True:
-            return "hdmi"
-
-        return None
+        # Nothing on the network input: the bar is on the TV's optical feed (D.IN).
+        return "optical"
 
     @staticmethod
     def _derive_playback_status(
@@ -1111,43 +1110,25 @@ class SamsungSoundbar:
     async def previous_track(self) -> None:
         raise RuntimeError("unsupported_on_backend:previous_track")
 
-    async def stop_playback(self) -> None:
-        """Stop whatever the soundbar is playing over the network.
+    async def release_to_tv(self) -> None:
+        """Give the soundbar back to the TV (its optical input, D.IN).
 
-        Our own radio runs inside the Default Media Receiver, so it is stopped
-        through its media session and the app is then closed, which leaves the
-        soundbar looking switched off. Relaunching the app does not work here:
-        the receiver just keeps the running session.
-
-        For anything else (AirPlay), launching the Default Media Receiver takes
-        audio focus, which is what stops it.
+        The bar plays the TV whenever nothing is using its network input, and
+        there is no command to select an input. So:
+          - a Cast app is open: stop it and quit it, and the bar drops to D.IN;
+          - AirPlay is playing: it cannot be told to stop, but opening the Cast
+            app takes the audio from it, and quitting that app drops to D.IN;
+          - neither: it is already on the TV, and nothing is sent.
         """
-        def _cmd(cast) -> None:
-            status = self._media_status(cast)
-            cast_media_active = (
-                cast.app_id == DEFAULT_MEDIA_RECEIVER_APP_ID
-                and status is not None
-                and status.player_state not in (None, "UNKNOWN", "IDLE")
-            )
+        airplay = self._state.sound_from == "airplay"
 
-            if cast_media_active:
-                cast.media_controller.stop()
+        def _cmd(cast) -> None:
+            if airplay:
+                # force_launch: an idle app left open would not take the audio back.
+                cast.start_app(DEFAULT_MEDIA_RECEIVER_APP_ID, force_launch=bool(cast.app_id))
+                time.sleep(AIRPLAY_TAKEOVER_SETTLE_S)
                 cast.quit_app()
                 return
-
-            cast.start_app(DEFAULT_MEDIA_RECEIVER_APP_ID)
-
-        await self._cast_command(_cmd)
-
-    async def leave_cast(self) -> None:
-        """Stop Cast playback and close the Cast app, so the TV can take the soundbar.
-
-        While a Cast app is open the soundbar stays on its network input and
-        ignores HDMI-CEC, so the radio keeps playing over the TV. Unlike
-        stop_playback this never launches an app: launching one takes audio
-        focus, which is the opposite of what the TV needs.
-        """
-        def _cmd(cast) -> None:
             if not cast.app_id:
                 return
             status = self._media_status(cast)
@@ -1156,6 +1137,14 @@ class SamsungSoundbar:
             cast.quit_app()
 
         await self._cast_command(_cmd)
+
+    async def stop_playback(self) -> None:
+        """Stop whatever the soundbar is playing over the network (Cast or AirPlay).
+
+        Ending network playback and handing the bar back to the TV are the same
+        thing on this soundbar.
+        """
+        await self.release_to_tv()
 
     async def fast_forward(self) -> None:
         raise RuntimeError("unsupported_on_backend:fast_forward")

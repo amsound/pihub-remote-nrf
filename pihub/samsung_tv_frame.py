@@ -12,7 +12,7 @@ import itertools
 import logging
 import os
 import time
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Optional
 
 import aiohttp
 
@@ -45,14 +45,12 @@ class SamsungFrameTv:
         *,
         tv_ip: str,
         token_file: str,
-        state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self.tv_ip = tv_ip
         self.token_file = token_file
         self._session: Optional[aiohttp.ClientSession] = None
         self._rpc_ids = itertools.count(1)
         self._lock = asyncio.Lock()
-        self._state_change_callback = state_change_callback
         self.initial = InitialStatus(logger)
 
         self._presence_cached: bool | None = None
@@ -70,12 +68,6 @@ class SamsungFrameTv:
             tv_ip,
             "true" if self._read_token() else "false",
         )
-
-    def set_state_change_callback(
-        self, callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None
-    ) -> None:
-        """Where watch/listen device-state signals go (the runtime)."""
-        self._state_change_callback = callback
 
     async def start(self) -> None:
         if self._session is None or self._session.closed:
@@ -162,7 +154,6 @@ class SamsungFrameTv:
 
     def _commit_power(self, power: str | None, *, source: str) -> None:
         power = (power or "").strip() or None
-        previous_on = self._presence_cached is True
         self._power = power
 
         if power == "powerOn":
@@ -172,9 +163,6 @@ class SamsungFrameTv:
         else:
             next_on = self._presence_cached
 
-        # A first reading during start-up is where things stand, not a change: it must
-        # not send a watch signal. (A device that only turns up later still does.)
-        first_reading = not self.initial.settled
         if next_on is not None:
             self.initial.mark_received(f"power={'on' if next_on else 'off'} via={source}")
 
@@ -182,35 +170,6 @@ class SamsungFrameTv:
             self._presence_cached = next_on
             self._presence_source = source
             self._presence_changed_at = time.time()
-
-            if not previous_on and next_on is True and not first_reading:
-                self._emit_state_change(
-                    "watch",
-                    {
-                        "domain": "tv",
-                        "presence_source": source,
-                    },
-                )
-
-    def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:
-        cb = self._state_change_callback
-        if cb is None:
-            return
-
-        async def _run() -> None:
-            await cb(name, payload)
-
-        task = asyncio.create_task(_run(), name=f"frame_tv_state_change:{name}")
-
-        def _done(t: asyncio.Task) -> None:
-            try:
-                t.result()
-            except asyncio.CancelledError:
-                logger.debug("state change callback cancelled name=%s", name)
-            except Exception:
-                logger.exception("state change callback failed name=%s", name)
-
-        task.add_done_callback(_done)
 
     async def _rpc(
         self,

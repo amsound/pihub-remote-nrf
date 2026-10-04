@@ -197,7 +197,6 @@ async def main() -> None:
             if cfg.speaker_ip:
                 speaker = SamsungSoundbar(
                     speaker_ip=cfg.speaker_ip,
-                    tv=tv,
                 )
         else:
             raise ValueError(f"unsupported SPEAKER_BACKEND={cfg.speaker_backend!r}")
@@ -208,11 +207,8 @@ async def main() -> None:
 
     apple_tv_airplay: AppleTvAirPlay | None = None
 
-    if (
-        cfg.speaker_backend == "audiopro"
-        and cfg.apple_tv_airplay_enabled
-        and cfg.apple_tv_ip
-    ):
+    # The Apple TV's AirPlay session is the only source of the watch signal, in every room.
+    if cfg.apple_tv_airplay_enabled and cfg.apple_tv_ip:
         apple_tv_airplay = AppleTvAirPlay(
             apple_tv_ip=cfg.apple_tv_ip,
             debounce_s=cfg.apple_tv_airplay_debounce_s,
@@ -244,16 +240,8 @@ async def main() -> None:
                 payload,
             )
 
-    tv_emits_watch_signal = cfg.speaker_backend == "samsung_soundbar"
-
-    if tv is not None and tv_emits_watch_signal:
-        tv.set_state_change_callback(_on_domain_state_change)
-    else:
-        logger.debug(
-            "tv state-change callback disabled for speaker_backend=%s",
-            cfg.speaker_backend,
-        )
-
+    # The TV sends no signals: its power state is context only, and no power edge
+    # triggers anything. Listen comes from the speaker, watch from the Apple TV.
     if speaker is not None:
         speaker.set_state_change_callback(_on_domain_state_change)
 

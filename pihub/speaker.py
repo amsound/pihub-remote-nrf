@@ -2,7 +2,7 @@
 
 Both backends (AudioProSpeaker, SamsungSoundbar) implement these. A backend that
 can't do something raises RuntimeError("unsupported_on_backend:<action>").
-Backend-specific extras (Audio Pro multiroom, soundbar leave_cast, play_url's
+Backend-specific extras (Audio Pro multiroom, soundbar release_to_tv, play_url's
 restream option) are called only by that backend's flows.
 """
 

@@ -36,11 +36,6 @@ TV_POWER_TIMEOUT_S = 8.0
 MULTIROOM_SETTLE_S = 1.0
 _FLOW_DEFAULTS = SettingsData()
 
-# Samsung soundbar: after the TV comes on, HDMI-CEC/ARC takes a few seconds to
-# hand the soundbar over; a volume set before then is overridden by the TV.
-SOUNDBAR_TV_WAKE_TIMEOUT_S = 30.0
-SOUNDBAR_ARC_SETTLE_S = 5.0
-
 
 class FlowStepFailures(RuntimeError):
     def __init__(self, *, sequence_name: str, failures: list[dict[str, str]]) -> None:
@@ -51,13 +46,6 @@ class FlowStepFailures(RuntimeError):
             for item in self.failures
         )
         super().__init__(f"flow_failed: {detail}")
-
-
-class FlowWaitTimeout(RuntimeError):
-    def __init__(self, *, kind: str, timeout_s: float) -> None:
-        self.kind = kind
-        self.timeout_s = timeout_s
-        super().__init__(f"{kind}_timeout")
 
 
 # Conditions a step can depend on, evaluated against the flow's start snapshot.
@@ -289,19 +277,8 @@ class FlowContext:
     async def speaker_leave_group(self) -> None:
         await self._require_speaker().leave_native_multiroom_if_needed()
 
-    async def leave_cast(self) -> None:
-        await self._require_speaker().leave_cast()
-
-    async def wait_tv_on(self, timeout_s: float) -> None:
-        if self._tv is None:
-            logger.debug("skipping wait_tv_on: no tv domain")
-            return
-        deadline = asyncio.get_running_loop().time() + timeout_s
-        while asyncio.get_running_loop().time() < deadline:
-            if self._tv.snapshot().presence_on is True:
-                return
-            await asyncio.sleep(0.2)
-        raise FlowWaitTimeout(kind="tv_on", timeout_s=timeout_s)
+    async def speaker_to_tv(self) -> None:
+        await self._require_speaker().release_to_tv()
 
     def _volume(self, which: str) -> int:
         watch = which == "watch"
@@ -379,13 +356,18 @@ async def _audiopro_power_off(ctx: FlowContext) -> None:
 
 
 # =====================================================================
-# Samsung soundbar: the Apple TV and HDMI-CEC switch the TV and soundbar;
-# PiHub never sends TV power commands.
+# Samsung soundbar on the TV's optical output. PiHub powers the TV itself (a
+# wake packet on, the websocket off) and drives the Apple TV over Bluetooth,
+# exactly as in the Audio Pro rooms. The bar has no input command: it plays the
+# TV whenever nothing holds its network input, so "to the TV" means ending
+# Cast or AirPlay (see SamsungSoundbar.release_to_tv).
 # =====================================================================
 
 async def _soundbar_listen(ctx: FlowContext) -> None:
-    await ctx.step("apple_tv_power_off", "ble", "power_off", ctx.apple_tv_off,
+    await ctx.step("apple_tv_return_home", "ble", "return_home", ctx.apple_tv_home,
                    when="tv_is_on", background=True)
+    await ctx.step("tv_power_off", "tv", "power_off", ctx.tv_off,
+                   when="tv_is_on", timeout_s=TV_POWER_TIMEOUT_S)
     await ctx.step("speaker_listen_volume", "speaker", "set_volume", ctx.listen_volume,
                    background=True)
     await ctx.step("speaker_play_listen_target", "speaker", "play_listen_target",
@@ -393,35 +375,37 @@ async def _soundbar_listen(ctx: FlowContext) -> None:
 
 
 async def _soundbar_watch(ctx: FlowContext) -> None:
-    # Stop the radio first: while Cast holds the soundbar, HDMI-CEC cannot
-    # switch it to the TV, and the volume change below would land on the music.
-    await ctx.step("speaker_leave_cast", "speaker", "leave_cast", ctx.leave_cast)
+    # First, so the TV's sound is not left behind the radio (or an AirPlay stream).
+    await ctx.step("speaker_to_tv", "speaker", "release_to_tv", ctx.speaker_to_tv)
     await ctx.step("apple_tv_power_on", "ble", "power_on", ctx.apple_tv_on,
-                   when="tv_is_off")
-    await ctx.step("wait_tv_on", "wait", "tv_on",
-                   lambda: ctx.wait_tv_on(SOUNDBAR_TV_WAKE_TIMEOUT_S), when="tv_is_off")
-    await ctx.step("arc_settle", "system", "sleep",
-                   lambda: asyncio.sleep(SOUNDBAR_ARC_SETTLE_S), when="tv_is_off")
+                   when="tv_is_off", background=True)
+    await ctx.step("tv_power_on", "tv", "power_on", ctx.tv_on,
+                   when="tv_is_off", timeout_s=TV_POWER_TIMEOUT_S)
     await ctx.step("speaker_watch_volume", "speaker", "set_volume", ctx.watch_volume,
                    background=True)
 
 
 async def _soundbar_listen_signal(ctx: FlowContext) -> None:
-    await ctx.step("apple_tv_power_off", "ble", "power_off", ctx.apple_tv_off,
+    await ctx.step("tv_power_off", "tv", "power_off", ctx.tv_off,
+                   when="tv_is_on", timeout_s=TV_POWER_TIMEOUT_S, background=True)
+    await ctx.step("apple_tv_return_home", "ble", "return_home", ctx.apple_tv_home,
                    when="tv_is_on")
 
 
 async def _soundbar_watch_signal(ctx: FlowContext) -> None:
-    # The TV came on by other means: hand it the soundbar too.
-    await ctx.step("speaker_leave_cast", "speaker", "leave_cast", ctx.leave_cast)
-    await ctx.step("arc_settle", "system", "sleep", lambda: asyncio.sleep(SOUNDBAR_ARC_SETTLE_S))
-    await ctx.step("speaker_watch_volume", "speaker", "set_volume", ctx.watch_volume)
+    await ctx.step("speaker_to_tv", "speaker", "release_to_tv", ctx.speaker_to_tv)
+    await ctx.step("tv_power_on", "tv", "power_on", ctx.tv_on,
+                   when="tv_is_off", timeout_s=TV_POWER_TIMEOUT_S)
+    await ctx.step("speaker_watch_volume", "speaker", "set_volume", ctx.watch_volume,
+                   background=True)
 
 
 async def _soundbar_power_off(ctx: FlowContext) -> None:
-    await ctx.step("apple_tv_power_off", "ble", "power_off", ctx.apple_tv_off,
-                   when="tv_is_on")
-    await ctx.step("speaker_stop", "speaker", "stop_playback", ctx.speaker_stop,
+    await ctx.step("apple_tv_return_home", "ble", "return_home", ctx.apple_tv_home,
+                   when="tv_is_on", background=True)
+    await ctx.step("tv_power_off", "tv", "power_off", ctx.tv_off,
+                   when="tv_is_on", timeout_s=TV_POWER_TIMEOUT_S)
+    await ctx.step("speaker_to_tv", "speaker", "release_to_tv", ctx.speaker_to_tv,
                    when="speaker_is_on_listen_source")
 
 

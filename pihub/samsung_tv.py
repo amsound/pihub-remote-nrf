@@ -12,7 +12,7 @@ import re
 import socket
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Iterable, Optional
+from typing import Any, Iterable, Optional
 from urllib.parse import urlparse
 
 import aiohttp
@@ -22,7 +22,6 @@ from .tv import BACKEND_WS, TvSnapshot
 
 logger = logging.getLogger(__name__)
 
-TV_ON_SIGNAL_DEBOUNCE_S = 8.0
 # During a power-on the TV's own "alive" announcement is the preferred sign that it
 # is up (about a second after it wakes). Only if none has arrived is the TV asked
 # directly, and only at these moments after the attempt began: once in case the
@@ -338,7 +337,6 @@ class TvController:
         tv_mac: str,
         token_file: str,
         name: str,
-        state_change_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self.tv_ip = tv_ip
         self.tv_mac = tv_mac
@@ -376,17 +374,9 @@ class TvController:
         self._power_on_key_lock = asyncio.Lock()
         self._power_on_attempt_id = 0
 
-        self._state_change_callback = state_change_callback
         self.initial = InitialStatus(logger)
 
-        self._pending_watch_signal_task: Optional[asyncio.Task] = None
         self._ws_warm_task: Optional[asyncio.Task] = None
-
-    def set_state_change_callback(
-        self, callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None
-    ) -> None:
-        """Where watch/listen device-state signals go (the runtime)."""
-        self._state_change_callback = callback
 
     async def start(self) -> None:
         if self._session is None or self._session.closed:
@@ -413,8 +403,6 @@ class TvController:
             logger.debug("tv websocket warm-up failed", exc_info=True)
 
     async def stop(self) -> None:
-        self._cancel_pending_watch_signal()
-
         task, self._ws_warm_task = self._ws_warm_task, None
         if task and not task.done():
             task.cancel()
@@ -426,13 +414,12 @@ class TvController:
         if session is not None and not session.closed:
             await session.close()
 
-    # Presence cache is the local truth used for watch/listen logic and health.
+    # Presence cache is the local truth used by flows, start-up and health. It is
+    # context only: a change of power state never triggers anything by itself.
     # Updating presence here must not implicitly tear down the websocket control
     # channel. Presence and websocket usability are related but not identical.
 
     def _commit_presence(self, on: bool, *, source: str) -> bool:
-        prev_on = self._presence_cached is True
-
         # Keep the event aligned even if the cached value did not change.
         # This matters when another task starts waiting after presence is already true.
         if self._presence_cached is on:
@@ -444,32 +431,15 @@ class TvController:
 
         self._presence_cached = on
         self._presence_source = source
-        # A first reading during start-up is where things stand, not a change: it must
-        # not send a watch signal. (A device that only turns up later still does.)
-        first_reading = not self.initial.settled
         token = "" if self.ws.state.token_present else " token=missing"
         self.initial.mark_received(f"power={'on' if on else 'off'} via={source}{token}")
         self._presence_changed_at = time.time()
 
-        # Raw presence truth is immediate. The watch/listen mode promotion can still
-        # be debounced below, but power_on() should stop instantly on true presence.
+        # power_on() stops the instant presence turns true.
         if on:
             self._presence_on_event.set()
         else:
             self._presence_on_event.clear()
-
-        curr_on = self._presence_cached is True
-
-        # Passive TV-on promotions are debounced before emitting a watch signal.
-        # Raw presence remains immediate for health/control truth; only the
-        # device-state signal is delayed/cancelled.
-        if not prev_on and curr_on and not first_reading:
-            self._schedule_watch_signal(source=source)
-
-        # If TV falls back off before the debounce completes, cancel the pending
-        # watch signal so spurious SSDP "on" splats do not promote runtime mode.
-        if prev_on and not curr_on:
-            self._cancel_pending_watch_signal()
 
         return True
 
@@ -635,75 +605,6 @@ class TvController:
             token_present=st.token_present,
             last_error=st.last_error,
         )
-
-    def _cancel_pending_watch_signal(self) -> None:
-        task, self._pending_watch_signal_task = self._pending_watch_signal_task, None
-        if task and not task.done():
-            task.cancel()
-
-    async def _emit_watch_signal_after_delay(self, *, source: str, delay_s: float) -> None:
-        try:
-            await asyncio.sleep(delay_s)
-
-            # Only emit if TV is still logically on after the debounce window.
-            if self._presence_cached is not True:
-                logger.debug(
-                    "tv watch signal cancelled after debounce source=%s reason=presence_not_on",
-                    source,
-                )
-                return
-
-            self._emit_state_change(
-                "watch",
-                {
-                    "domain": "tv",
-                    "presence_source": source,
-                },
-            )
-            logger.debug(
-                "tv watch signal emitted after debounce source=%s delay_s=%.1f",
-                source,
-                delay_s,
-            )
-        except asyncio.CancelledError:
-            logger.debug("tv watch signal debounce cancelled source=%s", source)
-            raise
-        finally:
-            if self._pending_watch_signal_task is asyncio.current_task():
-                self._pending_watch_signal_task = None
-
-    def _schedule_watch_signal(self, *, source: str) -> None:
-        self._cancel_pending_watch_signal()
-        self._pending_watch_signal_task = asyncio.create_task(
-            self._emit_watch_signal_after_delay(
-                source=source,
-                delay_s=TV_ON_SIGNAL_DEBOUNCE_S,
-            ),
-            name="tv:watch_signal_debounce",
-        )
-
-    def _spawn_state_change_callback(self, name: str, payload: dict[str, Any]) -> None:
-        cb = self._state_change_callback
-        if cb is None:
-            return
-
-        task = asyncio.create_task(
-            cb(name, payload),
-            name=f"tv_state_change:{name}",
-        )
-
-        def _done(t: asyncio.Task) -> None:
-            try:
-                t.result()
-            except asyncio.CancelledError:
-                logger.debug("tv state change callback cancelled name=%s", name)
-            except Exception:
-                logger.exception("tv state change callback failed name=%s", name)
-
-        task.add_done_callback(_done)
-
-    def _emit_state_change(self, name: str, payload: dict[str, Any]) -> None:
-        self._spawn_state_change_callback(name, payload)
 
     async def _wait_for_presence_true(self, *, timeout_s: float) -> bool:
         if self._presence_cached is True:
