@@ -127,6 +127,10 @@ class LoopWatchdog:
         self._task = asyncio.create_task(self._ticker(), name="watchdog:tick")
         self._thread = threading.Thread(target=self._watch, name="watchdog", daemon=True)
         self._thread.start()
+        logger.info(
+            "started: logs hold-ups over %d ms, restarts pihub after %d s stuck (report in %s)",
+            SLOW_S * 1000, RESTART_AFTER_S, self._path,
+        )
 
     async def stop(self) -> None:
         """Stand down, so a slow shutdown is not taken for a stall."""
