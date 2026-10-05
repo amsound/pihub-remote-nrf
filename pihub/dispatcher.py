@@ -28,6 +28,10 @@ _REPEAT_KEYS = {"rem_vol_up", "rem_vol_down"}
 # Pending device actions per domain before new presses are dropped.
 DOMAIN_QUEUE_MAX = 4
 
+# Safety net: every device action has its own, shorter timeouts. One that still
+# has not finished after this is abandoned so the keys behind it are not stuck.
+DOMAIN_JOB_TIMEOUT_S = 30.0
+
 _METHOD_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
 _DENY_CALLS = {
     # lifecycle / internal methods that should never be callable from keymap
@@ -313,7 +317,11 @@ class Dispatcher:
         while True:
             job = await queue.get()
             try:
-                await job()
+                await asyncio.wait_for(job(), DOMAIN_JOB_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                logger.error("%s action abandoned: not finished after %d s", domain, DOMAIN_JOB_TIMEOUT_S)
+                if domain == "speaker":
+                    self.last_key_error = {"reason": "speaker_action_failed", "action": None, "key": None, "at": time.time()}
             except Exception:
                 logger.exception("%s action failed", domain)
             finally:

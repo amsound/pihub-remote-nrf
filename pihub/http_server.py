@@ -179,7 +179,10 @@ class HttpServer:
             return web.json_response({"ok": False, "error": "json body required"}, status=400)
 
         try:
-            saved = self._settings.save_from_payload(payload, speaker_backend=self._speaker_backend)
+            # In a thread: it writes the file, and a slow SD card must not hold up key presses.
+            saved = await asyncio.to_thread(
+                self._settings.save_from_payload, payload, speaker_backend=self._speaker_backend
+            )
         except Exception as exc:
             return web.json_response({"ok": False, "error": str(exc)}, status=400)
         return web.json_response({"ok": True, "settings": saved})

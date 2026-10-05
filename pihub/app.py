@@ -36,6 +36,7 @@ from .speaker import SpeakerLike
 from .settings import SettingsStore
 from .history import HistoryStore
 from .status import build_date
+from .watchdog import LoopWatchdog, report_previous_stall
 
 
 def _debug_enabled() -> bool:
@@ -68,6 +69,11 @@ async def main() -> None:
     history.load()
 
     cleanup_hooks = []
+
+    # First, so a start-up that hangs is caught too. Stopped first on the way out.
+    report_previous_stall(history)
+    watchdog = LoopWatchdog(history)
+    await watchdog.start()
 
     tv: Any | None = None
     tv_discovery_tasks: list[asyncio.Task] = []
@@ -302,6 +308,7 @@ async def main() -> None:
 
     finally:
         shutdown_event.set()
+        await watchdog.stop()
 
         for _name, stopper in reversed(cleanup_hooks):
             with contextlib.suppress(asyncio.CancelledError, Exception):

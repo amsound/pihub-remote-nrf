@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from .flows import FlowRunner, FlowStepFailures
@@ -41,6 +42,8 @@ class RuntimeEngine:
         self._tv = tv
         self._speaker = speaker
         self._mode_path = mode_path
+        # One thread, so saves land in the order they were made.
+        self._mode_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mode-writer")
         self._mode = FALLBACK_MODE
         # Set once a flow runs or a mode is set after start-up. From then on the
         # user's intent stands and start-up must not second-guess it.
@@ -143,6 +146,7 @@ class RuntimeEngine:
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        await asyncio.to_thread(self._mode_writer.shutdown)   # let the last save land
 
     def _valid_modes(self) -> set[str]:
         fn = getattr(self._dispatcher, "available_modes", None)
@@ -163,14 +167,20 @@ class RuntimeEngine:
     def _remember(self) -> None:
         """Save the mode so the next start restores it.
 
-        Written in place: it is a few dozen bytes, only on a mode change, and
-        doing it here keeps saves in order.
+        Written by the mode-writer thread: a slow SD card must not hold up key presses.
         """
+        text = json.dumps({"mode": self._mode, "last_flow": self._last_flow}) + "\n"
+        try:
+            self._mode_writer.submit(self._write_mode, text)
+        except RuntimeError:   # shutting down
+            self._write_mode(text)
+
+    def _write_mode(self, text: str) -> None:
         try:
             os.makedirs(os.path.dirname(self._mode_path) or ".", exist_ok=True)
             tmp = f"{self._mode_path}.tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                f.write(json.dumps({"mode": self._mode, "last_flow": self._last_flow}) + "\n")
+                f.write(text)
             os.replace(tmp, self._mode_path)
             self._remember_failed = False
         except OSError as exc:
