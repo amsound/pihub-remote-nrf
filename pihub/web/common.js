@@ -31,7 +31,8 @@ export const MODE = { watch: "Watch", listen: "Listen", power_off: "Off" };
 // Flow names as shown: the automatic variants read the same, the trigger says "Automatic".
 export const FLOW = { ...MODE, watch_signal: "Watch", listen_signal: "Listen" };
 
-// A change time (Unix seconds) as a clock time: "10:28", "yesterday 22:14", "28 Sep 10:28".
+// A change time (Unix seconds) as a short clock time: "10:28" today, "Sun 22:14" within
+// the last week, "28/9 10:28" before that. Kept short so it fits a card heading and a phone.
 export function clock(ts) {
   if (ts == null) return "";
   const d = new Date(ts * 1000);
@@ -40,8 +41,8 @@ export function clock(ts) {
   const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diffDays = Math.round((day(now) - day(d)) / 86400000);
   if (diffDays === 0) return hm;
-  if (diffDays === 1) return `yesterday ${hm}`;
-  return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${hm}`;
+  if (diffDays >= 1 && diffDays <= 6) return `${d.toLocaleDateString([], { weekday: "short" })} ${hm}`;
+  return `${d.getDate()}/${d.getMonth() + 1} ${hm}`;
 }
 
 // Uptime-style durations: "52d 7h", "2h 25m", "14m".

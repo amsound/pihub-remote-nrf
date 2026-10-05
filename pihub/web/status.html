@@ -13,8 +13,9 @@
 /* Six equal columns with the same gap as the three cards below: two boxes sit exactly over one card. */
 .strip { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
 .strip .card { padding: 12px 16px; }
-.label { display: flex; justify-content: space-between; gap: 8px; }
-.label .t { text-transform: none; letter-spacing: 0; font-weight: 500; }
+/* One line always: a card must not change height when its time gets longer. */
+.label { display: flex; justify-content: space-between; gap: 8px; white-space: nowrap; }
+.label .t { text-transform: none; letter-spacing: 0; font-weight: 500; flex: none; }
 .big { font-size: 17px; font-weight: 600; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .main { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
@@ -78,7 +79,8 @@
 }
 @media (max-width: 760px) {
   .strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .flow { grid-template-columns: 44px 56px minmax(0, 1fr) auto; }
+  .flow { grid-template-columns: 84px 56px minmax(0, 1fr) auto; }
+  .flow .when { white-space: nowrap; }
   .flow .muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
 </style>
@@ -95,7 +97,7 @@
 
   <section class="strip">
     <div class="card"><div class="label">Mode</div><div class="big" id="mode"></div></div>
-    <div class="card"><div class="label">Last trigger<span class="t" id="trigger-at"></span></div><div class="big" id="trigger"></div></div>
+    <div class="card"><div class="label">Trigger<span class="t" id="trigger-at"></span></div><div class="big" id="trigger"></div></div>
     <div class="card"><div class="label">CPU</div><div class="big" id="cpu"></div></div>
     <div class="card"><div class="label">Memory</div><div class="big" id="mem"></div></div>
     <div class="card"><div class="label">Pi uptime</div><div class="big" id="up"></div></div>
