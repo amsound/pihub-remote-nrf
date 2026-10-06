@@ -221,7 +221,6 @@ class SamsungSoundbarState:
     sound_from: str | None = None
     listen_active: bool = False
 
-    friendly_name: str | None = None
     cast_app_id: str | None = None
     # Receiver media state: PLAYING / BUFFERING / PAUSED / IDLE, or None.
     cast_player_state: str | None = None
@@ -259,7 +258,6 @@ class SamsungSoundbar:
 
         self._cast = None
         self._cast_uuid = None
-        self._cast_friendly_name = None
         self._cast_status_listener: _CastStatusListener | None = None
 
         self._airplay_zc: Zeroconf | None = None
@@ -383,20 +381,14 @@ class SamsungSoundbar:
         }
 
     def _note_refresh_success(self) -> None:
-        if not self._cast_ready_logged:
-            logger.info("link ready speaker_ip=%s", self._speaker_ip)
-            self._cast_ready_logged = True
         st = self._state
         volume = "none" if st.volume is None else round(st.volume * 100)
-        self.initial.mark_received(
-            f"source={st.source or 'none'} playback={st.playback_status or 'none'} volume={volume}"
-        )
-
-        if self._availability_logged_down:
-            logger.info(
-                "link restored speaker_ip=%s",
-                self._speaker_ip,
-            )
+        summary = f"source={st.source or 'none'} playback={st.playback_status or 'none'} volume={volume}"
+        if self.initial.received and (not self._cast_ready_logged or self._availability_logged_down):
+            # A reconnect: say where things stand now. (The address is on the "connected" line.)
+            logger.info("link ready: %s", summary)
+        self._cast_ready_logged = True
+        self.initial.mark_received(summary)
 
         self._availability_logged_down = False
         self._last_failure_key = None
@@ -474,11 +466,7 @@ class SamsungSoundbar:
             cast.register_handler(_CastMediaErrorTap())
 
         if not self._cast_connected_logged:
-            logger.info(
-                "connected speaker_ip=%s friendly_name=%s",
-                self._speaker_ip,
-                cast.name or "unknown",
-            )
+            logger.info("connected speaker_ip=%s port=%s", self._speaker_ip, CAST_PORT)
             self._cast_connected_logged = True
 
     async def _disconnect_cast(self) -> None:
@@ -511,7 +499,7 @@ class SamsungSoundbar:
             services={HostServiceInfo(self._speaker_ip, CAST_PORT)},
             uuid=self._cast_uuid,
             model_name=None,
-            friendly_name=self._cast_friendly_name or self._state.airplay_device,
+            friendly_name=self._state.airplay_device,
             host=self._speaker_ip,
             port=CAST_PORT,
             cast_type=CAST_TYPE_AUDIO,
@@ -562,7 +550,6 @@ class SamsungSoundbar:
     def _cast_status(cast: pychromecast.Chromecast | None, status: Any) -> dict[str, Any]:
         """What we track from a Cast receiver status (None before the first one arrives)."""
         return {
-            "friendly_name": cast.name if cast is not None else None,
             "app_id": cast.app_id if cast is not None else None,
             "volume": status.volume_level if status is not None else None,
             "muted": status.volume_muted if status is not None else None,
@@ -694,12 +681,12 @@ class SamsungSoundbar:
         )
         if flags is not None:
             self.airplay_initial.mark_received(
-                f"soundbar airplay {'session active' if flags & AIRPLAY_ACTIVE_BIT else 'idle'}"
+                f"airplay {'session active' if flags & AIRPLAY_ACTIVE_BIT else 'idle'}"
             )
 
     async def _airplay_initial_deadline(self) -> None:
         await asyncio.sleep(AIRPLAY_INITIAL_WAIT_S)
-        self.airplay_initial.mark_failed(f"soundbar not seen on mDNS in {AIRPLAY_INITIAL_WAIT_S:g}s")
+        self.airplay_initial.mark_failed(f"airplay: not seen on mDNS in {AIRPLAY_INITIAL_WAIT_S:g}s")
 
     def _handle_airplay_removed(self, raw_name: str) -> None:
         if raw_name != self._airplay_service_raw_name:
@@ -840,7 +827,6 @@ class SamsungSoundbar:
         old_listen = bool(self._state.listen_active)
 
         app_id = self._norm_str(cast_status.get("app_id"))
-        friendly_name = self._norm_str(cast_status.get("friendly_name"))
 
         volume = cast_status.get("volume")
         if isinstance(volume, (int, float)):
@@ -859,9 +845,6 @@ class SamsungSoundbar:
             # matching a stop against other events.
             logger.info("cast app changed old_app=%s new_app=%s", self._state.cast_app_id, app_id)
 
-        if friendly_name:
-            self._cast_friendly_name = friendly_name
-
         if self._cast is not None and self._cast.uuid is not None:
             self._cast_uuid = self._cast.uuid
 
@@ -870,7 +853,6 @@ class SamsungSoundbar:
             connected=True,
             ready=True,
             last_error=None,
-            friendly_name=friendly_name,
             cast_app_id=app_id,
             cast_player_state=player_state,
             volume=volume_norm,
