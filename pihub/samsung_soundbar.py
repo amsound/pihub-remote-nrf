@@ -75,6 +75,9 @@ HTTP_TIMEOUT_S = 3.0
 AIRPLAY_SERVICE_TYPE = "_airplay._tcp.local."
 AIRPLAY_MDNS_RESOLVE_TIMEOUT_MS = 2000
 AIRPLAY_INITIAL_WAIT_S = 5.0
+# With a Cast app open, how long to wait for the soundbar to say what it is playing
+# before admitting the first reading has not come.
+MEDIA_STATUS_WAIT_S = 3.0
 
 VOLUME_STEP = 0.01
 CAST_PORT = 8009
@@ -272,6 +275,9 @@ class SamsungSoundbar:
 
         self._cast_connected_logged = False
         self._cast_ready_logged = False
+        self._status_line_due = False
+        self._media_status_seen = False   # on this connection
+        self._status_wait_task: asyncio.Task | None = None
 
         self._state_change_callback = state_change_callback
         self.initial = InitialStatus(logger)
@@ -350,6 +356,9 @@ class SamsungSoundbar:
         if self._airplay_initial_task is not None:
             self._airplay_initial_task.cancel()
             self._airplay_initial_task = None
+        if self._status_wait_task is not None:
+            self._status_wait_task.cancel()
+            self._status_wait_task = None
 
         if self._task:
             self._task.cancel()
@@ -381,17 +390,45 @@ class SamsungSoundbar:
         }
 
     def _note_refresh_success(self) -> None:
-        st = self._state
-        volume = "none" if st.volume is None else round(st.volume * 100)
-        summary = f"source={st.source or 'none'} playback={st.playback_status or 'none'} volume={volume}"
-        if self.initial.received and (not self._cast_ready_logged or self._availability_logged_down):
-            # A reconnect: say where things stand now. (The address is on the "connected" line.)
-            logger.info("link ready: %s", summary)
+        if not self._cast_ready_logged or self._availability_logged_down:
+            self._status_line_due = True
         self._cast_ready_logged = True
-        self.initial.mark_received(summary)
+        self._say_status_when_known()
 
         self._availability_logged_down = False
         self._last_failure_key = None
+
+    def _say_status_when_known(self) -> None:
+        """Log where the soundbar stands, once per connection, and only once it is known.
+
+        With a Cast app open the receiver status says nothing about playback; that
+        comes in a media status a moment later. Until then the line is held back
+        rather than printed with a playback state nobody has reported.
+        """
+        if not self._status_line_due:
+            return
+        if self._state.cast_app_id and not self._media_status_seen:
+            if self._status_wait_task is None or self._status_wait_task.done():
+                self._status_wait_task = asyncio.create_task(
+                    self._status_wait_deadline(), name="samsung_soundbar:status_wait"
+                )
+            return
+        self._status_line_due = False
+        st = self._state
+        volume = "none" if st.volume is None else round(st.volume * 100)
+        summary = f"source={st.source or 'none'} playback={st.playback_status or 'none'} volume={volume}"
+        if self.initial.received:
+            # A reconnect: say where things stand now. (The address is on the "connected" line.)
+            logger.info("link ready: %s", summary)
+        self.initial.mark_received(summary)
+
+    async def _status_wait_deadline(self) -> None:
+        # Normally never reached: the media status follows the connection within a second.
+        await asyncio.sleep(MEDIA_STATUS_WAIT_S)
+        if self._status_line_due and not self._media_status_seen:
+            self.initial.mark_failed(
+                f"cast app open, but the soundbar has not said what it is playing after {MEDIA_STATUS_WAIT_S:g}s"
+            )
 
     def _note_refresh_failure(self, exc: Exception) -> None:
         failure_key = f"{type(exc).__name__}:{exc}"
@@ -476,6 +513,7 @@ class SamsungSoundbar:
         self._cast = None
         self._cast_connected_logged = False
         self._cast_ready_logged = False
+        self._media_status_seen = False
 
         def _cleanup() -> None:
             with contextlib.suppress(Exception):
@@ -915,6 +953,9 @@ class SamsungSoundbar:
         if changed:
             logger.debug("cast media state=%s playback_status=%s", player_state, self._state.playback_status)
             self._maybe_emit_listen_edge(old_listen, first_reading=not self.initial.settled)
+
+        self._media_status_seen = True
+        self._say_status_when_known()
 
     def listening(self) -> bool:
         """Is a listen session in progress (AirPlay active, or our Cast stream playing)?"""
